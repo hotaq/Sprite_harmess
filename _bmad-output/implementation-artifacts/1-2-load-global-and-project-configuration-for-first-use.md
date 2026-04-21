@@ -149,6 +149,7 @@ gpt-5
 - Updated bootstrap output to report cwd, provider, model, output format, sandbox mode, and whether global/project config files were loaded.
 - Added deterministic unit tests for defaults, global-only config, and project-overrides-global config using temp home/project directories.
 - Added CLI smoke coverage proving the no-arg bootstrap path reports missing project config and merged startup state correctly.
+- Hardened startup config loading so malformed global/project config files degrade to defaults with explicit bootstrap warnings instead of crashing the CLI.
 - Extended the README with first-use config paths, supported bootstrap-visible fields, and a safe example config.
 - Verified `npm run build`, `npm run typecheck`, `npm test`, `npm pack --dry-run`, and `node packages/cli/dist/index.js`.
 
@@ -174,3 +175,4 @@ gpt-5
 
 - 2026-04-22: Created Story 1.2 with implementation context for first-use global/project configuration loading.
 - 2026-04-22: Implemented global/project config loading, startup state reporting, bootstrap output wiring, and deterministic tests; moved story to review.
+- 2026-04-22: Hardened malformed config handling so startup reports config warnings and keeps the bootstrap path runnable.

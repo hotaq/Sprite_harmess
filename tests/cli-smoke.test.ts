@@ -24,6 +24,11 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2));
 }
 
+function writeRaw(path: string, value: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, value);
+}
+
 describe("sprite cli smoke tests", () => {
   it("shows a bootstrap response with no arguments", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
@@ -89,6 +94,25 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("- output: ndjson");
     expect(result.stdout).toContain("- global config: loaded");
     expect(result.stdout).toContain("- project config: loaded");
+  });
+
+  it("survives malformed config files and reports a warning", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeRaw(join(homeDir, ".sprite/config.json"), '{"provider":');
+
+    const result = spawnSync("node", [cliPath], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- global config: not loaded");
+    expect(result.stdout).toContain("- config warning: Failed to load");
+    expect(result.stdout).toContain("Unexpected end of JSON input");
   });
 
   it("runs through the installed local sprite bin symlink", () => {

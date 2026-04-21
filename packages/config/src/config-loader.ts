@@ -32,6 +32,7 @@ export interface ResolvedStartupConfig {
   projectConfigPath: string;
   globalConfigLoaded: boolean;
   projectConfigLoaded: boolean;
+  warnings: string[];
 }
 
 export function resolveSpriteConfigPaths(
@@ -46,13 +47,41 @@ export function resolveSpriteConfigPaths(
   };
 }
 
-export function loadSpriteConfigFile(path: string): SpriteConfig | null {
+export interface LoadedSpriteConfigFile {
+  config: SpriteConfig | null;
+  loaded: boolean;
+  warning: string | null;
+}
+
+function formatConfigError(path: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Failed to load ${path}: ${message}`;
+}
+
+export function loadSpriteConfigFile(path: string): LoadedSpriteConfigFile {
   if (!existsSync(path)) {
-    return null;
+    return {
+      config: null,
+      loaded: false,
+      warning: null
+    };
   }
 
-  const rawConfig = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  return parseSpriteConfig(rawConfig, path);
+  try {
+    const rawConfig = JSON.parse(readFileSync(path, "utf8")) as unknown;
+
+    return {
+      config: parseSpriteConfig(rawConfig, path),
+      loaded: true,
+      warning: null
+    };
+  } catch (error: unknown) {
+    return {
+      config: null,
+      loaded: false,
+      warning: formatConfigError(path, error)
+    };
+  }
 }
 
 export function resolveStartupConfig(
@@ -62,7 +91,10 @@ export function resolveStartupConfig(
   const paths = resolveSpriteConfigPaths(options);
   const globalConfig = loadSpriteConfigFile(paths.globalConfigPath);
   const projectConfig = loadSpriteConfigFile(paths.projectConfigPath);
-  const mergedConfig = mergeSpriteConfigs(globalConfig, projectConfig);
+  const mergedConfig = mergeSpriteConfigs(globalConfig.config, projectConfig.config);
+  const warnings = [globalConfig.warning, projectConfig.warning].filter(
+    (warning): warning is string => warning !== null
+  );
 
   return {
     cwd,
@@ -72,7 +104,8 @@ export function resolveStartupConfig(
     sandboxMode: mergedConfig.sandbox?.mode ?? DEFAULT_SANDBOX_MODE,
     globalConfigPath: paths.globalConfigPath,
     projectConfigPath: paths.projectConfigPath,
-    globalConfigLoaded: globalConfig !== null,
-    projectConfigLoaded: projectConfig !== null
+    globalConfigLoaded: globalConfig.loaded,
+    projectConfigLoaded: projectConfig.loaded,
+    warnings
   };
 }

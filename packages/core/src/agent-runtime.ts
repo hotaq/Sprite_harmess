@@ -47,6 +47,9 @@ export function createBootstrapMessage(options: RuntimeStartupOptions = {}): str
   }
 
   const { startup } = state.value;
+  const warningLines = startup.warnings.map(
+    (warning) => `- config warning: ${warning}`
+  );
 
   return [
     state.value.message,
@@ -64,6 +67,7 @@ export function createBootstrapMessage(options: RuntimeStartupOptions = {}): str
       startup.projectConfigLoaded,
       startup.projectConfigPath
     )}`,
+    ...warningLines,
     "Use --help to inspect the current CLI surface."
   ].join("\n");
 }

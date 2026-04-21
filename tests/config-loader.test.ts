@@ -24,6 +24,11 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2));
 }
 
+function writeRaw(path: string, value: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, value);
+}
+
 afterEach(() => {
   while (tempRoots.length > 0) {
     const rootDir = tempRoots.pop();
@@ -50,6 +55,7 @@ describe("resolveStartupConfig", () => {
     expect(result.sandboxMode).toBe("workspace-write");
     expect(result.globalConfigLoaded).toBe(false);
     expect(result.projectConfigLoaded).toBe(false);
+    expect(result.warnings).toEqual([]);
   });
 
   it("loads global config without requiring project config", () => {
@@ -70,6 +76,7 @@ describe("resolveStartupConfig", () => {
     expect(result.outputFormat).toBe("json");
     expect(result.globalConfigLoaded).toBe(true);
     expect(result.projectConfigLoaded).toBe(false);
+    expect(result.warnings).toEqual([]);
   });
 
   it("lets project config override global config where provided", () => {
@@ -97,5 +104,27 @@ describe("resolveStartupConfig", () => {
     expect(result.sandboxMode).toBe("read-only");
     expect(result.globalConfigLoaded).toBe(true);
     expect(result.projectConfigLoaded).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("falls back to defaults and records a warning when config is malformed", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+
+    writeRaw(join(homeDir, ".sprite/config.json"), '{"provider":');
+
+    const result = resolveStartupConfig({
+      cwd: projectDir,
+      homeDir
+    });
+
+    expect(result.provider).toBeNull();
+    expect(result.model).toBeNull();
+    expect(result.outputFormat).toBe("text");
+    expect(result.sandboxMode).toBe("workspace-write");
+    expect(result.globalConfigLoaded).toBe(false);
+    expect(result.projectConfigLoaded).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("Failed to load");
+    expect(result.warnings[0]).toContain(join(homeDir, ".sprite/config.json"));
   });
 });
