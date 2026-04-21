@@ -1,0 +1,124 @@
+# generated: 2026-04-21T23:28:12+0700
+# last_updated: 2026-04-21T23:28:12+0700
+# project: Sprite_harmess
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+#
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in implementation artifacts
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories are typically worked in order, but parallel work is supported
+# - Developer usually creates the next story after previous learnings are captured
+# - Stories should pass through review before done
+
+generated: 2026-04-21T23:28:12+0700
+last_updated: 2026-04-21T23:36:23+0700
+project: Sprite_harmess
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  epic-1: in-progress
+  1-1-initialize-runnable-sprite-workspace: review
+  1-2-load-global-and-project-configuration-for-first-use: backlog
+  1-3-configure-openai-compatible-provider-for-mvp-task-execution: backlog
+  1-4-submit-an-interactive-task-to-the-runtime: backlog
+  1-5-stop-cancel-and-steer-a-running-task: backlog
+  1-6-emit-runtime-lifecycle-events-for-first-task-execution: backlog
+  1-7-run-one-shot-print-tasks-with-text-json-and-ndjson-output: backlog
+  1-8-produce-final-summary-for-first-runnable-task: backlog
+  epic-1-retrospective: optional
+  epic-2: backlog
+  2-1-inspect-and-search-project-files-safely: backlog
+  2-2-track-files-read-changed-and-proposed-for-change: backlog
+  2-3-propose-and-apply-patch-based-file-edits: backlog
+  2-4-classify-risk-for-commands-and-broad-file-edits: backlog
+  2-5-execute-commands-through-the-sandbox-runner: backlog
+  2-6-approve-deny-or-modify-risky-actions: backlog
+  2-7-configure-and-run-project-validation-commands: backlog
+  2-8-recover-from-failed-validation-or-denied-actions: backlog
+  2-9-configure-safety-rules-and-prevent-secret-memory-writes: backlog
+  epic-2-retrospective: optional
+  epic-3: backlog
+  3-1-create-and-persist-local-sessions: backlog
+  3-2-inspect-basic-session-state: backlog
+  3-3-resume-previous-sessions: backlog
+  3-4-load-project-context-files-as-untrusted-context: backlog
+  3-5-assemble-task-context-from-runtime-sources: backlog
+  3-6-compact-long-running-context-into-structured-summary: backlog
+  3-7-trigger-manual-compaction: backlog
+  3-8-continue-work-from-compacted-context: backlog
+  epic-3-retrospective: optional
+  epic-4: backlog
+  4-1-maintain-working-memory-and-runtime-self-model-during-a-task: backlog
+  4-2-store-episodic-and-semantic-memory-candidates: backlog
+  4-3-review-edit-reject-or-accept-memory-candidates: backlog
+  4-4-generate-post-task-learning-review: backlog
+  4-5-show-prior-memory-or-lesson-influence-during-a-later-task: backlog
+  4-6-trigger-retrospective-review-for-completed-failed-or-aborted-tasks: backlog
+  4-7-store-procedural-memory-through-skill-linked-learning-outputs: backlog
+  epic-4-retrospective: optional
+  epic-5: backlog
+  5-1-list-available-skills-from-manual-skill-registry: backlog
+  5-2-manually-invoke-a-skill-during-a-task: backlog
+  5-3-track-skill-usage-and-influence-during-tasks: backlog
+  5-4-record-skill-signals-from-repeated-workflows: backlog
+  5-5-propose-skill-candidates-with-evidence-and-trigger-reason: backlog
+  5-6-review-edit-reject-draft-or-promote-skill-candidates: backlog
+  5-7-keep-skill-candidates-separate-from-promoted-skills: backlog
+  epic-5-retrospective: optional
+  epic-6: backlog
+  6-1-render-minimal-tui-startup-and-runtime-state: backlog
+  6-2-display-message-stream-tool-activity-and-validation-results: backlog
+  6-3-support-multiline-input-steering-cancellation-and-approval-responses: backlog
+  6-4-implement-slash-commands-as-runtime-intents: backlog
+  6-5-show-final-summary-and-learning-review-outputs-in-tui: backlog
+  epic-6-retrospective: optional
+  epic-7: backlog
+  7-1-start-json-rpc-mode-over-stdin-stdout: backlog
+  7-2-create-or-resume-sessions-through-json-rpc: backlog
+  7-3-submit-tasks-through-json-rpc: backlog
+  7-4-stream-runtime-lifecycle-events-to-rpc-clients: backlog
+  7-5-respond-to-approval-requests-through-json-rpc: backlog
+  7-6-retrieve-final-summaries-and-learning-reviews-through-json-rpc: backlog
+  7-7-inspect-runtime-state-through-scoped-json-rpc: backlog
+  epic-7-retrospective: optional
+  epic-8: backlog
+  8-1-run-provider-login-flow-for-oauth-capable-providers: backlog
+  8-2-logout-and-remove-stored-provider-credentials: backlog
+  8-3-store-provider-credentials-with-restricted-local-permissions: backlog
+  8-4-refresh-oauth-credentials-when-supported: backlog
+  8-5-distinguish-api-key-auth-from-subscription-oauth-auth: backlog
+  8-6-inspect-effective-configuration-without-secret-leakage: backlog
+  epic-8-retrospective: optional
+  epic-9: backlog
+  9-1-document-installation-first-run-and-provider-setup: backlog
+  9-2-document-configuration-sandbox-and-safety-behavior: backlog
+  9-3-document-memory-learning-review-and-skill-candidate-lifecycle: backlog
+  9-4-document-json-rpc-usage-and-automation-examples: backlog
+  9-5-provide-end-to-end-example-workflows: backlog
+  epic-9-retrospective: optional

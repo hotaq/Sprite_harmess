@@ -1,0 +1,52 @@
+{
+  "name": "sprite-harness",
+  "version": "0.1.0",
+  "description": "Sprite Harness local developer agent runtime",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sprite": "./packages/cli/dist/index.js"
+  },
+  "files": [
+    "README.md",
+    "package.json",
+    "packages/cli/package.json",
+    "packages/cli/dist/**/*.js",
+    "packages/cli/dist/**/*.js.map",
+    "packages/cli/dist/**/*.d.ts",
+    "packages/cli/dist/**/*.d.ts.map",
+    "packages/core/package.json",
+    "packages/core/dist/**/*.js",
+    "packages/core/dist/**/*.js.map",
+    "packages/core/dist/**/*.d.ts",
+    "packages/core/dist/**/*.d.ts.map",
+    "packages/shared/package.json",
+    "packages/shared/dist/**/*.js",
+    "packages/shared/dist/**/*.js.map",
+    "packages/shared/dist/**/*.d.ts",
+    "packages/shared/dist/**/*.d.ts.map"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "npm run build --silent && vitest run",
+    "lint": "npm run typecheck",
+    "format": "prettier --write .",
+    "prepare": "npm run build --silent",
+    "dev": "npm run dev:cli",
+    "dev:cli": "npm run build --silent && node packages/cli/dist/index.js",
+    "dev:rpc": "node scripts/dev-rpc-placeholder.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
