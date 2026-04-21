@@ -4,8 +4,9 @@ import { createBootstrapMessage } from "@sprite/core";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import packageJson from "../package.json" with { type: "json" };
 
-const CLI_VERSION = "0.1.0";
+const CLI_VERSION = packageJson.version;
 
 export interface CliIO {
   stdout: { write: (value: string) => void };

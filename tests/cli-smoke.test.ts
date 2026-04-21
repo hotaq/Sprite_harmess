@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
+import packageJson from "../packages/cli/package.json" with { type: "json" };
 
 const cliPath = "packages/cli/dist/index.js";
 const localBinPath = "./node_modules/.bin/sprite";
@@ -30,7 +31,7 @@ describe("sprite cli smoke tests", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe("0.1.0");
+    expect(result.stdout.trim()).toBe(packageJson.version);
   });
 
   it("runs through the installed local sprite bin symlink", () => {

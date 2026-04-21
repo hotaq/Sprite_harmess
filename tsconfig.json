@@ -3,6 +3,15 @@
   "references": [
     { "path": "./packages/shared" },
     { "path": "./packages/core" },
-    { "path": "./packages/cli" }
+    { "path": "./packages/cli" },
+    { "path": "./packages/config" },
+    { "path": "./packages/memory" },
+    { "path": "./packages/providers" },
+    { "path": "./packages/rpc" },
+    { "path": "./packages/sandbox" },
+    { "path": "./packages/skills" },
+    { "path": "./packages/storage" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/tui" }
   ]
 }

@@ -195,6 +195,7 @@ gpt-5
 - `./node_modules/.bin/sprite`
 - `./node_modules/.bin/sprite --help`
 - `./node_modules/.bin/sprite --version`
+- `npm run build`
 
 ### Completion Notes List
 
@@ -208,6 +209,8 @@ gpt-5
 - Marked the root workspace `private` and added a publish allowlist so planning artifacts like `_bmad/` and `_bmad-output/` do not leak into npm tarballs.
 - Fixed CLI entrypoint detection to handle execution through the installed `node_modules/.bin/sprite` symlink and added a regression test for that path.
 - Tightened the root package publish surface so only runtime distribution artifacts are included and build metadata like `.tsbuildinfo` is excluded from dry-run tarballs.
+- Replaced hardcoded CLI version usage with package metadata imports so `sprite --version` stays aligned with package manifests and smoke tests.
+- Added placeholder source files and root TypeScript references for all declared workspace packages so root build/typecheck covers the full workspace shape rather than only the first three packages.
 
 ### File List
 
@@ -222,23 +225,41 @@ gpt-5
 - `packages/cli/src/index.ts`
 - `packages/cli/tsconfig.json`
 - `packages/config/package.json`
+- `packages/config/src/index.ts`
+- `packages/config/tsconfig.json`
 - `packages/core/package.json`
 - `packages/core/src/agent-runtime.ts`
 - `packages/core/src/index.ts`
 - `packages/core/tsconfig.json`
 - `packages/memory/package.json`
+- `packages/memory/src/index.ts`
+- `packages/memory/tsconfig.json`
 - `packages/providers/package.json`
+- `packages/providers/src/index.ts`
+- `packages/providers/tsconfig.json`
 - `packages/rpc/package.json`
+- `packages/rpc/src/index.ts`
+- `packages/rpc/tsconfig.json`
 - `packages/sandbox/package.json`
+- `packages/sandbox/src/index.ts`
+- `packages/sandbox/tsconfig.json`
 - `packages/shared/package.json`
 - `packages/shared/src/errors.ts`
 - `packages/shared/src/index.ts`
 - `packages/shared/src/result.ts`
 - `packages/shared/tsconfig.json`
 - `packages/skills/package.json`
+- `packages/skills/src/index.ts`
+- `packages/skills/tsconfig.json`
 - `packages/storage/package.json`
+- `packages/storage/src/index.ts`
+- `packages/storage/tsconfig.json`
 - `packages/tools/package.json`
+- `packages/tools/src/index.ts`
+- `packages/tools/tsconfig.json`
 - `packages/tui/package.json`
+- `packages/tui/src/index.ts`
+- `packages/tui/tsconfig.json`
 - `prettier.config.cjs`
 - `scripts/dev-rpc-placeholder.mjs`
 - `tests/cli-smoke.test.ts`
@@ -250,3 +271,4 @@ gpt-5
 
 - 2026-04-21: Implemented Story 1.1 workspace bootstrap, added root/package scaffolding, minimal `sprite` CLI entry, smoke tests, and updated sprint tracking to reflect completion readiness.
 - 2026-04-21: Addressed pre-commit review findings by adding install-time build preparation, publish-surface hardening, npm tarball allowlisting, and a local bin symlink regression fix.
+- 2026-04-22: Addressed review follow-ups by removing hardcoded CLI version drift and making root TypeScript references cover the full declared workspace package set.
