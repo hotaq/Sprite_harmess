@@ -1,18 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import packageJson from "../packages/cli/package.json" with { type: "json" };
 
-const cliPath = "packages/cli/dist/index.js";
-const localBinPath = "./node_modules/.bin/sprite";
+const cliPath = resolve(process.cwd(), "packages/cli/dist/index.js");
+const localBinPath = resolve(process.cwd(), "node_modules/.bin/sprite");
+
+function createTempCliWorkspace(): { homeDir: string; projectDir: string; rootDir: string } {
+  const rootDir = mkdtempSync(join(tmpdir(), "sprite-cli-"));
+  const homeDir = join(rootDir, "home");
+  const projectDir = join(rootDir, "project");
+
+  mkdirSync(homeDir, { recursive: true });
+  mkdirSync(projectDir, { recursive: true });
+
+  return { homeDir, projectDir, rootDir };
+}
+
+function writeJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(value, null, 2));
+}
 
 describe("sprite cli smoke tests", () => {
   it("shows a bootstrap response with no arguments", () => {
-    const result = spawnSync("node", [cliPath], { encoding: "utf8" });
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+    const result = spawnSync("node", [cliPath], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
       "Sprite Harness bootstrap workspace is ready."
     );
+    expect(result.stdout).toContain("- project config: not loaded");
   });
 
   it("shows help output", () => {
@@ -32,6 +59,36 @@ describe("sprite cli smoke tests", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(packageJson.version);
+  });
+
+  it("shows merged startup config when global and project config exist", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(homeDir, ".sprite/config.json"), {
+      provider: { name: "openai", model: "gpt-5.1" },
+      output: { format: "json" }
+    });
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: { model: "gpt-5.4" },
+      output: { format: "ndjson" }
+    });
+
+    const result = spawnSync("node", [cliPath], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir },
+      encoding: "utf8"
+    });
+    const resolvedProjectDir = realpathSync(projectDir);
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`- cwd: ${resolvedProjectDir}`);
+    expect(result.stdout).toContain("- provider: openai");
+    expect(result.stdout).toContain("- model: gpt-5.4");
+    expect(result.stdout).toContain("- output: ndjson");
+    expect(result.stdout).toContain("- global config: loaded");
+    expect(result.stdout).toContain("- project config: loaded");
   });
 
   it("runs through the installed local sprite bin symlink", () => {

@@ -8,6 +8,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@sprite/config": "0.1.0",
     "@sprite/shared": "0.1.0"
   }
 }

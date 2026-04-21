@@ -4,6 +4,8 @@ Sprite Harness is a runtime-first local developer agent harness. This repository
 
 The root workspace is currently marked `private` so Story 1.1 can focus on local bootstrap safety. npm distribution hardening will come in a later packaging story.
 
+Story 1.2 extends bootstrap with first-use configuration loading from global and project config files so the startup surface can report merged defaults truthfully before task execution exists.
+
 ## Requirements
 
 - Node.js 24 LTS preferred
@@ -45,6 +47,41 @@ bun run dev:rpc
 - Local `sprite` binary bootstrap
 - Basic help, version, and first-run entry response
 - Baseline build/typecheck/test scripts
+
+## First-Use Configuration
+
+Sprite Harness currently loads startup defaults from:
+
+- global config: `~/.sprite/config.json`
+- project config: `.sprite/config.json`
+
+Project config overrides global config where the same startup fields are defined.
+
+Current bootstrap-visible fields:
+
+- `provider.name`
+- `provider.model`
+- `output.format` (`text`, `json`, `ndjson`)
+- `sandbox.mode` (`workspace-write`, `read-only`, `full-access`)
+
+Example:
+
+```json
+{
+  "provider": {
+    "name": "openai",
+    "model": "gpt-5.4"
+  },
+  "output": {
+    "format": "json"
+  },
+  "sandbox": {
+    "mode": "workspace-write"
+  }
+}
+```
+
+The bootstrap output reports the resolved startup state and whether global or project config files were loaded. Secrets do not belong in these example files.
 
 Not implemented yet:
 
