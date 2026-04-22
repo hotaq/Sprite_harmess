@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createBootstrapMessage } from "@sprite/core";
+import { createBootstrapMessage, createInteractiveTaskMessage } from "@sprite/core";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -31,10 +31,7 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         return;
       }
 
-      writeMessage(
-        io,
-        `Task execution is not implemented in Story 1.1 yet.\nReceived task: ${task.join(" ")}`
-      );
+      writeMessage(io, createInteractiveTaskMessage(task.join(" ")));
     });
 
   program.configureOutput({

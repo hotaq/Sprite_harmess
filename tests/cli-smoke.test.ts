@@ -121,6 +121,35 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).not.toContain("sk-test-secret");
   });
 
+  it("routes an interactive task through AgentRuntime and returns a planned execution flow", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      },
+      output: { format: "text" }
+    });
+
+    const result = spawnSync("node", [cliPath, "fix", "the", "provider", "tests"], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Task received: fix the provider tests");
+    expect(result.stdout).toContain("Planned execution flow:");
+    expect(result.stdout).toContain("1. [plan] completed");
+    expect(result.stdout).toContain("2. [act] pending");
+    expect(result.stdout).toContain("3. [observe] pending");
+    expect(result.stdout).toContain("repository inspection and tool execution start in later stories");
+    expect(result.stdout).not.toContain("sk-test-secret");
+  });
+
   it("survives malformed config files and reports a warning", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

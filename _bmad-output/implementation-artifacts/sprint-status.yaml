@@ -45,8 +45,8 @@ development_status:
   epic-1: in-progress
   1-1-initialize-runnable-sprite-workspace: done
   1-2-load-global-and-project-configuration-for-first-use: done
-  1-3-configure-openai-compatible-provider-for-mvp-task-execution: review
-  1-4-submit-an-interactive-task-to-the-runtime: backlog
+  1-3-configure-openai-compatible-provider-for-mvp-task-execution: done
+  1-4-submit-an-interactive-task-to-the-runtime: review
   1-5-stop-cancel-and-steer-a-running-task: backlog
   1-6-emit-runtime-lifecycle-events-for-first-task-execution: backlog
   1-7-run-one-shot-print-tasks-with-text-json-and-ndjson-output: backlog

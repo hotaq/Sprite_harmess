@@ -10,6 +10,8 @@ import {
   type ResolvedProviderState
 } from "@sprite/providers";
 import { ok, type Result } from "@sprite/shared";
+import { createTaskRequest, runInitialPlanActObserveLoop } from "./runtime-loop.js";
+import type { PlannedExecutionFlow } from "./task-state.js";
 
 export interface BootstrapState {
   implemented: false;
@@ -47,6 +49,23 @@ export class AgentRuntime {
       provider: provider.adapter?.getState() ?? null,
       warnings
     });
+  }
+
+  submitInteractiveTask(task: string): Result<PlannedExecutionFlow> {
+    const bootstrapState = this.getBootstrapState();
+
+    if (!bootstrapState.ok) {
+      return bootstrapState;
+    }
+
+    const request = createTaskRequest(task, bootstrapState.value);
+
+    return ok(
+      runInitialPlanActObserveLoop(request, [
+        ...bootstrapState.value.warnings,
+        "Interactive task planning is available, but repository inspection and tool execution start in later stories."
+      ])
+    );
   }
 }
 
@@ -110,5 +129,40 @@ export function createBootstrapMessage(options: RuntimeStartupOptions = {}): str
     )}`,
     ...warningLines,
     "Use --help to inspect the current CLI surface."
+  ].join("\n");
+}
+
+export function createInteractiveTaskMessage(
+  task: string,
+  options: RuntimeStartupOptions = {}
+): string {
+  const runtime = new AgentRuntime(options);
+  const state = runtime.submitInteractiveTask(task);
+
+  if (!state.ok) {
+    throw state.error;
+  }
+
+  const providerLabel =
+    state.value.request.provider === null
+      ? "not configured"
+      : `${state.value.request.provider.providerName} (${state.value.request.provider.model ?? "model not configured"})`;
+  const stepLines = state.value.steps.map(
+    (step, index) =>
+      `${index + 1}. [${step.phase}] ${step.status} - ${step.summary}`
+  );
+  const warningLines = state.value.warnings.map((warning) => `- warning: ${warning}`);
+
+  return [
+    `Task received: ${state.value.request.task}`,
+    "Planned execution flow:",
+    `- cwd: ${state.value.request.cwd}`,
+    `- provider: ${providerLabel}`,
+    `- output: ${state.value.request.allowedDefaults.outputFormat}`,
+    `- sandbox: ${state.value.request.allowedDefaults.sandboxMode}`,
+    `- max iterations: ${state.value.request.stopConditions.maxIterations}`,
+    ...stepLines,
+    state.value.summary,
+    ...warningLines
   ].join("\n");
 }

@@ -127,10 +127,33 @@ Example provider config:
 
 Bootstrap output exposes provider, model, auth source, and capability metadata, but it never prints the secret value.
 
+## First Interactive Task
+
+Story 1.4 adds the first shared-runtime interactive task path:
+
+```bash
+sprite "fix the failing provider tests"
+```
+
+At this stage the runtime:
+
+- creates a typed task request
+- uses current cwd and active provider/model state
+- returns an initial plan-act-observe execution flow
+
+At this stage the runtime does not yet:
+
+- inspect repository files
+- execute tools or commands
+- apply edits
+- emit the full runtime event stream
+
+The goal of this slice is to prove that interactive task submission goes through `AgentRuntime`, not to fake full tool execution early.
+
 Not implemented yet:
 
-- Provider integration
-- Agent loop
+- Live provider completions and tool-calling execution
+- Full multi-iteration agent loop progression
 - TUI
 - RPC server
 - Sandbox and policy engine
