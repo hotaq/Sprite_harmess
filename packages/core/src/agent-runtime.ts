@@ -43,7 +43,7 @@ export class AgentRuntime {
     return ok({
       implemented: false,
       message:
-        "Sprite Harness bootstrap workspace is ready. Interactive task execution is not implemented yet.",
+        "Sprite Harness bootstrap workspace is ready. Interactive task planning is available through the shared runtime.",
       interfaces: ["cli"],
       startup,
       provider: provider.adapter?.getState() ?? null,

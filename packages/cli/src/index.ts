@@ -24,7 +24,7 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     .name("sprite")
     .description("Sprite Harness local developer agent runtime")
     .version(version)
-    .argument("[task...]", "optional task placeholder")
+    .argument("[task...]", "optional interactive task")
     .action((task: string[] = []) => {
       if (task.length === 0) {
         writeMessage(io, createBootstrapMessage());
