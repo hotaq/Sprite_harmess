@@ -35,6 +35,16 @@ export interface ResolvedStartupConfig {
   warnings: string[];
 }
 
+export interface ResolvedSpriteRuntimeConfig {
+  cwd: string;
+  config: SpriteConfig;
+  globalConfigPath: string;
+  projectConfigPath: string;
+  globalConfigLoaded: boolean;
+  projectConfigLoaded: boolean;
+  warnings: string[];
+}
+
 export function resolveSpriteConfigPaths(
   options: ConfigLoaderOptions = {}
 ): SpriteConfigPaths {
@@ -87,25 +97,47 @@ export function loadSpriteConfigFile(path: string): LoadedSpriteConfigFile {
 export function resolveStartupConfig(
   options: ConfigLoaderOptions = {}
 ): ResolvedStartupConfig {
+  return toStartupConfig(resolveSpriteRuntimeConfig(options));
+}
+
+export function resolveSpriteRuntimeConfig(
+  options: ConfigLoaderOptions = {}
+): ResolvedSpriteRuntimeConfig {
   const cwd = options.cwd ?? process.cwd();
   const paths = resolveSpriteConfigPaths(options);
   const globalConfig = loadSpriteConfigFile(paths.globalConfigPath);
   const projectConfig = loadSpriteConfigFile(paths.projectConfigPath);
-  const mergedConfig = mergeSpriteConfigs(globalConfig.config, projectConfig.config);
+  const config = mergeSpriteConfigs(globalConfig.config, projectConfig.config);
   const warnings = [globalConfig.warning, projectConfig.warning].filter(
     (warning): warning is string => warning !== null
   );
 
   return {
     cwd,
-    provider: mergedConfig.provider?.name ?? null,
-    model: mergedConfig.provider?.model ?? null,
-    outputFormat: mergedConfig.output?.format ?? DEFAULT_OUTPUT_FORMAT,
-    sandboxMode: mergedConfig.sandbox?.mode ?? DEFAULT_SANDBOX_MODE,
+    config,
     globalConfigPath: paths.globalConfigPath,
     projectConfigPath: paths.projectConfigPath,
     globalConfigLoaded: globalConfig.loaded,
     projectConfigLoaded: projectConfig.loaded,
     warnings
+  };
+}
+
+export function toStartupConfig(
+  runtimeConfig: ResolvedSpriteRuntimeConfig
+): ResolvedStartupConfig {
+  const { cwd, config } = runtimeConfig;
+
+  return {
+    cwd,
+    provider: config.provider?.name ?? null,
+    model: config.provider?.model ?? null,
+    outputFormat: config.output?.format ?? DEFAULT_OUTPUT_FORMAT,
+    sandboxMode: config.sandbox?.mode ?? DEFAULT_SANDBOX_MODE,
+    globalConfigPath: runtimeConfig.globalConfigPath,
+    projectConfigPath: runtimeConfig.projectConfigPath,
+    globalConfigLoaded: runtimeConfig.globalConfigLoaded,
+    projectConfigLoaded: runtimeConfig.projectConfigLoaded,
+    warnings: runtimeConfig.warnings
   };
 }

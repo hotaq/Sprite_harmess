@@ -1,6 +1,6 @@
 # Story 1.2: Load Global and Project Configuration for First Use
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

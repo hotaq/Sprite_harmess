@@ -5,6 +5,10 @@
     "outDir": "./dist",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "references": [{ "path": "../shared" }, { "path": "../config" }],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../config" },
+    { "path": "../providers" }
+  ],
   "include": ["src/**/*.ts"]
 }

@@ -91,9 +91,34 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain(`- cwd: ${resolvedProjectDir}`);
     expect(result.stdout).toContain("- provider: openai");
     expect(result.stdout).toContain("- model: gpt-5.4");
+    expect(result.stdout).toContain("- provider auth: not configured");
+    expect(result.stdout).toContain("- provider capabilities: streaming=true");
     expect(result.stdout).toContain("- output: ndjson");
     expect(result.stdout).toContain("- global config: loaded");
     expect(result.stdout).toContain("- project config: loaded");
+  });
+
+  it("shows provider auth source without leaking the secret", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      }
+    });
+
+    const result = spawnSync("node", [cliPath], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- provider auth: environment (secret redacted)");
+    expect(result.stdout).not.toContain("sk-test-secret");
   });
 
   it("survives malformed config files and reports a warning", () => {
@@ -111,7 +136,7 @@ describe("sprite cli smoke tests", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("- global config: not loaded");
-    expect(result.stdout).toContain("- config warning: Failed to load");
+    expect(result.stdout).toContain("- warning: Failed to load");
     expect(result.stdout).toContain("Unexpected end of JSON input");
   });
 

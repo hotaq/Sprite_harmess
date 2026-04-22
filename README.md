@@ -83,6 +83,50 @@ Example:
 
 The bootstrap output reports the resolved startup state and whether global or project config files were loaded. Secrets do not belong in these example files.
 
+## MVP Provider Setup
+
+Story 1.3 adds an OpenAI-compatible provider bootstrap path. The current precedence for API-key resolution is:
+
+1. runtime override
+2. local auth file
+3. environment variable
+4. provider config
+
+Auth files live under `~/.sprite/auth/` and use the provider name as the filename. Example:
+
+```json
+{
+  "apiKey": "sk-example"
+}
+```
+
+For the MVP provider, a typical auth file path is:
+
+- `~/.sprite/auth/openai-compatible.json`
+
+Provider config may specify:
+
+- `provider.name`
+- `provider.model`
+- `provider.baseUrl`
+- `provider.apiKeyEnvVar`
+- `provider.apiKey`
+
+Example provider config:
+
+```json
+{
+  "provider": {
+    "name": "openai-compatible",
+    "model": "gpt-5.4",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnvVar": "OPENAI_API_KEY"
+  }
+}
+```
+
+Bootstrap output exposes provider, model, auth source, and capability metadata, but it never prints the secret value.
+
 Not implemented yet:
 
 - Provider integration

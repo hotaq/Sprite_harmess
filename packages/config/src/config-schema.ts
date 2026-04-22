@@ -8,6 +8,9 @@ export interface SpriteConfig {
   provider?: {
     name?: string;
     model?: string;
+    baseUrl?: string;
+    apiKeyEnvVar?: string;
+    apiKey?: string;
   };
   output?: {
     format?: SpriteOutputFormat;
@@ -87,6 +90,18 @@ export function parseSpriteConfig(
             model: readOptionalString(
               providerValue.model,
               `${source}.provider.model`
+            ),
+            baseUrl: readOptionalString(
+              providerValue.baseUrl,
+              `${source}.provider.baseUrl`
+            ),
+            apiKeyEnvVar: readOptionalString(
+              providerValue.apiKeyEnvVar,
+              `${source}.provider.apiKeyEnvVar`
+            ),
+            apiKey: readOptionalString(
+              providerValue.apiKey,
+              `${source}.provider.apiKey`
             )
           },
     output:
