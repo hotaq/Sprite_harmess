@@ -9,8 +9,18 @@ import {
   type ProviderRuntimeOverride,
   type ResolvedProviderState
 } from "@sprite/providers";
-import { ok, type Result } from "@sprite/shared";
-import { createTaskRequest, runInitialPlanActObserveLoop } from "./runtime-loop.js";
+import { SpriteError, err, ok, type Result } from "@sprite/shared";
+import { randomUUID } from "node:crypto";
+import {
+  applyTaskSteering,
+  cancelTask,
+  completeTask,
+  createTaskRequest,
+  failTask,
+  runInitialPlanActObserveLoop,
+  stopTaskForMaxIterations,
+  waitForTaskInput
+} from "./runtime-loop.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
 
 export interface BootstrapState {
@@ -28,6 +38,9 @@ export interface RuntimeStartupOptions extends ConfigLoaderOptions {
 }
 
 export class AgentRuntime {
+  private readonly sessionId = `session_${randomUUID()}`;
+  private activeTask: PlannedExecutionFlow | null = null;
+
   constructor(private readonly options: RuntimeStartupOptions = {}) {}
 
   getBootstrapState(): Result<BootstrapState> {
@@ -59,12 +72,200 @@ export class AgentRuntime {
     }
 
     const request = createTaskRequest(task, bootstrapState.value);
-
-    return ok(
-      runInitialPlanActObserveLoop(request, [
+    const taskId = this.nextId("task");
+    const correlationId = this.nextId("corr");
+    const createdAt = this.now();
+    const taskState = runInitialPlanActObserveLoop(
+      request,
+      {
+        sessionId: this.sessionId,
+        taskId,
+        correlationId
+      },
+      createdAt,
+      this.nextEventId(),
+      this.nextEventId(),
+      [
         ...bootstrapState.value.warnings,
         "Interactive task planning is available, but repository inspection and tool execution start in later stories."
-      ])
+      ]
+    );
+
+    this.activeTask = taskState;
+
+    return ok(taskState);
+  }
+
+  getActiveTask(): Result<PlannedExecutionFlow> {
+    if (this.activeTask === null) {
+      return err(new Error("No active task is available."));
+    }
+
+    return ok(this.activeTask);
+  }
+
+  cancelActiveTask(note = "User cancelled the active task."): Result<PlannedExecutionFlow> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    this.activeTask = cancelTask(activeTask.value, note, {
+      sessionId: activeTask.value.sessionId,
+      taskId: activeTask.value.taskId,
+      correlationId: activeTask.value.correlationId,
+      eventId: this.nextEventId(),
+      createdAt: this.now()
+    });
+
+    return ok(this.activeTask);
+  }
+
+  steerActiveTask(note: string): Result<PlannedExecutionFlow> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    this.activeTask = applyTaskSteering(
+      activeTask.value,
+      note,
+      {
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      {
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      }
+    );
+
+    return ok(this.activeTask);
+  }
+
+  waitForInput(reason: "approval-required" | "user-input-required", message: string): Result<PlannedExecutionFlow> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    this.activeTask = waitForTaskInput(activeTask.value, reason, message, {
+      sessionId: activeTask.value.sessionId,
+      taskId: activeTask.value.taskId,
+      correlationId: activeTask.value.correlationId,
+      eventId: this.nextEventId(),
+      createdAt: this.now()
+    });
+
+    return ok(this.activeTask);
+  }
+
+  completeActiveTask(
+    message = "Task reached a completed terminal state."
+  ): Result<PlannedExecutionFlow> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    this.activeTask = completeTask(activeTask.value, message, {
+      sessionId: activeTask.value.sessionId,
+      taskId: activeTask.value.taskId,
+      correlationId: activeTask.value.correlationId,
+      eventId: this.nextEventId(),
+      createdAt: this.now()
+    });
+
+    return ok(this.activeTask);
+  }
+
+  stopActiveTaskForMaxIterations(
+    message = "Task stopped after reaching the configured iteration limit."
+  ): Result<PlannedExecutionFlow> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    this.activeTask = stopTaskForMaxIterations(activeTask.value, message, {
+      sessionId: activeTask.value.sessionId,
+      taskId: activeTask.value.taskId,
+      correlationId: activeTask.value.correlationId,
+      eventId: this.nextEventId(),
+      createdAt: this.now()
+    });
+
+    return ok(this.activeTask);
+  }
+
+  failActiveTask(
+    message = "Task stopped because the runtime encountered an unrecoverable error."
+  ): Result<PlannedExecutionFlow> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    this.activeTask = failTask(activeTask.value, message, {
+      sessionId: activeTask.value.sessionId,
+      taskId: activeTask.value.taskId,
+      correlationId: activeTask.value.correlationId,
+      eventId: this.nextEventId(),
+      createdAt: this.now()
+    });
+
+    return ok(this.activeTask);
+  }
+
+  private getMutableActiveTask(): Result<PlannedExecutionFlow> {
+    const activeTask = this.getActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    if (this.isTerminalState(activeTask.value)) {
+      return err(
+        new SpriteError(
+          "TASK_TERMINAL",
+          `Task ${activeTask.value.taskId} is already in terminal state '${activeTask.value.status}'.`
+        )
+      );
+    }
+
+    return activeTask;
+  }
+
+  private nextEventId(): string {
+    return this.nextId("evt");
+  }
+
+  private nextId(prefix: string): string {
+    return `${prefix}_${randomUUID()}`;
+  }
+
+  private now(): string {
+    return new Date().toISOString();
+  }
+
+  private isTerminalState(task: PlannedExecutionFlow): boolean {
+    return (
+      task.status === "completed" ||
+      task.status === "cancelled" ||
+      task.status === "max-iterations" ||
+      task.status === "failed"
     );
   }
 }
@@ -134,10 +335,35 @@ export function createBootstrapMessage(options: RuntimeStartupOptions = {}): str
 
 export function createInteractiveTaskMessage(
   task: string,
-  options: RuntimeStartupOptions = {}
+  options: RuntimeStartupOptions & {
+    cancel?: boolean;
+    steer?: string;
+  } = {}
 ): string {
   const runtime = new AgentRuntime(options);
-  const state = runtime.submitInteractiveTask(task);
+  const initialState = runtime.submitInteractiveTask(task);
+
+  if (!initialState.ok) {
+    throw initialState.error;
+  }
+
+  if (options.steer !== undefined) {
+    const steeredState = runtime.steerActiveTask(options.steer);
+
+    if (!steeredState.ok) {
+      throw steeredState.error;
+    }
+  }
+
+  if (options.cancel === true) {
+    const cancelledState = runtime.cancelActiveTask();
+
+    if (!cancelledState.ok) {
+      throw cancelledState.error;
+    }
+  }
+
+  const state = runtime.getActiveTask();
 
   if (!state.ok) {
     throw state.error;
@@ -152,17 +378,40 @@ export function createInteractiveTaskMessage(
       `${index + 1}. [${step.phase}] ${step.status} - ${step.summary}`
   );
   const warningLines = state.value.warnings.map((warning) => `- warning: ${warning}`);
+  const waitingLine =
+    state.value.waitingState === null
+      ? []
+      : [`- waiting: ${state.value.waitingState.reason} - ${state.value.waitingState.message}`];
+  const terminalLine =
+    state.value.terminalState === null
+      ? []
+      : [`- terminal: ${state.value.terminalState.reason} - ${state.value.terminalState.message}`];
+  const intentLines = state.value.intents.map(
+    (intent, index) =>
+      `${index + 1}. [${intent.intent}] ${intent.note}`
+  );
+  const eventLines = state.value.events.map(
+    (event, index) =>
+      `${index + 1}. ${event.type} (${event.eventId})`
+  );
 
   return [
     `Task received: ${state.value.request.task}`,
     "Planned execution flow:",
+    `- task state: ${state.value.status}`,
     `- cwd: ${state.value.request.cwd}`,
     `- provider: ${providerLabel}`,
     `- output: ${state.value.request.allowedDefaults.outputFormat}`,
     `- sandbox: ${state.value.request.allowedDefaults.sandboxMode}`,
     `- max iterations: ${state.value.request.stopConditions.maxIterations}`,
+    ...waitingLine,
+    ...terminalLine,
     ...stepLines,
     state.value.summary,
+    "Task intents:",
+    ...(intentLines.length === 0 ? ["- none"] : intentLines),
+    "Runtime events:",
+    ...eventLines,
     ...warningLines
   ].join("\n");
 }

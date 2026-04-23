@@ -1,6 +1,6 @@
 # Story 1.4: Submit an Interactive Task to the Runtime
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -165,3 +165,4 @@ gpt-5
 
 - 2026-04-23: Created Story 1.4 with implementation context for first interactive task submission through the shared runtime.
 - 2026-04-23: Implemented the first runtime-backed interactive task submission path, initial plan-act-observe loop shell, tests, and docs; moved story to review.
+- 2026-04-23: Closed review findings, aligned interactive task messaging with the shipped runtime behavior, and marked story done.

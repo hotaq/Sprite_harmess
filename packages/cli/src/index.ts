@@ -24,6 +24,8 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     .name("sprite")
     .description("Sprite Harness local developer agent runtime")
     .version(version)
+    .option("--cancel", "cancel the task after runtime planning")
+    .option("--steer <message>", "record steering input after runtime planning")
     .argument("[task...]", "optional interactive task")
     .action((task: string[] = []) => {
       if (task.length === 0) {
@@ -31,7 +33,15 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         return;
       }
 
-      writeMessage(io, createInteractiveTaskMessage(task.join(" ")));
+      const options = program.opts<{ cancel?: boolean; steer?: string }>();
+
+      writeMessage(
+        io,
+        createInteractiveTaskMessage(task.join(" "), {
+          cancel: options.cancel,
+          steer: options.steer
+        })
+      );
     });
 
   program.configureOutput({

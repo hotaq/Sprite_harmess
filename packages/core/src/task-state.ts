@@ -6,6 +6,30 @@ import type {
 import type { ResolvedProviderState } from "@sprite/providers";
 
 export type RuntimeLoopPhase = "plan" | "act" | "observe";
+export type TaskExecutionStatus =
+  | "planned"
+  | "waiting-for-input"
+  | "completed"
+  | "cancelled"
+  | "max-iterations"
+  | "failed";
+export type TaskWaitingReason =
+  | "steering-required"
+  | "approval-required"
+  | "user-input-required";
+export type TaskTerminalReason =
+  | "completed"
+  | "cancelled"
+  | "max-iterations"
+  | "unrecoverable-error";
+export type RuntimeEventType =
+  | "task.started"
+  | "task.waiting"
+  | "task.completed"
+  | "task.failed"
+  | "task.cancelled"
+  | "task.steering.received";
+export type TaskIntentType = "cancel" | "steer";
 
 export interface TaskStopConditions {
   maxIterations: number;
@@ -34,11 +58,45 @@ export interface PlannedExecutionStep {
   summary: string;
 }
 
+export interface RuntimeEventRecord {
+  schemaVersion: 1;
+  eventId: string;
+  sessionId: string;
+  taskId: string;
+  correlationId: string;
+  type: RuntimeEventType;
+  createdAt: string;
+  payload: Record<string, unknown>;
+}
+
+export interface TaskIntentRecord {
+  intent: TaskIntentType;
+  note: string;
+  createdAt: string;
+}
+
+export interface TaskWaitingState {
+  reason: TaskWaitingReason;
+  message: string;
+}
+
+export interface TaskTerminalState {
+  reason: TaskTerminalReason;
+  message: string;
+}
+
 export interface PlannedExecutionFlow {
-  status: "planned";
+  status: TaskExecutionStatus;
+  sessionId: string;
+  taskId: string;
+  correlationId: string;
   request: TaskRequest;
   currentPhase: RuntimeLoopPhase;
   steps: PlannedExecutionStep[];
   summary: string;
   warnings: string[];
+  waitingState: TaskWaitingState | null;
+  terminalState: TaskTerminalState | null;
+  intents: TaskIntentRecord[];
+  events: RuntimeEventRecord[];
 }

@@ -143,10 +143,71 @@ describe("sprite cli smoke tests", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Task received: fix the provider tests");
     expect(result.stdout).toContain("Planned execution flow:");
+    expect(result.stdout).toContain("- task state: waiting-for-input");
+    expect(result.stdout).toContain("- waiting: steering-required");
     expect(result.stdout).toContain("1. [plan] completed");
     expect(result.stdout).toContain("2. [act] pending");
     expect(result.stdout).toContain("3. [observe] pending");
+    expect(result.stdout).toContain("Runtime events:");
+    expect(result.stdout).toContain("task.started");
+    expect(result.stdout).toContain("task.waiting");
     expect(result.stdout).toContain("repository inspection and tool execution start in later stories");
+    expect(result.stdout).not.toContain("sk-test-secret");
+  });
+
+  it("submits steering input through the CLI without letting the adapter own task state", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      }
+    });
+
+    const result = spawnSync(
+      "node",
+      [cliPath, "--steer", "Focus on the auth warning path first.", "fix", "the", "provider", "tests"],
+      {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
+        encoding: "utf8"
+      }
+    );
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- task state: waiting-for-input");
+    expect(result.stdout).toContain("Task intents:");
+    expect(result.stdout).toContain("[steer] Focus on the auth warning path first.");
+    expect(result.stdout).toContain("task.steering.received");
+    expect(result.stdout).not.toContain("sk-test-secret");
+  });
+
+  it("cancels a task through the CLI after runtime planning", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      }
+    });
+
+    const result = spawnSync("node", [cliPath, "--cancel", "fix", "the", "provider", "tests"], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("- task state: cancelled");
+    expect(result.stdout).toContain("- terminal: cancelled");
+    expect(result.stdout).toContain("[cancel] User cancelled the active task.");
+    expect(result.stdout).toContain("task.cancelled");
     expect(result.stdout).not.toContain("sk-test-secret");
   });
 
