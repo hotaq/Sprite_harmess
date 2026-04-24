@@ -20,6 +20,14 @@ import {
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
+  containsSecretLikeValue,
+  deriveFileActivityDrafts,
+  findForbiddenFileActivityField,
+  validateFileActivityPath,
+  type FileActivityKind,
+  type FileActivityRecord
+} from "./file-activity.js";
+import {
   createFinalTaskSummary,
   type FinalTaskSummary
 } from "./final-task-summary.js";
@@ -86,6 +94,13 @@ export type RuntimeToolCallRequest = {
     toolName: Name;
   };
 }[ToolName];
+
+export interface RuntimeFileActivityRequest {
+  kind: Extract<FileActivityKind, "changed" | "proposed_change">;
+  paths: string[];
+  summary?: string;
+  toolCallId?: string;
+}
 
 export class AgentRuntime {
   private readonly sessionId = `session_${randomUUID()}`;
@@ -345,12 +360,21 @@ export class AgentRuntime {
         },
         toolCallId
       );
-      const emitted = this.emitNewEvents([completedEvent]);
+      const fileActivity = this.createToolResultFileActivity(
+        activeTask.value,
+        result.value,
+        toolCallId
+      );
+      const activityEvents = fileActivity.map((record) =>
+        this.createFileActivityEvent(activeTask.value, record)
+      );
+      const emitted = this.emitNewEvents([completedEvent, ...activityEvents]);
 
       if (!emitted.ok) {
         return err(emitted.error);
       }
 
+      this.appendActiveTaskFileActivity(fileActivity);
       this.refreshActiveTaskEvents(activeTask.value.taskId);
       return result;
     }
@@ -379,6 +403,94 @@ export class AgentRuntime {
 
     this.refreshActiveTaskEvents(activeTask.value.taskId);
     return result;
+  }
+
+  recordFileActivity(
+    request: RuntimeFileActivityRequest
+  ): Result<FileActivityRecord[]> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const unsafeField = findForbiddenFileActivityField(
+      request as unknown as Record<string, unknown>
+    );
+
+    if (unsafeField !== null) {
+      return err(
+        new SpriteError(
+          "FILE_ACTIVITY_UNSAFE_METADATA",
+          `File activity request must not include raw content field '${unsafeField}'.`
+        )
+      );
+    }
+
+    if (request.kind !== "changed" && request.kind !== "proposed_change") {
+      return err(
+        new SpriteError(
+          "FILE_ACTIVITY_INVALID_KIND",
+          "File activity request kind must be changed or proposed_change."
+        )
+      );
+    }
+
+    if (!Array.isArray(request.paths) || request.paths.length === 0) {
+      return err(
+        new SpriteError(
+          "FILE_ACTIVITY_INVALID_PATH",
+          "File activity request must include at least one path."
+        )
+      );
+    }
+
+    if (
+      request.summary !== undefined &&
+      containsSecretLikeValue(request.summary)
+    ) {
+      return err(
+        new SpriteError(
+          "FILE_ACTIVITY_UNSAFE_METADATA",
+          "File activity summary must not include secret-looking values."
+        )
+      );
+    }
+
+    const records: FileActivityRecord[] = [];
+
+    for (const requestedPath of request.paths) {
+      const safePath = validateFileActivityPath(requestedPath);
+
+      if (!safePath.ok) {
+        return err(safePath.error);
+      }
+
+      records.push(
+        this.createFileActivityRecord(
+          activeTask.value,
+          {
+            kind: request.kind,
+            path: safePath.value,
+            summary: request.summary ?? `${request.kind} activity recorded.`
+          },
+          request.toolCallId
+        )
+      );
+    }
+
+    const events = records.map((record) =>
+      this.createFileActivityEvent(activeTask.value, record)
+    );
+    const emitted = this.emitNewEvents(events);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.appendActiveTaskFileActivity(records);
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return ok(records);
   }
 
   private executeRegisteredTool(
@@ -460,6 +572,82 @@ export class AgentRuntime {
     );
   }
 
+  private createToolResultFileActivity(
+    task: PlannedExecutionFlow,
+    result: ToolExecutionResult,
+    toolCallId: string
+  ): FileActivityRecord[] {
+    return deriveFileActivityDrafts(result).map((draft) =>
+      this.createFileActivityRecord(task, draft, toolCallId)
+    );
+  }
+
+  private createFileActivityRecord(
+    task: PlannedExecutionFlow,
+    draft: {
+      kind: FileActivityKind;
+      path: string;
+      returnedItemCount?: number;
+      summary: string;
+      toolName?: ToolName;
+      totalItemCount?: number;
+    },
+    toolCallId?: string
+  ): FileActivityRecord {
+    return {
+      activityId: this.nextId("file_activity"),
+      correlationId: task.correlationId,
+      createdAt: this.now(),
+      kind: draft.kind,
+      path: draft.path,
+      ...(draft.returnedItemCount === undefined
+        ? {}
+        : { returnedItemCount: draft.returnedItemCount }),
+      sessionId: task.sessionId,
+      status: "recorded",
+      summary: draft.summary,
+      taskId: task.taskId,
+      ...(toolCallId === undefined ? {} : { toolCallId }),
+      ...(draft.toolName === undefined ? {} : { toolName: draft.toolName }),
+      ...(draft.totalItemCount === undefined
+        ? {}
+        : { totalItemCount: draft.totalItemCount })
+    };
+  }
+
+  private createFileActivityEvent(
+    task: PlannedExecutionFlow,
+    record: FileActivityRecord
+  ): RuntimeEventRecord {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "file.activity.recorded",
+      {
+        activityId: record.activityId,
+        kind: record.kind,
+        path: record.path,
+        ...(record.returnedItemCount === undefined
+          ? {}
+          : { returnedItemCount: record.returnedItemCount }),
+        status: record.status,
+        summary: record.summary,
+        ...(record.toolCallId === undefined
+          ? {}
+          : { toolCallId: record.toolCallId }),
+        ...(record.toolName === undefined ? {} : { toolName: record.toolName }),
+        ...(record.totalItemCount === undefined
+          ? {}
+          : { totalItemCount: record.totalItemCount })
+      }
+    );
+  }
+
   private safeToolTargetPayload(
     request: RuntimeToolCallRequest
   ): Record<string, string> {
@@ -509,6 +697,17 @@ export class AgentRuntime {
     this.activeTask = {
       ...this.activeTask,
       events: this.eventBus.getHistory(taskId)
+    };
+  }
+
+  private appendActiveTaskFileActivity(records: FileActivityRecord[]): void {
+    if (this.activeTask === null || records.length === 0) {
+      return;
+    }
+
+    this.activeTask = {
+      ...this.activeTask,
+      fileActivity: [...this.activeTask.fileActivity, ...records]
     };
   }
 
@@ -737,6 +936,9 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
     summary.notAttempted.length === 0
       ? ["- none"]
       : summary.notAttempted.map((note) => `- ${note}`);
+  const filesReadLines = formatPathList(summary.filesRead);
+  const filesChangedLines = formatPathList(summary.filesChanged);
+  const filesProposedLines = formatPathList(summary.filesProposedForChange);
 
   return [
     "Final summary:",
@@ -746,6 +948,12 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
     `- session id: ${summary.sessionId}`,
     `- task id: ${summary.taskId}`,
     `- correlation id: ${summary.correlationId}`,
+    "Files read:",
+    ...filesReadLines,
+    "Files changed:",
+    ...filesChangedLines,
+    "Files proposed for change:",
+    ...filesProposedLines,
     "Important events:",
     ...importantEventLines,
     "Unresolved risks:",
@@ -753,6 +961,12 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
     "Not attempted:",
     ...notAttemptedLines
   ];
+}
+
+function formatPathList(paths: string[]): string[] {
+  return paths.length === 0
+    ? ["- none"]
+    : paths.map((pathValue) => `- ${pathValue}`);
 }
 
 export function resolveOneShotPrintOutputFormat(

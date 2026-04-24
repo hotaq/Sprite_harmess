@@ -1,4 +1,11 @@
 import { SpriteError, err, type Result } from "@sprite/shared";
+import {
+  FILE_ACTIVITY_KINDS,
+  containsSecretLikeValue,
+  findForbiddenFileActivityField,
+  validateFileActivityPath,
+  type FileActivityKind
+} from "./file-activity.js";
 import type {
   RuntimeLoopPhase,
   TaskExecutionStatus,
@@ -40,6 +47,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.failed",
   "task.cancelled",
   "task.steering.received",
+  "file.activity.recorded",
   "tool.call.requested",
   "tool.call.started",
   "tool.call.completed",
@@ -81,6 +89,17 @@ export interface RuntimeEventPayloadMap {
   };
   "task.steering.received": {
     note: string;
+  };
+  "file.activity.recorded": {
+    activityId: string;
+    kind: FileActivityKind;
+    path: string;
+    returnedItemCount?: number;
+    status: "recorded";
+    summary: string;
+    toolCallId?: string;
+    toolName?: RuntimeToolName;
+    totalItemCount?: number;
   };
   "tool.call.requested": {
     cwd: string;
@@ -425,6 +444,9 @@ export function validateRuntimeEvent(
         note: note.value
       });
     }
+    case "file.activity.recorded": {
+      return validateFileActivityEvent(context, eventType.value, event.payload);
+    }
     case "tool.call.requested": {
       return validateToolLifecycleEvent(
         context,
@@ -465,6 +487,125 @@ export function validateRuntimeEvent(
       `Unknown runtime event type '${eventType.value}'.`
     )
   );
+}
+
+function validateFileActivityEvent(
+  context: RuntimeEventContext,
+  type: "file.activity.recorded",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"file.activity.recorded">, SpriteError> {
+  const forbiddenField = findForbiddenFileActivityField(payload);
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw content field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const activityId = requirePayloadString(type, payload, "activityId");
+  const kind = requirePayloadLiteral(
+    type,
+    payload,
+    "kind",
+    FILE_ACTIVITY_KINDS
+  );
+  const path = requirePayloadString(type, payload, "path");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const toolCallId = optionalPayloadString(type, payload, "toolCallId");
+  const toolName = optionalPayloadLiteral(
+    type,
+    payload,
+    "toolName",
+    TOOL_NAMES
+  );
+  const returnedItemCount = optionalNonNegativeInteger(
+    type,
+    payload,
+    "returnedItemCount"
+  );
+  const totalItemCount = optionalNonNegativeInteger(
+    type,
+    payload,
+    "totalItemCount"
+  );
+
+  if (activityId.ok === false) {
+    return err(activityId.error);
+  }
+
+  if (kind.ok === false) {
+    return err(kind.error);
+  }
+
+  if (path.ok === false) {
+    return err(path.error);
+  }
+
+  const safePath = validateFileActivityPath(path.value);
+
+  if (safePath.ok === false) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        "Runtime event 'file.activity.recorded' payload path must be a safe project-relative path."
+      )
+    );
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  if (toolName.ok === false) {
+    return err(toolName.error);
+  }
+
+  if (returnedItemCount.ok === false) {
+    return err(returnedItemCount.error);
+  }
+
+  if (totalItemCount.ok === false) {
+    return err(totalItemCount.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    activityId: activityId.value,
+    kind: kind.value,
+    path: safePath.value,
+    ...(returnedItemCount.value === undefined
+      ? {}
+      : { returnedItemCount: returnedItemCount.value }),
+    status: status.value,
+    summary: summary.value,
+    ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value }),
+    ...(toolName.value === undefined ? {} : { toolName: toolName.value }),
+    ...(totalItemCount.value === undefined
+      ? {}
+      : { totalItemCount: totalItemCount.value })
+  });
 }
 
 function validateToolLifecycleEvent<T extends RuntimeEventType>(
@@ -631,6 +772,62 @@ function optionalPayloadString(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
         `Runtime event '${type}' optional payload field '${key}' must be a non-empty string when provided.`
+      )
+    );
+  }
+
+  return { ok: true, value };
+}
+
+function optionalPayloadLiteral<T extends string>(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string,
+  allowedValues: readonly T[]
+): Result<T | undefined, SpriteError> {
+  const value = payload[key];
+
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' optional payload field '${key}' must be a non-empty string when provided.`
+      )
+    );
+  }
+
+  if (!allowedValues.includes(value as T)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' optional payload field '${key}' has unsupported value '${value}'.`
+      )
+    );
+  }
+
+  return { ok: true, value: value as T };
+}
+
+function optionalNonNegativeInteger(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<number | undefined, SpriteError> {
+  const value = payload[key];
+
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' optional payload field '${key}' must be a non-negative integer when provided.`
       )
     );
   }

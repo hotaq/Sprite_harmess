@@ -371,4 +371,47 @@ describe("AgentRuntime interactive task flow", () => {
       correlationId: result.value.correlationId
     });
   });
+
+  it("includes grouped file activity in final summaries", async () => {
+    const runtime = new AgentRuntime({
+      cwd: process.cwd(),
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("summarize file activity");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const readResult = await runtime.executeToolCall({
+      input: { path: "package.json" },
+      toolName: "read_file"
+    });
+    const proposed = runtime.recordFileActivity({
+      kind: "proposed_change",
+      paths: ["README.md"]
+    });
+    const changed = runtime.recordFileActivity({
+      kind: "changed",
+      paths: ["README.md"]
+    });
+
+    expect(readResult.ok).toBe(true);
+    expect(proposed.ok).toBe(true);
+    expect(changed.ok).toBe(true);
+
+    const activeTask = runtime.getActiveTask();
+
+    expect(activeTask.ok).toBe(true);
+    if (!activeTask.ok) {
+      return;
+    }
+
+    const summary = createFinalTaskSummary(activeTask.value);
+
+    expect(summary.filesRead).toEqual(["package.json"]);
+    expect(summary.filesProposedForChange).toEqual(["README.md"]);
+    expect(summary.filesChanged).toEqual(["README.md"]);
+  });
 });

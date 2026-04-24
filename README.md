@@ -177,10 +177,27 @@ These tools run inside the resolved project directory, reject path escapes, avoi
 
 The current CLI does not expose a direct file-inspection command yet. Tool execution is available through runtime/package APIs and remains separate from patch editing, command execution, approvals, validation command execution, sessions, memory, and skills.
 
+## File Activity Audit
+
+Story 2.2 adds runtime-owned file activity tracking for repository inspection tools. Successful file activity is emitted through canonical runtime events:
+
+- `file.activity.recorded`
+
+Runtime task state and final summaries now group file activity into:
+
+- files read or inspected
+- files proposed for change
+- files changed
+
+The current implementation records activity for `read_file`, `list_files`, and `search_files`, plus a narrow runtime API for future patch/edit stories to record proposed or changed project-relative paths. File activity records intentionally exclude raw file contents, search snippets, search query text, patch hunks, diff bodies, and secret-looking values.
+
+Durable audit persistence under `.sprite/sessions/...` is not implemented yet; current audit state is runtime-local.
+
 Not implemented yet:
 
 - Live provider completions and tool-calling execution
 - Full multi-iteration agent loop progression
+- Patch application and edit approvals
 - TUI
 - RPC server
 - Sandbox and policy engine

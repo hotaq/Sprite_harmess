@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   AgentRuntime,
   createRuntimeEventRecord,
@@ -24,6 +24,16 @@ function createTempRuntimeProject(): {
   tempRoots.push(rootDir);
 
   return { outsideSecretPath, projectDir, rootDir };
+}
+
+function writeProjectFile(
+  projectDir: string,
+  relativePath: string,
+  value: string
+): void {
+  const targetPath = join(projectDir, relativePath);
+  mkdirSync(dirname(targetPath), { recursive: true });
+  writeFileSync(targetPath, value);
 }
 
 afterEach(() => {
@@ -217,6 +227,90 @@ describe("runtime event contract", () => {
       code: "INVALID_RUNTIME_EVENT"
     });
   });
+
+  it("validates canonical file activity events", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_file_activity",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "file.activity.recorded",
+      {
+        activityId: "file_activity_test",
+        kind: "read",
+        path: "src/index.ts",
+        status: "recorded",
+        summary: "read_file recorded read activity for src/index.ts.",
+        toolCallId: "tool_call_test",
+        toolName: "read_file"
+      }
+    );
+
+    const result = validateRuntimeEvent(event);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value).toMatchObject({
+      type: "file.activity.recorded",
+      payload: {
+        activityId: "file_activity_test",
+        kind: "read",
+        path: "src/index.ts",
+        status: "recorded",
+        toolCallId: "tool_call_test"
+      }
+    });
+  });
+
+  it("rejects file activity events with raw content, query text, or unsafe paths", () => {
+    const baseEvent = {
+      schemaVersion: 1,
+      eventId: "evt_file_activity",
+      sessionId: "session_test",
+      taskId: "task_test",
+      correlationId: "corr_test",
+      type: "file.activity.recorded",
+      createdAt: "2026-04-23T12:40:00.000Z",
+      payload: {
+        activityId: "file_activity_test",
+        kind: "searched",
+        path: "src/index.ts",
+        query: "OPENAI_API_KEY=sk-test-secret",
+        status: "recorded",
+        summary: "search_files recorded activity.",
+        toolCallId: "tool_call_test",
+        toolName: "search_files"
+      }
+    };
+
+    const rawQuery = validateRuntimeEvent(baseEvent);
+    const unsafePath = validateRuntimeEvent({
+      ...baseEvent,
+      payload: {
+        ...baseEvent.payload,
+        path: "../outside.txt",
+        query: undefined
+      }
+    });
+    const secretSummary = validateRuntimeEvent({
+      ...baseEvent,
+      payload: {
+        ...baseEvent.payload,
+        query: undefined,
+        summary: "search_files recorded OPENAI_API_KEY=sk-test-secret."
+      }
+    });
+
+    expect(rawQuery.ok).toBe(false);
+    expect(unsafePath.ok).toBe(false);
+    expect(secretSummary.ok).toBe(false);
+  });
 });
 
 describe("runtime event subscription", () => {
@@ -356,7 +450,7 @@ describe("runtime event subscription", () => {
     expect(observedTypes).toEqual(["task.started", "task.waiting"]);
   });
 
-  it("emits tool lifecycle events through AgentRuntime without adapter-owned state", async () => {
+  it("emits tool lifecycle and file activity events through AgentRuntime without adapter-owned state", async () => {
     const runtime = new AgentRuntime({
       cwd: process.cwd(),
       homeDir: "/tmp/sprite-home"
@@ -383,21 +477,35 @@ describe("runtime event subscription", () => {
       return;
     }
 
-    expect(observedTypes.slice(-3)).toEqual([
+    expect(observedTypes.slice(-4)).toEqual([
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.completed",
+      "file.activity.recorded"
+    ]);
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    const toolEvents = history.filter((event) =>
+      event.type.startsWith("tool.call.")
+    );
+    const activityEvents = history.filter(
+      (event) => event.type === "file.activity.recorded"
+    );
+
+    expect(toolEvents.map((event) => event.type)).toEqual([
       "tool.call.requested",
       "tool.call.started",
       "tool.call.completed"
     ]);
-    expect(
-      runtime
-        .getEventHistory(submitted.value.taskId)
-        .filter((event) => event.type.startsWith("tool.call."))
-        .map((event) => event.type)
-    ).toEqual([
-      "tool.call.requested",
-      "tool.call.started",
-      "tool.call.completed"
-    ]);
+    expect(activityEvents).toHaveLength(1);
+    expect(activityEvents[0]?.payload).toMatchObject({
+      kind: "read",
+      path: "package.json",
+      status: "recorded",
+      toolName: "read_file"
+    });
+    expect(activityEvents[0]?.payload.toolCallId).toBe(
+      toolEvents[0]?.payload.toolCallId
+    );
   });
 
   it("emits failed tool lifecycle events without exposing raw file content", async () => {
@@ -435,5 +543,185 @@ describe("runtime event subscription", () => {
     ]);
     expect(JSON.stringify(toolEvents)).not.toContain("outside-secret");
     expect(JSON.stringify(toolEvents)).not.toContain("sk-test-secret");
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .filter((event) => event.type === "file.activity.recorded")
+    ).toEqual([]);
+  });
+
+  it("records search activity without raw snippets or query text", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(
+      projectDir,
+      "src/secret.ts",
+      "const value = 'OPENAI_API_KEY=sk-test-secret';\n"
+    );
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+
+    const submitted = runtime.submitInteractiveTask(
+      "search secret-looking text"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: { path: ".", query: "OPENAI_API_KEY" },
+      toolName: "search_files"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    const activityEvents = runtime
+      .getEventHistory(submitted.value.taskId)
+      .filter((event) => event.type === "file.activity.recorded");
+    const serializedActivity = JSON.stringify(activityEvents);
+
+    expect(activityEvents.map((event) => event.payload.path)).toEqual([
+      "src/secret.ts"
+    ]);
+    expect(serializedActivity).not.toContain("OPENAI_API_KEY");
+    expect(serializedActivity).not.toContain("sk-test-secret");
+  });
+
+  it("does not copy project-relative paths into file activity summaries", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "sk-filename-tokenish.txt", "content\n");
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("read token-like filename");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: { path: "sk-filename-tokenish.txt" },
+      toolName: "read_file"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    const activityEvents = runtime
+      .getEventHistory(submitted.value.taskId)
+      .filter((event) => event.type === "file.activity.recorded");
+
+    expect(activityEvents).toHaveLength(1);
+    expect(activityEvents[0]?.payload).toMatchObject({
+      path: "sk-filename-tokenish.txt",
+      summary: "read_file recorded read activity."
+    });
+  });
+
+  it("bounds file activity records for large list output", async () => {
+    const { projectDir } = createTempRuntimeProject();
+
+    for (let index = 0; index < 600; index += 1) {
+      writeProjectFile(
+        projectDir,
+        `many/file-${String(index).padStart(3, "0")}.txt`,
+        "content"
+      );
+    }
+
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("list many files");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: { path: ".", recursive: true },
+      toolName: "list_files"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    const activityEvents = runtime
+      .getEventHistory(submitted.value.taskId)
+      .filter((event) => event.type === "file.activity.recorded");
+
+    expect(activityEvents.length).toBeLessThanOrEqual(81);
+    expect(activityEvents[0]?.payload).toMatchObject({
+      kind: "listed",
+      path: ".",
+      returnedItemCount: 80,
+      totalItemCount: 601
+    });
+  });
+
+  it("records explicit proposed and changed file activity safely", () => {
+    const runtime = new AgentRuntime({
+      cwd: "/tmp/sprite-project",
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "track future edit activity"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const proposed = runtime.recordFileActivity({
+      kind: "proposed_change",
+      paths: ["src/index.ts"]
+    });
+    const changed = runtime.recordFileActivity({
+      kind: "changed",
+      paths: ["src/index.ts"]
+    });
+    const unsafe = runtime.recordFileActivity({
+      kind: "changed",
+      paths: ["../outside.ts"]
+    });
+    const nestedRaw = runtime.recordFileActivity({
+      kind: "changed",
+      paths: ["src/index.ts"],
+      metadata: {
+        diff: "+OPENAI_API_KEY=sk-test-secret"
+      }
+    } as never);
+
+    expect(proposed.ok).toBe(true);
+    expect(changed.ok).toBe(true);
+    expect(unsafe.ok).toBe(false);
+    expect(nestedRaw.ok).toBe(false);
+    if (!proposed.ok || !changed.ok) {
+      return;
+    }
+
+    expect(proposed.value[0]).toMatchObject({
+      kind: "proposed_change",
+      path: "src/index.ts"
+    });
+    expect(changed.value[0]).toMatchObject({
+      kind: "changed",
+      path: "src/index.ts"
+    });
   });
 });

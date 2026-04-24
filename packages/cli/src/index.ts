@@ -106,6 +106,9 @@ function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
     summary.notAttempted.length === 0
       ? ["- none"]
       : summary.notAttempted.map((note) => `- ${note}`);
+  const filesReadLines = formatPathList(summary.filesRead);
+  const filesChangedLines = formatPathList(summary.filesChanged);
+  const filesProposedLines = formatPathList(summary.filesProposedForChange);
 
   return [
     "Final summary:",
@@ -115,6 +118,12 @@ function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
     `- session id: ${summary.sessionId}`,
     `- task id: ${summary.taskId}`,
     `- correlation id: ${summary.correlationId}`,
+    "Files read:",
+    ...filesReadLines,
+    "Files changed:",
+    ...filesChangedLines,
+    "Files proposed for change:",
+    ...filesProposedLines,
     "Important events:",
     ...importantEventLines,
     "Unresolved risks:",
@@ -122,6 +131,12 @@ function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
     "Not attempted:",
     ...notAttemptedLines
   ];
+}
+
+function formatPathList(paths: string[]): string[] {
+  return paths.length === 0
+    ? ["- none"]
+    : paths.map((pathValue) => `- ${pathValue}`);
 }
 
 export function createProgram(io: CliIO, version = CLI_VERSION): Command {

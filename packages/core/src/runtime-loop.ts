@@ -103,6 +103,7 @@ export function runInitialPlanActObserveLoop(
     },
     terminalState: null,
     intents: [],
+    fileActivity: [],
     events: [
       createRuntimeEvent(
         {

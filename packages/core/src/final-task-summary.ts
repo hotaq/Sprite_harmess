@@ -1,4 +1,5 @@
 import type { ResolvedProviderState } from "@sprite/providers";
+import { groupFileActivity } from "./file-activity.js";
 import type { RuntimeEventRecord, RuntimeEventType } from "./runtime-events.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
 
@@ -21,6 +22,9 @@ export interface FinalTaskSummary {
   provider: FinalTaskSummaryProvider | null;
   model: string | null;
   importantEvents: FinalTaskSummaryEvent[];
+  filesChanged: string[];
+  filesProposedForChange: string[];
+  filesRead: string[];
   unresolvedRisks: string[];
   notAttempted: string[];
   sessionId: string;
@@ -31,12 +35,17 @@ export interface FinalTaskSummary {
 export function createFinalTaskSummary(
   state: PlannedExecutionFlow
 ): FinalTaskSummary {
+  const fileActivity = groupFileActivity(state.fileActivity);
+
   return {
     status: state.status,
     result: state.summary,
     provider: summarizeProvider(state.request.provider),
     model: state.request.provider?.model ?? null,
     importantEvents: state.events.map(summarizeEvent),
+    filesChanged: fileActivity.filesChanged,
+    filesProposedForChange: fileActivity.filesProposedForChange,
+    filesRead: fileActivity.filesRead,
     unresolvedRisks: collectUnresolvedRisks(state),
     notAttempted: collectNotAttempted(state),
     sessionId: state.sessionId,

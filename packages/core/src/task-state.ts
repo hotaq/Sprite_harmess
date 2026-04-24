@@ -4,6 +4,7 @@ import type {
   SpriteSandboxMode
 } from "@sprite/config";
 import type { ResolvedProviderState } from "@sprite/providers";
+import type { FileActivityRecord } from "./file-activity.js";
 import type { RuntimeEventRecord } from "./runtime-events.js";
 
 export type RuntimeLoopPhase = "plan" | "act" | "observe";
@@ -82,4 +83,5 @@ export interface PlannedExecutionFlow {
   terminalState: TaskTerminalState | null;
   intents: TaskIntentRecord[];
   events: RuntimeEventRecord[];
+  fileActivity: FileActivityRecord[];
 }
