@@ -162,11 +162,12 @@ The goal of this slice is to prove that interactive task submission goes through
 
 ## Repository Inspection Tools
 
-Story 2.1 adds the first safe repository inspection tools through the shared runtime/tool boundary:
+Stories 2.1 and 2.3 add the first safe repository tools through the shared runtime/tool boundary:
 
 - `read_file`
 - `list_files`
 - `search_files`
+- `apply_patch`
 
 These tools run inside the resolved project directory, reject path escapes, avoid following directory symlinks during traversal, and summarize large outputs over 32 KB or 500 lines. Tool lifecycle observations use canonical runtime events:
 
@@ -175,7 +176,24 @@ These tools run inside the resolved project directory, reject path escapes, avoi
 - `tool.call.completed`
 - `tool.call.failed`
 
-The current CLI does not expose a direct file-inspection command yet. Tool execution is available through runtime/package APIs and remains separate from patch editing, command execution, approvals, validation command execution, sessions, memory, and skills.
+The current CLI does not expose direct file-inspection or patch commands yet. Tool execution is available through runtime/package APIs and remains separate from provider-driven automatic tool use, command execution, approvals, validation command execution, sessions, memory, and skills.
+
+## Patch-Based File Edits
+
+Story 2.3 adds a targeted `apply_patch` tool for runtime/package API use. The MVP patch contract is structured as exact text replacements:
+
+- each edit targets one project-relative file path
+- `oldText` must be non-empty and match exactly once
+- `newText` must differ from `oldText`
+- all edits are validated before any file is written
+
+Patch tool audit is emitted through canonical runtime events:
+
+- `file.edit.requested`
+- `file.edit.applied`
+- `file.edit.failed`
+
+Successful patch application also records changed file activity through `file.activity.recorded`, so final summaries can list changed files. Runtime events and file activity records intentionally exclude raw file contents, old text, new text, patch hunks, diff bodies, and secret-looking values.
 
 ## File Activity Audit
 
@@ -189,7 +207,7 @@ Runtime task state and final summaries now group file activity into:
 - files proposed for change
 - files changed
 
-The current implementation records activity for `read_file`, `list_files`, and `search_files`, plus a narrow runtime API for future patch/edit stories to record proposed or changed project-relative paths. File activity records intentionally exclude raw file contents, search snippets, search query text, patch hunks, diff bodies, and secret-looking values.
+The current implementation records activity for `read_file`, `list_files`, `search_files`, and successful `apply_patch` calls, plus a narrow runtime API for proposal-only `proposed_change` records. File activity records intentionally exclude raw file contents, search snippets, search query text, patch hunks, diff bodies, and secret-looking values.
 
 Durable audit persistence under `.sprite/sessions/...` is not implemented yet; current audit state is runtime-local.
 
@@ -197,7 +215,7 @@ Not implemented yet:
 
 - Live provider completions and tool-calling execution
 - Full multi-iteration agent loop progression
-- Patch application and edit approvals
+- Patch approval flow and broad-edit risk classification
 - TUI
 - RPC server
 - Sandbox and policy engine

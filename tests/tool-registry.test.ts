@@ -317,6 +317,174 @@ describe("tool registry repository inspection", () => {
     expect(search.value.matches).toHaveLength(80);
   });
 
+  it("applies targeted text patches through the tool registry", async () => {
+    const { projectDir } = createTempProject();
+    writeText(join(projectDir, "src/a.ts"), "export const value = 1;\n");
+    writeText(join(projectDir, "src/b.ts"), "export const name = 'old';\n");
+    const registry = createToolRegistry();
+
+    const result = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [
+          {
+            path: "src/a.ts",
+            oldText: "value = 1",
+            newText: "value = 2"
+          },
+          {
+            path: "src/b.ts",
+            oldText: "'old'",
+            newText: "'new'"
+          }
+        ]
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value).toMatchObject({
+      affectedFiles: ["src/a.ts", "src/b.ts"],
+      changedFileCount: 2,
+      status: "completed",
+      summary: "apply_patch completed for 2 files.",
+      toolName: "apply_patch"
+    });
+    expect(readFileSync(join(projectDir, "src/a.ts"), "utf8")).toBe(
+      "export const value = 2;\n"
+    );
+    expect(readFileSync(join(projectDir, "src/b.ts"), "utf8")).toBe(
+      "export const name = 'new';\n"
+    );
+  });
+
+  it("rejects invalid, unsafe, or ambiguous patches without partial writes", async () => {
+    const { outsideDir, projectDir } = createTempProject();
+    mkdirSync(join(projectDir, "src", "directory"), { recursive: true });
+    writeText(join(projectDir, "src/a.ts"), "alpha\n");
+    writeText(join(projectDir, "src/repeated.ts"), "same\nsame\n");
+    writeFileSync(join(projectDir, "binary.bin"), Buffer.from([0, 1, 2, 3]));
+    writeText(join(outsideDir, "secret.txt"), "outside");
+    const registry = createToolRegistry();
+
+    const empty = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: { edits: [] }
+    });
+    const emptyOldText = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [{ path: "src/a.ts", oldText: "", newText: "beta" }]
+      }
+    });
+    const malformed = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: { edits: [null] } as never
+    });
+    const partial = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [
+          { path: "src/a.ts", oldText: "alpha", newText: "beta" },
+          { path: "missing.ts", oldText: "x", newText: "y" }
+        ]
+      }
+    });
+    const noMatch = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [{ path: "src/a.ts", oldText: "missing", newText: "beta" }]
+      }
+    });
+    const directory = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [{ path: "src/directory", oldText: "alpha", newText: "beta" }]
+      }
+    });
+    const binary = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [{ path: "binary.bin", oldText: "\u0001", newText: "beta" }]
+      }
+    });
+    const outside = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [
+          {
+            path: join(outsideDir, "secret.txt"),
+            oldText: "outside",
+            newText: "inside"
+          }
+        ]
+      }
+    });
+    const ambiguous = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [{ path: "src/repeated.ts", oldText: "same", newText: "once" }]
+      }
+    });
+    const noop = await registry.execute({
+      cwd: projectDir,
+      toolName: "apply_patch",
+      input: {
+        edits: [{ path: "src/a.ts", oldText: "alpha", newText: "alpha" }]
+      }
+    });
+
+    expect(empty.ok).toBe(false);
+    expect(emptyOldText.ok).toBe(false);
+    expect(malformed.ok).toBe(false);
+    expect(partial.ok).toBe(false);
+    expect(noMatch.ok).toBe(false);
+    expect(directory.ok).toBe(false);
+    expect(binary.ok).toBe(false);
+    expect(outside.ok).toBe(false);
+    expect(ambiguous.ok).toBe(false);
+    expect(noop.ok).toBe(false);
+    expect(readFileSync(join(projectDir, "src/a.ts"), "utf8")).toBe("alpha\n");
+    if (
+      empty.ok ||
+      emptyOldText.ok ||
+      malformed.ok ||
+      partial.ok ||
+      noMatch.ok ||
+      directory.ok ||
+      binary.ok ||
+      outside.ok ||
+      ambiguous.ok ||
+      noop.ok
+    ) {
+      return;
+    }
+
+    expect(empty.error.code).toBe("TOOL_INVALID_INPUT");
+    expect(emptyOldText.error.code).toBe("TOOL_INVALID_INPUT");
+    expect(malformed.error.code).toBe("TOOL_INVALID_INPUT");
+    expect(partial.error.code).toBe("TOOL_FILE_NOT_FOUND");
+    expect(noMatch.error.code).toBe("TOOL_PATCH_TARGET_NOT_FOUND");
+    expect(directory.error.code).toBe("TOOL_PATH_NOT_FILE");
+    expect(binary.error.code).toBe("TOOL_UNSUPPORTED_BINARY_FILE");
+    expect(outside.error.code).toBe("TOOL_PATH_OUTSIDE_PROJECT");
+    expect(ambiguous.error.code).toBe("TOOL_PATCH_AMBIGUOUS");
+    expect(noop.error.code).toBe("TOOL_PATCH_NOOP");
+  });
+
   it("does not include raw secret-looking content in tool lifecycle event summaries", async () => {
     const { projectDir } = createTempProject();
     writeText(join(projectDir, "secret.txt"), "OPENAI_API_KEY=sk-test-secret");

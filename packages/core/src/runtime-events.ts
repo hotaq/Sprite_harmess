@@ -38,7 +38,17 @@ const TASK_FAILED_REASONS = [
 const TASK_CANCELLED_REASONS = [
   "cancelled"
 ] as const satisfies readonly TaskTerminalReason[];
-const TOOL_NAMES = ["read_file", "list_files", "search_files"] as const;
+const TOOL_NAMES = [
+  "apply_patch",
+  "read_file",
+  "list_files",
+  "search_files"
+] as const;
+const FILE_EDIT_EVENT_TYPES = [
+  "file.edit.applied",
+  "file.edit.failed",
+  "file.edit.requested"
+] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -47,6 +57,9 @@ const RUNTIME_EVENT_TYPES = [
   "task.failed",
   "task.cancelled",
   "task.steering.received",
+  "file.edit.applied",
+  "file.edit.failed",
+  "file.edit.requested",
   "file.activity.recorded",
   "tool.call.requested",
   "tool.call.started",
@@ -89,6 +102,32 @@ export interface RuntimeEventPayloadMap {
   };
   "task.steering.received": {
     note: string;
+  };
+  "file.edit.applied": {
+    affectedFiles: string[];
+    editId: string;
+    status: "applied";
+    summary: string;
+    toolCallId: string;
+    toolName: "apply_patch";
+  };
+  "file.edit.failed": {
+    affectedFiles: string[];
+    editId: string;
+    errorCode: string;
+    message: string;
+    status: "failed";
+    summary: string;
+    toolCallId: string;
+    toolName: "apply_patch";
+  };
+  "file.edit.requested": {
+    affectedFiles: string[];
+    editId: string;
+    status: "requested";
+    summary: string;
+    toolCallId: string;
+    toolName: "apply_patch";
   };
   "file.activity.recorded": {
     activityId: string;
@@ -444,6 +483,11 @@ export function validateRuntimeEvent(
         note: note.value
       });
     }
+    case "file.edit.applied":
+    case "file.edit.failed":
+    case "file.edit.requested": {
+      return validateFileEditEvent(context, eventType.value, event.payload);
+    }
     case "file.activity.recorded": {
       return validateFileActivityEvent(context, eventType.value, event.payload);
     }
@@ -605,6 +649,114 @@ function validateFileActivityEvent(
     ...(totalItemCount.value === undefined
       ? {}
       : { totalItemCount: totalItemCount.value })
+  });
+}
+
+function validateFileEditEvent(
+  context: RuntimeEventContext,
+  type: "file.edit.applied" | "file.edit.failed" | "file.edit.requested",
+  payload: Record<string, unknown>
+): Result<
+  RuntimeEventRecord<
+    "file.edit.applied" | "file.edit.failed" | "file.edit.requested"
+  >,
+  SpriteError
+> {
+  const forbiddenField = findForbiddenFileActivityField(payload);
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw content field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const editId = requirePayloadString(type, payload, "editId");
+  const affectedFiles = requirePayloadPathArray(type, payload, "affectedFiles");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    expectedFileEditStatus(type)
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const toolCallId = requirePayloadString(type, payload, "toolCallId");
+  const toolName = requirePayloadLiteral(type, payload, "toolName", [
+    "apply_patch"
+  ] as const);
+
+  if (editId.ok === false) {
+    return err(editId.error);
+  }
+
+  if (affectedFiles.ok === false) {
+    return err(affectedFiles.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  if (toolName.ok === false) {
+    return err(toolName.error);
+  }
+
+  if (type === "file.edit.failed") {
+    const errorCode = requirePayloadString(type, payload, "errorCode");
+    const message = requirePayloadString(type, payload, "message");
+
+    if (errorCode.ok === false) {
+      return err(errorCode.error);
+    }
+
+    if (message.ok === false) {
+      return err(message.error);
+    }
+
+    if (containsSecretLikeValue(message.value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload message must not include secret-looking values.`
+        )
+      );
+    }
+
+    return okRuntimeEvent(context, type, {
+      affectedFiles: affectedFiles.value,
+      editId: editId.value,
+      errorCode: errorCode.value,
+      message: message.value,
+      status: "failed",
+      summary: summary.value,
+      toolCallId: toolCallId.value,
+      toolName: toolName.value
+    });
+  }
+
+  return okRuntimeEvent(context, type, {
+    affectedFiles: affectedFiles.value,
+    editId: editId.value,
+    status: type === "file.edit.applied" ? "applied" : "requested",
+    summary: summary.value,
+    toolCallId: toolCallId.value,
+    toolName: toolName.value
   });
 }
 
@@ -835,6 +987,51 @@ function optionalNonNegativeInteger(
   return { ok: true, value };
 }
 
+function requirePayloadPathArray(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<string[], SpriteError> {
+  const value = payload[key];
+
+  if (!Array.isArray(value) || value.length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field '${key}' must be a non-empty array.`
+      )
+    );
+  }
+
+  const safePaths: string[] = [];
+
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${key}' must contain non-empty strings.`
+        )
+      );
+    }
+
+    const safePath = validateFileActivityPath(item);
+
+    if (safePath.ok === false) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${key}' must contain safe project-relative paths.`
+        )
+      );
+    }
+
+    safePaths.push(safePath.value);
+  }
+
+  return { ok: true, value: safePaths };
+}
+
 function optionalOutputReference(
   type: RuntimeEventType,
   payload: Record<string, unknown>
@@ -912,12 +1109,30 @@ function isRuntimeEventType(value: string): value is RuntimeEventType {
   return RUNTIME_EVENT_TYPES.includes(value as RuntimeEventType);
 }
 
+function expectedFileEditStatus(
+  type: (typeof FILE_EDIT_EVENT_TYPES)[number]
+): "applied" | "failed" | "requested" {
+  switch (type) {
+    case "file.edit.applied":
+      return "applied";
+    case "file.edit.failed":
+      return "failed";
+    case "file.edit.requested":
+      return "requested";
+  }
+}
+
 function findForbiddenToolPayloadField(
   payload: Record<string, unknown>
 ): string | null {
   const forbiddenFields = new Set([
     "content",
+    "diff",
+    "hunk",
     "matches",
+    "newText",
+    "oldText",
+    "patch",
     "rawContent",
     "rawSnippet",
     "snippet",

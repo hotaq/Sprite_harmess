@@ -1,5 +1,10 @@
 import { SpriteError, err, type Result } from "@sprite/shared";
 import {
+  applyProjectPatch,
+  type ApplyPatchInput,
+  type ApplyPatchResult
+} from "./apply-patch.js";
+import {
   listProjectFiles,
   type ListFilesInput,
   type ListFilesResult
@@ -19,31 +24,42 @@ import {
   type SearchFilesResult
 } from "./search.js";
 
-export type ToolName = "list_files" | "read_file" | "search_files";
+export type ToolName =
+  | "apply_patch"
+  | "list_files"
+  | "read_file"
+  | "search_files";
 
 export type ToolExecutionStatus = "completed";
 
 export type ToolExecutionResult =
+  | ApplyPatchResult
   | ListFilesResult
   | ReadFileResult
   | SearchFilesResult;
 
 export type ToolInputMap = {
+  apply_patch: ApplyPatchInput;
   list_files: ListFilesInput;
   read_file: ReadFileInput;
   search_files: SearchFilesInput;
 };
 
 export type ToolExecutionRequest<TName extends ToolName = ToolName> =
-  TName extends "read_file"
-    ? { cwd: string; input: ReadFileInput; toolName: "read_file" }
-    : TName extends "list_files"
-      ? { cwd: string; input: ListFilesInput; toolName: "list_files" }
-      : TName extends "search_files"
-        ? { cwd: string; input: SearchFilesInput; toolName: "search_files" }
-        : never;
+  TName extends "apply_patch"
+    ? { cwd: string; input: ApplyPatchInput; toolName: "apply_patch" }
+    : TName extends "read_file"
+      ? { cwd: string; input: ReadFileInput; toolName: "read_file" }
+      : TName extends "list_files"
+        ? { cwd: string; input: ListFilesInput; toolName: "list_files" }
+        : TName extends "search_files"
+          ? { cwd: string; input: SearchFilesInput; toolName: "search_files" }
+          : never;
 
 export class ToolRegistry {
+  execute(
+    request: ToolExecutionRequest<"apply_patch">
+  ): Promise<Result<ApplyPatchResult, SpriteError>>;
   execute(
     request: ToolExecutionRequest<"read_file">
   ): Promise<Result<ReadFileResult, SpriteError>>;
@@ -60,6 +76,8 @@ export class ToolRegistry {
     request: ToolExecutionRequest
   ): Promise<Result<ToolExecutionResult, SpriteError>> {
     switch (request.toolName) {
+      case "apply_patch":
+        return applyProjectPatch(request.cwd, request.input as ApplyPatchInput);
       case "read_file":
         return readProjectFile(request.cwd, request.input as ReadFileInput);
       case "list_files":
@@ -82,6 +100,8 @@ export function createToolRegistry(): ToolRegistry {
 }
 
 export type {
+  ApplyPatchInput,
+  ApplyPatchResult,
   ListFilesInput,
   ListFilesResult,
   ReadFileInput,

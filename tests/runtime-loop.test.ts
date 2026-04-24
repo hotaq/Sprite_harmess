@@ -414,4 +414,41 @@ describe("AgentRuntime interactive task flow", () => {
     expect(summary.filesProposedForChange).toEqual(["README.md"]);
     expect(summary.filesChanged).toEqual(["README.md"]);
   });
+
+  it("includes apply_patch changed files in final summaries", async () => {
+    const runtime = new AgentRuntime({
+      cwd: process.cwd(),
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("summarize patch activity");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const proposed = runtime.recordFileActivity({
+      kind: "proposed_change",
+      paths: ["README.md"]
+    });
+    const changed = runtime.recordFileActivity({
+      kind: "changed",
+      paths: ["README.md"]
+    });
+
+    expect(proposed.ok).toBe(true);
+    expect(changed.ok).toBe(true);
+
+    const activeTask = runtime.getActiveTask();
+
+    expect(activeTask.ok).toBe(true);
+    if (!activeTask.ok) {
+      return;
+    }
+
+    const summary = createFinalTaskSummary(activeTask.value);
+
+    expect(summary.filesProposedForChange).toEqual(["README.md"]);
+    expect(summary.filesChanged).toEqual(["README.md"]);
+  });
 });

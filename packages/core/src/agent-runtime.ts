@@ -102,6 +102,11 @@ export interface RuntimeFileActivityRequest {
   toolCallId?: string;
 }
 
+interface RuntimeFileEditMetadata {
+  affectedFiles: string[];
+  editId: string;
+}
+
 export class AgentRuntime {
   private readonly sessionId = `session_${randomUUID()}`;
   private readonly eventBus = new RuntimeEventBus();
@@ -343,6 +348,22 @@ export class AgentRuntime {
       return err(requestedEmitted.error);
     }
 
+    const fileEditMetadata = this.createFileEditMetadata(request);
+
+    if (fileEditMetadata !== null) {
+      const editRequested = this.createFileEditEvent(
+        activeTask.value,
+        fileEditMetadata,
+        "requested",
+        toolCallId
+      );
+      const editRequestedEmitted = this.emitNewEvents([editRequested]);
+
+      if (!editRequestedEmitted.ok) {
+        return err(editRequestedEmitted.error);
+      }
+    }
+
     const result = await this.executeRegisteredTool(
       activeTask.value.request.cwd,
       request
@@ -368,7 +389,23 @@ export class AgentRuntime {
       const activityEvents = fileActivity.map((record) =>
         this.createFileActivityEvent(activeTask.value, record)
       );
-      const emitted = this.emitNewEvents([completedEvent, ...activityEvents]);
+      const fileEditAppliedEvent =
+        result.value.toolName === "apply_patch"
+          ? this.createFileEditEvent(
+              activeTask.value,
+              {
+                affectedFiles: result.value.affectedFiles,
+                editId: fileEditMetadata?.editId ?? this.nextId("file_edit")
+              },
+              "applied",
+              toolCallId
+            )
+          : undefined;
+      const emitted = this.emitNewEvents([
+        completedEvent,
+        ...(fileEditAppliedEvent === undefined ? [] : [fileEditAppliedEvent]),
+        ...activityEvents
+      ]);
 
       if (!emitted.ok) {
         return err(emitted.error);
@@ -395,7 +432,20 @@ export class AgentRuntime {
       },
       toolCallId
     );
-    const emitted = this.emitNewEvents([failedEvent]);
+    const fileEditFailedEvent =
+      fileEditMetadata === null
+        ? undefined
+        : this.createFileEditEvent(
+            activeTask.value,
+            fileEditMetadata,
+            "failed",
+            toolCallId,
+            toolError
+          );
+    const emitted = this.emitNewEvents([
+      failedEvent,
+      ...(fileEditFailedEvent === undefined ? [] : [fileEditFailedEvent])
+    ]);
 
     if (!emitted.ok) {
       return err(emitted.error);
@@ -498,6 +548,12 @@ export class AgentRuntime {
     request: RuntimeToolCallRequest
   ): Promise<Result<ToolExecutionResult>> {
     switch (request.toolName) {
+      case "apply_patch":
+        return this.toolRegistry.execute({
+          cwd,
+          input: request.input,
+          toolName: request.toolName
+        });
       case "read_file":
         return this.toolRegistry.execute({
           cwd,
@@ -569,6 +625,84 @@ export class AgentRuntime {
         toolCallId,
         toolName: request.toolName
       } as RuntimeEventPayload<typeof type>
+    );
+  }
+
+  private createFileEditMetadata(
+    request: RuntimeToolCallRequest
+  ): RuntimeFileEditMetadata | null {
+    if (request.toolName !== "apply_patch") {
+      return null;
+    }
+
+    const edits = (request.input as { edits?: unknown }).edits;
+
+    if (!Array.isArray(edits)) {
+      return null;
+    }
+
+    const affectedFiles: string[] = [];
+
+    for (const edit of edits) {
+      if (!hasStringPath(edit)) {
+        return null;
+      }
+
+      const safePath = validateFileActivityPath(edit.path);
+
+      if (!safePath.ok) {
+        return null;
+      }
+
+      affectedFiles.push(safePath.value);
+    }
+
+    if (affectedFiles.length === 0) {
+      return null;
+    }
+
+    return {
+      affectedFiles: uniqueSortedValues(affectedFiles),
+      editId: this.nextId("file_edit")
+    };
+  }
+
+  private createFileEditEvent(
+    task: PlannedExecutionFlow,
+    metadata: RuntimeFileEditMetadata,
+    status: "applied" | "failed" | "requested",
+    toolCallId: string,
+    error?: SpriteError
+  ): RuntimeEventRecord {
+    const type = `file.edit.${status}` as
+      | "file.edit.applied"
+      | "file.edit.failed"
+      | "file.edit.requested";
+    const basePayload = {
+      affectedFiles: metadata.affectedFiles,
+      editId: metadata.editId,
+      status,
+      summary: `apply_patch edit ${status}.`,
+      toolCallId,
+      toolName: "apply_patch" as const
+    };
+
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      type,
+      (status === "failed"
+        ? {
+            ...basePayload,
+            errorCode: error?.code ?? "TOOL_FAILED",
+            message: `apply_patch failed with ${error?.code ?? "TOOL_FAILED"}.`
+          }
+        : basePayload) as RuntimeEventPayload<typeof type>
     );
   }
 
@@ -744,6 +878,21 @@ function isSafeProjectRelativePath(value: string): boolean {
     value.trim().length > 0 &&
     !path.isAbsolute(value) &&
     !value.split(/[\\/]/).includes("..")
+  );
+}
+
+function uniqueSortedValues(values: readonly string[]): string[] {
+  return Array.from(new Set(values)).sort((left, right) =>
+    left.localeCompare(right, "en")
+  );
+}
+
+function hasStringPath(value: unknown): value is { path: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "path" in value &&
+    typeof value.path === "string"
   );
 }
 

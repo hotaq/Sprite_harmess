@@ -311,6 +311,54 @@ describe("runtime event contract", () => {
     expect(unsafePath.ok).toBe(false);
     expect(secretSummary.ok).toBe(false);
   });
+
+  it("validates file edit lifecycle events without raw patch metadata", () => {
+    const valid = createRuntimeEventRecord(
+      {
+        eventId: "evt_file_edit",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "file.edit.applied",
+      {
+        affectedFiles: ["src/index.ts"],
+        editId: "file_edit_test",
+        status: "applied",
+        summary: "apply_patch edit applied.",
+        toolCallId: "tool_call_test",
+        toolName: "apply_patch"
+      }
+    );
+    const rawPatch = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        patch: "@@ raw patch",
+        summary: "apply_patch edit applied."
+      }
+    };
+    const unsafePath = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        affectedFiles: ["../outside.ts"]
+      }
+    };
+    const secretSummary = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        summary: "apply_patch edit applied with OPENAI_API_KEY=sk-test-secret."
+      }
+    };
+
+    expect(validateRuntimeEvent(valid).ok).toBe(true);
+    expect(validateRuntimeEvent(rawPatch).ok).toBe(false);
+    expect(validateRuntimeEvent(unsafePath).ok).toBe(false);
+    expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
+  });
 });
 
 describe("runtime event subscription", () => {
@@ -723,5 +771,148 @@ describe("runtime event subscription", () => {
       kind: "changed",
       path: "src/index.ts"
     });
+  });
+
+  it("emits file edit events and changed activity for successful patches", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "src/edit.ts", "export const value = 1;\n");
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("apply targeted patch");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "src/edit.ts",
+            oldText: "value = 1",
+            newText: "value = 2"
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "tool.call.requested",
+      "tool.call.started",
+      "file.edit.requested",
+      "tool.call.completed",
+      "file.edit.applied",
+      "file.activity.recorded"
+    ]);
+
+    const editEvents = history.filter((event) =>
+      event.type.startsWith("file.edit.")
+    );
+    const activityEvents = history.filter(
+      (event) => event.type === "file.activity.recorded"
+    );
+
+    expect(editEvents.map((event) => event.payload.status)).toEqual([
+      "requested",
+      "applied"
+    ]);
+    expect(activityEvents[0]?.payload).toMatchObject({
+      kind: "changed",
+      path: "src/edit.ts",
+      toolName: "apply_patch"
+    });
+  });
+
+  it("emits patch failure events without changed file activity", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "src/edit.ts", "export const value = 1;\n");
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("apply failing patch");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "src/edit.ts",
+            oldText: "missing",
+            newText: "value = 2"
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+
+    expect(result.ok).toBe(false);
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "tool.call.requested",
+      "tool.call.started",
+      "file.edit.requested",
+      "tool.call.failed",
+      "file.edit.failed"
+    ]);
+    expect(
+      history.filter((event) => event.type === "file.activity.recorded")
+    ).toEqual([]);
+  });
+
+  it("returns structured tool failure for malformed patch input", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("apply malformed patch");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const execute = () =>
+      runtime.executeToolCall({
+        input: { edits: [null] } as never,
+        toolName: "apply_patch"
+      });
+
+    await expect(execute()).resolves.toMatchObject({
+      error: { code: "TOOL_INVALID_INPUT" },
+      ok: false
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.failed"
+    ]);
+    expect(
+      history.filter((event) => event.type.startsWith("file.edit."))
+    ).toEqual([]);
   });
 });

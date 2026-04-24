@@ -1,3 +1,4 @@
+export * from "./apply-patch.js";
 export * from "./list-files.js";
 export * from "./output-summarizer.js";
 export * from "./read-file.js";

@@ -15,6 +15,7 @@ export const FILE_ACTIVITY_KINDS = [
 ] as const;
 
 const FILE_ACTIVITY_TOOL_NAMES = [
+  "apply_patch",
   "list_files",
   "read_file",
   "search_files"
@@ -23,6 +24,8 @@ const FORBIDDEN_FILE_ACTIVITY_FIELDS = new Set([
   "content",
   "diff",
   "hunk",
+  "newText",
+  "oldText",
   "patch",
   "query",
   "rawContent",
@@ -70,6 +73,13 @@ export function deriveFileActivityDrafts(
   result: ToolExecutionResult
 ): FileActivityDraft[] {
   switch (result.toolName) {
+    case "apply_patch":
+      return uniqueSortedPaths(result.affectedFiles).map((affectedPath) => ({
+        kind: "changed",
+        path: affectedPath,
+        summary: "apply_patch recorded changed activity.",
+        toolName: result.toolName
+      }));
     case "read_file":
       return [
         {
