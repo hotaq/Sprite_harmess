@@ -1,6 +1,6 @@
 # Story 1.6: Emit Runtime Lifecycle Events for First Task Execution
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -161,6 +161,8 @@ gpt-5
 - Added regression tests proving subscriber mutation cannot corrupt canonical runtime event history and subscriber failures cannot stop first-task execution.
 - Resolved review finding: runtime event validation now rejects missing or non-string base fields with `INVALID_RUNTIME_EVENT` instead of throwing.
 - Added a regression test proving malformed base fields return schema errors through the Result contract.
+- Hardened the runtime event contract with event-specific payload typing so `type` and `payload` stay coupled at compile time.
+- Added runtime validation coverage for event-specific payload values such as preventing `cancelled` from validating as a `task.failed` reason.
 
 ### File List
 
@@ -180,3 +182,4 @@ gpt-5
 - 2026-04-23: Implemented canonical runtime lifecycle events, event subscription in core, contract/sequence tests, and CLI event-backed rendering; moved story to review.
 - 2026-04-24: Addressed review findings by isolating subscriber event objects, protecting event history from adapter mutation, and preventing subscriber failures from aborting runtime transitions.
 - 2026-04-24: Addressed review finding for malformed runtime event base fields and verified targeted/full test suites.
+- 2026-04-24: Hardened runtime event type safety with a typed payload map, generic event factory, and payload-specific validation.

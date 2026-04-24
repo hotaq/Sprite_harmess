@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-04-24T10:38:19+0700
+last_updated: 2026-04-24T13:13:17+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -48,7 +48,7 @@ development_status:
   1-3-configure-openai-compatible-provider-for-mvp-task-execution: done
   1-4-submit-an-interactive-task-to-the-runtime: done
   1-5-stop-cancel-and-steer-a-running-task: done
-  1-6-emit-runtime-lifecycle-events-for-first-task-execution: review
+  1-6-emit-runtime-lifecycle-events-for-first-task-execution: done
   1-7-run-one-shot-print-tasks-with-text-json-and-ndjson-output: backlog
   1-8-produce-final-summary-for-first-runnable-task: backlog
   epic-1-retrospective: optional

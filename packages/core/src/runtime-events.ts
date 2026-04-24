@@ -1,6 +1,36 @@
 import { SpriteError, err, type Result } from "@sprite/shared";
+import type {
+  RuntimeLoopPhase,
+  TaskExecutionStatus,
+  TaskTerminalReason,
+  TaskWaitingReason
+} from "./task-state.js";
 
 export const RUNTIME_EVENT_SCHEMA_VERSION = 1 as const;
+
+const RUNTIME_LOOP_PHASES = [
+  "plan",
+  "act",
+  "observe"
+] as const satisfies readonly RuntimeLoopPhase[];
+const TASK_STARTED_STATUSES = [
+  "planned"
+] as const satisfies readonly TaskExecutionStatus[];
+const TASK_WAITING_REASONS = [
+  "steering-required",
+  "approval-required",
+  "user-input-required"
+] as const satisfies readonly TaskWaitingReason[];
+const TASK_COMPLETED_REASONS = [
+  "completed"
+] as const satisfies readonly TaskTerminalReason[];
+const TASK_FAILED_REASONS = [
+  "max-iterations",
+  "unrecoverable-error"
+] as const satisfies readonly TaskTerminalReason[];
+const TASK_CANCELLED_REASONS = [
+  "cancelled"
+] as const satisfies readonly TaskTerminalReason[];
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -13,6 +43,38 @@ const RUNTIME_EVENT_TYPES = [
 
 export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];
 
+export interface RuntimeEventPayloadMap {
+  "task.started": {
+    phase: (typeof RUNTIME_LOOP_PHASES)[number];
+    status: (typeof TASK_STARTED_STATUSES)[number];
+    providerName: string;
+    model: string;
+  };
+  "task.waiting": {
+    reason: (typeof TASK_WAITING_REASONS)[number];
+    message: string;
+  };
+  "task.completed": {
+    reason: (typeof TASK_COMPLETED_REASONS)[number];
+    message: string;
+  };
+  "task.failed": {
+    reason: (typeof TASK_FAILED_REASONS)[number];
+    message: string;
+  };
+  "task.cancelled": {
+    reason: (typeof TASK_CANCELLED_REASONS)[number];
+    message: string;
+    note: string;
+  };
+  "task.steering.received": {
+    note: string;
+  };
+}
+
+export type RuntimeEventPayload<T extends RuntimeEventType> =
+  RuntimeEventPayloadMap[T];
+
 export interface RuntimeEventContext {
   eventId: string;
   sessionId: string;
@@ -21,24 +83,29 @@ export interface RuntimeEventContext {
   createdAt: string;
 }
 
-export interface RuntimeEventRecord {
+interface RuntimeEventBase<T extends RuntimeEventType> {
   schemaVersion: typeof RUNTIME_EVENT_SCHEMA_VERSION;
   eventId: string;
   sessionId: string;
   taskId: string;
   correlationId: string;
-  type: RuntimeEventType;
+  type: T;
   createdAt: string;
-  payload: Record<string, unknown>;
+  payload: RuntimeEventPayload<T>;
 }
+
+export type RuntimeEventRecord<T extends RuntimeEventType = RuntimeEventType> =
+  {
+    [EventType in T]: RuntimeEventBase<EventType>;
+  }[T];
 
 export type RuntimeEventListener = (event: RuntimeEventRecord) => void;
 
-export function createRuntimeEventRecord(
+export function createRuntimeEventRecord<T extends RuntimeEventType>(
   context: RuntimeEventContext,
-  type: RuntimeEventType,
-  payload: Record<string, unknown>
-): RuntimeEventRecord {
+  type: T,
+  payload: RuntimeEventPayload<T>
+): RuntimeEventRecord<T> {
   return {
     schemaVersion: RUNTIME_EVENT_SCHEMA_VERSION,
     eventId: context.eventId,
@@ -52,8 +119,17 @@ export function createRuntimeEventRecord(
 }
 
 export function validateRuntimeEvent(
-  event: RuntimeEventRecord
+  event: unknown
 ): Result<RuntimeEventRecord, SpriteError> {
+  if (!isPlainObject(event)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        "Runtime event must be a plain object."
+      )
+    );
+  }
+
   if (event.schemaVersion !== RUNTIME_EVENT_SCHEMA_VERSION) {
     return err(
       new SpriteError(
@@ -63,49 +139,56 @@ export function validateRuntimeEvent(
     );
   }
 
-  const stringFields: Array<[string, unknown]> = [
-    ["eventId", event.eventId],
-    ["sessionId", event.sessionId],
-    ["taskId", event.taskId],
-    ["correlationId", event.correlationId],
-    ["createdAt", event.createdAt],
-    ["type", event.type]
-  ];
+  const eventId = requireStringField(event, "eventId");
+  const sessionId = requireStringField(event, "sessionId");
+  const taskId = requireStringField(event, "taskId");
+  const correlationId = requireStringField(event, "correlationId");
+  const createdAt = requireStringField(event, "createdAt");
+  const eventType = requireStringField(event, "type");
 
-  for (const [field, value] of stringFields) {
-    if (typeof value !== "string" || value.trim().length === 0) {
-      return err(
-        new SpriteError(
-          "INVALID_RUNTIME_EVENT",
-          `Runtime event field '${field}' must be a non-empty string.`
-        )
-      );
-    }
+  if (eventId.ok === false) {
+    return err(eventId.error);
   }
 
-  if (!RUNTIME_EVENT_TYPES.includes(event.type)) {
+  if (sessionId.ok === false) {
+    return err(sessionId.error);
+  }
+
+  if (taskId.ok === false) {
+    return err(taskId.error);
+  }
+
+  if (correlationId.ok === false) {
+    return err(correlationId.error);
+  }
+
+  if (createdAt.ok === false) {
+    return err(createdAt.error);
+  }
+
+  if (eventType.ok === false) {
+    return err(eventType.error);
+  }
+
+  if (!isRuntimeEventType(eventType.value)) {
     return err(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
-        `Unknown runtime event type '${event.type}'.`
+        `Unknown runtime event type '${eventType.value}'.`
       )
     );
   }
 
-  if (!isIsoUtcTimestamp(event.createdAt)) {
+  if (!isIsoUtcTimestamp(createdAt.value)) {
     return err(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
-        `Runtime event createdAt '${event.createdAt}' must be a valid ISO 8601 UTC timestamp.`
+        `Runtime event createdAt '${createdAt.value}' must be a valid ISO 8601 UTC timestamp.`
       )
     );
   }
 
-  if (
-    typeof event.payload !== "object" ||
-    event.payload === null ||
-    Array.isArray(event.payload)
-  ) {
+  if (!isPlainObject(event.payload)) {
     return err(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
@@ -114,39 +197,264 @@ export function validateRuntimeEvent(
     );
   }
 
-  switch (event.type) {
-    case "task.started":
-      return requirePayloadKeys(event, ["phase", "status"]);
-    case "task.waiting":
-      return requirePayloadKeys(event, ["reason", "message"]);
-    case "task.completed":
-    case "task.failed":
-      return requirePayloadKeys(event, ["reason", "message"]);
-    case "task.cancelled":
-      return requirePayloadKeys(event, ["reason", "message", "note"]);
-    case "task.steering.received":
-      return requirePayloadKeys(event, ["note"]);
-  }
-}
+  const context: RuntimeEventContext = {
+    eventId: eventId.value,
+    sessionId: sessionId.value,
+    taskId: taskId.value,
+    correlationId: correlationId.value,
+    createdAt: createdAt.value
+  };
 
-function requirePayloadKeys(
-  event: RuntimeEventRecord,
-  keys: string[]
-): Result<RuntimeEventRecord, SpriteError> {
-  for (const key of keys) {
-    const value = event.payload[key];
-
-    if (typeof value !== "string" || value.trim().length === 0) {
-      return err(
-        new SpriteError(
-          "INVALID_RUNTIME_EVENT",
-          `Runtime event '${event.type}' is missing required payload field '${key}'.`
-        )
+  switch (eventType.value) {
+    case "task.started": {
+      const phase = requirePayloadLiteral(
+        eventType.value,
+        event.payload,
+        "phase",
+        RUNTIME_LOOP_PHASES
       );
+      const status = requirePayloadLiteral(
+        eventType.value,
+        event.payload,
+        "status",
+        TASK_STARTED_STATUSES
+      );
+      const providerName = requirePayloadString(
+        eventType.value,
+        event.payload,
+        "providerName"
+      );
+      const model = requirePayloadString(
+        eventType.value,
+        event.payload,
+        "model"
+      );
+
+      if (phase.ok === false) {
+        return err(phase.error);
+      }
+
+      if (status.ok === false) {
+        return err(status.error);
+      }
+
+      if (providerName.ok === false) {
+        return err(providerName.error);
+      }
+
+      if (model.ok === false) {
+        return err(model.error);
+      }
+
+      return okRuntimeEvent(context, eventType.value, {
+        phase: phase.value,
+        status: status.value,
+        providerName: providerName.value,
+        model: model.value
+      });
+    }
+    case "task.waiting": {
+      const reason = requirePayloadLiteral(
+        eventType.value,
+        event.payload,
+        "reason",
+        TASK_WAITING_REASONS
+      );
+      const message = requirePayloadString(
+        eventType.value,
+        event.payload,
+        "message"
+      );
+
+      if (reason.ok === false) {
+        return err(reason.error);
+      }
+
+      if (message.ok === false) {
+        return err(message.error);
+      }
+
+      return okRuntimeEvent(context, eventType.value, {
+        reason: reason.value,
+        message: message.value
+      });
+    }
+    case "task.completed": {
+      const reason = requirePayloadLiteral(
+        eventType.value,
+        event.payload,
+        "reason",
+        TASK_COMPLETED_REASONS
+      );
+      const message = requirePayloadString(
+        eventType.value,
+        event.payload,
+        "message"
+      );
+
+      if (reason.ok === false) {
+        return err(reason.error);
+      }
+
+      if (message.ok === false) {
+        return err(message.error);
+      }
+
+      return okRuntimeEvent(context, eventType.value, {
+        reason: reason.value,
+        message: message.value
+      });
+    }
+    case "task.failed": {
+      const reason = requirePayloadLiteral(
+        eventType.value,
+        event.payload,
+        "reason",
+        TASK_FAILED_REASONS
+      );
+      const message = requirePayloadString(
+        eventType.value,
+        event.payload,
+        "message"
+      );
+
+      if (reason.ok === false) {
+        return err(reason.error);
+      }
+
+      if (message.ok === false) {
+        return err(message.error);
+      }
+
+      return okRuntimeEvent(context, eventType.value, {
+        reason: reason.value,
+        message: message.value
+      });
+    }
+    case "task.cancelled": {
+      const reason = requirePayloadLiteral(
+        eventType.value,
+        event.payload,
+        "reason",
+        TASK_CANCELLED_REASONS
+      );
+      const message = requirePayloadString(
+        eventType.value,
+        event.payload,
+        "message"
+      );
+      const note = requirePayloadString(eventType.value, event.payload, "note");
+
+      if (reason.ok === false) {
+        return err(reason.error);
+      }
+
+      if (message.ok === false) {
+        return err(message.error);
+      }
+
+      if (note.ok === false) {
+        return err(note.error);
+      }
+
+      return okRuntimeEvent(context, eventType.value, {
+        reason: reason.value,
+        message: message.value,
+        note: note.value
+      });
+    }
+    case "task.steering.received": {
+      const note = requirePayloadString(eventType.value, event.payload, "note");
+
+      if (note.ok === false) {
+        return err(note.error);
+      }
+
+      return okRuntimeEvent(context, eventType.value, {
+        note: note.value
+      });
     }
   }
 
-  return { ok: true, value: event };
+  return err(
+    new SpriteError(
+      "INVALID_RUNTIME_EVENT",
+      `Unknown runtime event type '${eventType.value}'.`
+    )
+  );
+}
+
+function okRuntimeEvent<T extends RuntimeEventType>(
+  context: RuntimeEventContext,
+  type: T,
+  payload: RuntimeEventPayload<T>
+): Result<RuntimeEventRecord<T>, SpriteError> {
+  return { ok: true, value: createRuntimeEventRecord(context, type, payload) };
+}
+
+function requireStringField(
+  event: Record<string, unknown>,
+  field: string
+): Result<string, SpriteError> {
+  const value = event[field];
+
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event field '${field}' must be a non-empty string.`
+      )
+    );
+  }
+
+  return { ok: true, value };
+}
+
+function requirePayloadString(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<string, SpriteError> {
+  const value = payload[key];
+
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' is missing required payload field '${key}'.`
+      )
+    );
+  }
+
+  return { ok: true, value };
+}
+
+function requirePayloadLiteral<T extends string>(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string,
+  allowedValues: readonly T[]
+): Result<T, SpriteError> {
+  const value = requirePayloadString(type, payload, key);
+
+  if (value.ok === false) {
+    return err(value.error);
+  }
+
+  if (!allowedValues.includes(value.value as T)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field '${key}' has unsupported value '${value.value}'.`
+      )
+    );
+  }
+
+  return { ok: true, value: value.value as T };
+}
+
+function isRuntimeEventType(value: string): value is RuntimeEventType {
+  return RUNTIME_EVENT_TYPES.includes(value as RuntimeEventType);
 }
 
 function isIsoUtcTimestamp(value: string): boolean {
@@ -201,12 +509,10 @@ export class RuntimeEventBus {
   }
 }
 
-function cloneRuntimeEventRecord(
-  event: RuntimeEventRecord
-): RuntimeEventRecord {
+function cloneRuntimeEventRecord<T extends RuntimeEventRecord>(event: T): T {
   return {
     ...event,
-    payload: clonePayloadObject(event.payload)
+    payload: clonePayloadObject(event.payload) as T["payload"]
   };
 }
 

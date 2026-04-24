@@ -1,8 +1,10 @@
 import type { BootstrapState } from "./agent-runtime.js";
 import {
   createRuntimeEventRecord,
+  type RuntimeEventPayload,
   type RuntimeEventContext,
-  type RuntimeEventRecord
+  type RuntimeEventRecord,
+  type RuntimeEventType
 } from "./runtime-events.js";
 import type {
   PlannedExecutionFlow,
@@ -69,6 +71,11 @@ interface RuntimeTaskIdentity {
   taskId: string;
   correlationId: string;
 }
+
+type TaskFailureReason = Extract<
+  TaskTerminalReason,
+  "max-iterations" | "unrecoverable-error"
+>;
 
 export function runInitialPlanActObserveLoop(
   request: TaskRequest,
@@ -154,9 +161,13 @@ export function applyTaskSteering(
     createdAt: receivedEvent.createdAt
   };
 
-  const steeringEvent = createRuntimeEvent(receivedEvent, "task.steering.received", {
-    note
-  });
+  const steeringEvent = createRuntimeEvent(
+    receivedEvent,
+    "task.steering.received",
+    {
+      note
+    }
+  );
   const waitingRecord = createRuntimeEvent(waitingEvent, "task.waiting", {
     reason: "steering-required",
     message:
@@ -199,7 +210,8 @@ export function cancelTask(
   return {
     ...state,
     status: "cancelled",
-    summary: "Task cancelled before repository inspection or tool execution began.",
+    summary:
+      "Task cancelled before repository inspection or tool execution began.",
     waitingState: null,
     terminalState: {
       reason: "cancelled",
@@ -210,7 +222,8 @@ export function cancelTask(
       state,
       createRuntimeEvent(cancelledEvent, "task.cancelled", {
         reason: "cancelled",
-        message: "Task cancelled before repository inspection or tool execution began.",
+        message:
+          "Task cancelled before repository inspection or tool execution began.",
         note
       })
     )
@@ -280,12 +293,17 @@ export function failTask(
   message: string,
   failedEvent: RuntimeEventContext
 ): PlannedExecutionFlow {
-  return transitionTaskFailure(state, "unrecoverable-error", message, failedEvent);
+  return transitionTaskFailure(
+    state,
+    "unrecoverable-error",
+    message,
+    failedEvent
+  );
 }
 
 function transitionTaskFailure(
   state: PlannedExecutionFlow,
-  reason: TaskTerminalReason,
+  reason: TaskFailureReason,
   message: string,
   failedEvent: RuntimeEventContext
 ): PlannedExecutionFlow {
@@ -308,10 +326,11 @@ function transitionTaskFailure(
   };
 }
 
-function createRuntimeEvent(
-  context: RuntimeTaskIdentity & Pick<RuntimeEventContext, "eventId" | "createdAt">,
-  type: RuntimeEventRecord["type"],
-  payload: Record<string, unknown>
-): RuntimeEventRecord {
+function createRuntimeEvent<T extends RuntimeEventType>(
+  context: RuntimeTaskIdentity &
+    Pick<RuntimeEventContext, "eventId" | "createdAt">,
+  type: T,
+  payload: RuntimeEventPayload<T>
+): RuntimeEventRecord<T> {
   return createRuntimeEventRecord(context, type, payload);
 }

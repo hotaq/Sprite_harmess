@@ -50,7 +50,7 @@ describe("runtime event contract", () => {
       type: "task.waiting",
       createdAt: "not-a-date",
       payload: {}
-    } as never);
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) {
@@ -76,11 +76,36 @@ describe("runtime event contract", () => {
           reason: "steering-required",
           message: "Waiting for steering input."
         }
-      } as never);
+      });
 
     expect(validate).not.toThrow();
 
     const result = validate();
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error).toMatchObject({
+      code: "INVALID_RUNTIME_EVENT"
+    });
+  });
+
+  it("rejects payload values that do not match the event-specific contract", () => {
+    const result = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_test",
+      sessionId: "session_test",
+      taskId: "task_test",
+      correlationId: "corr_test",
+      type: "task.failed",
+      createdAt: "2026-04-23T12:40:00.000Z",
+      payload: {
+        reason: "cancelled",
+        message: "A cancelled reason must not validate as task.failed."
+      }
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) {
