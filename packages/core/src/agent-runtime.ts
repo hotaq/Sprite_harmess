@@ -2,7 +2,8 @@ import {
   resolveSpriteRuntimeConfig,
   toStartupConfig,
   type ConfigLoaderOptions,
-  type ResolvedStartupConfig
+  type ResolvedStartupConfig,
+  type SpriteOutputFormat
 } from "@sprite/config";
 import {
   initializeProviderAdapter,
@@ -40,6 +41,29 @@ export interface BootstrapState {
 export interface RuntimeStartupOptions extends ConfigLoaderOptions {
   env?: NodeJS.ProcessEnv;
   providerOverride?: ProviderRuntimeOverride;
+}
+
+export type OneShotPrintOutputFormat = SpriteOutputFormat;
+
+export interface OneShotPrintTaskOptions extends RuntimeStartupOptions {
+  outputFormat?: OneShotPrintOutputFormat;
+  onEvent?: RuntimeEventListener;
+}
+
+export interface OneShotPrintTaskResult {
+  task: string;
+  outputFormat: OneShotPrintOutputFormat;
+  status: PlannedExecutionFlow["status"];
+  summary: string;
+  sessionId: string;
+  taskId: string;
+  correlationId: string;
+  provider: ResolvedProviderState | null;
+  model: string | null;
+  waitingState: PlannedExecutionFlow["waitingState"];
+  terminalState: PlannedExecutionFlow["terminalState"];
+  warnings: string[];
+  events: RuntimeEventRecord[];
 }
 
 export class AgentRuntime {
@@ -116,7 +140,9 @@ export class AgentRuntime {
     return this.eventBus.getHistory(taskId);
   }
 
-  cancelActiveTask(note = "User cancelled the active task."): Result<PlannedExecutionFlow> {
+  cancelActiveTask(
+    note = "User cancelled the active task."
+  ): Result<PlannedExecutionFlow> {
     const activeTask = this.getMutableActiveTask();
 
     if (!activeTask.ok) {
@@ -125,11 +151,11 @@ export class AgentRuntime {
 
     return this.setActiveTask(
       cancelTask(activeTask.value, note, {
-      sessionId: activeTask.value.sessionId,
-      taskId: activeTask.value.taskId,
-      correlationId: activeTask.value.correlationId,
-      eventId: this.nextEventId(),
-      createdAt: this.now()
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
       })
     );
   }
@@ -143,27 +169,30 @@ export class AgentRuntime {
 
     return this.setActiveTask(
       applyTaskSteering(
-      activeTask.value,
-      note,
-      {
-        sessionId: activeTask.value.sessionId,
-        taskId: activeTask.value.taskId,
-        correlationId: activeTask.value.correlationId,
-        eventId: this.nextEventId(),
-        createdAt: this.now()
-      },
-      {
-        sessionId: activeTask.value.sessionId,
-        taskId: activeTask.value.taskId,
-        correlationId: activeTask.value.correlationId,
-        eventId: this.nextEventId(),
-        createdAt: this.now()
-      }
+        activeTask.value,
+        note,
+        {
+          sessionId: activeTask.value.sessionId,
+          taskId: activeTask.value.taskId,
+          correlationId: activeTask.value.correlationId,
+          eventId: this.nextEventId(),
+          createdAt: this.now()
+        },
+        {
+          sessionId: activeTask.value.sessionId,
+          taskId: activeTask.value.taskId,
+          correlationId: activeTask.value.correlationId,
+          eventId: this.nextEventId(),
+          createdAt: this.now()
+        }
       )
     );
   }
 
-  waitForInput(reason: "approval-required" | "user-input-required", message: string): Result<PlannedExecutionFlow> {
+  waitForInput(
+    reason: "approval-required" | "user-input-required",
+    message: string
+  ): Result<PlannedExecutionFlow> {
     const activeTask = this.getMutableActiveTask();
 
     if (!activeTask.ok) {
@@ -172,11 +201,11 @@ export class AgentRuntime {
 
     return this.setActiveTask(
       waitForTaskInput(activeTask.value, reason, message, {
-      sessionId: activeTask.value.sessionId,
-      taskId: activeTask.value.taskId,
-      correlationId: activeTask.value.correlationId,
-      eventId: this.nextEventId(),
-      createdAt: this.now()
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
       })
     );
   }
@@ -192,11 +221,11 @@ export class AgentRuntime {
 
     return this.setActiveTask(
       completeTask(activeTask.value, message, {
-      sessionId: activeTask.value.sessionId,
-      taskId: activeTask.value.taskId,
-      correlationId: activeTask.value.correlationId,
-      eventId: this.nextEventId(),
-      createdAt: this.now()
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
       })
     );
   }
@@ -212,11 +241,11 @@ export class AgentRuntime {
 
     return this.setActiveTask(
       stopTaskForMaxIterations(activeTask.value, message, {
-      sessionId: activeTask.value.sessionId,
-      taskId: activeTask.value.taskId,
-      correlationId: activeTask.value.correlationId,
-      eventId: this.nextEventId(),
-      createdAt: this.now()
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
       })
     );
   }
@@ -232,11 +261,11 @@ export class AgentRuntime {
 
     return this.setActiveTask(
       failTask(activeTask.value, message, {
-      sessionId: activeTask.value.sessionId,
-      taskId: activeTask.value.taskId,
-      correlationId: activeTask.value.correlationId,
-      eventId: this.nextEventId(),
-      createdAt: this.now()
+        sessionId: activeTask.value.sessionId,
+        taskId: activeTask.value.taskId,
+        correlationId: activeTask.value.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
       })
     );
   }
@@ -272,7 +301,9 @@ export class AgentRuntime {
     return new Date().toISOString();
   }
 
-  private setActiveTask(task: PlannedExecutionFlow): Result<PlannedExecutionFlow> {
+  private setActiveTask(
+    task: PlannedExecutionFlow
+  ): Result<PlannedExecutionFlow> {
     const emitted = this.emitNewEvents(task.events);
 
     if (!emitted.ok) {
@@ -331,7 +362,9 @@ function formatProviderAuth(provider: ResolvedProviderState | null): string {
   return `${provider.auth.source} (secret redacted)`;
 }
 
-function formatProviderCapabilities(provider: ResolvedProviderState | null): string {
+function formatProviderCapabilities(
+  provider: ResolvedProviderState | null
+): string {
   if (provider === null) {
     return "not available";
   }
@@ -344,7 +377,9 @@ function formatProviderCapabilities(provider: ResolvedProviderState | null): str
   return `streaming=${provider.capabilities.supportsStreaming}, tool-calls=${provider.capabilities.supportsToolCalls}, context-window=${contextWindow}`;
 }
 
-export function createBootstrapMessage(options: RuntimeStartupOptions = {}): string {
+export function createBootstrapMessage(
+  options: RuntimeStartupOptions = {}
+): string {
   const runtime = new AgentRuntime(options);
   const state = runtime.getBootstrapState();
 
@@ -353,7 +388,9 @@ export function createBootstrapMessage(options: RuntimeStartupOptions = {}): str
   }
 
   const { startup } = state.value;
-  const warningLines = state.value.warnings.map((warning) => `- warning: ${warning}`);
+  const warningLines = state.value.warnings.map(
+    (warning) => `- warning: ${warning}`
+  );
 
   return [
     state.value.message,
@@ -427,22 +464,26 @@ export function createInteractiveTaskMessage(
     (step, index) =>
       `${index + 1}. [${step.phase}] ${step.status} - ${step.summary}`
   );
-  const warningLines = state.value.warnings.map((warning) => `- warning: ${warning}`);
+  const warningLines = state.value.warnings.map(
+    (warning) => `- warning: ${warning}`
+  );
   const waitingLine =
     state.value.waitingState === null
       ? []
-      : [`- waiting: ${state.value.waitingState.reason} - ${state.value.waitingState.message}`];
+      : [
+          `- waiting: ${state.value.waitingState.reason} - ${state.value.waitingState.message}`
+        ];
   const terminalLine =
     state.value.terminalState === null
       ? []
-      : [`- terminal: ${state.value.terminalState.reason} - ${state.value.terminalState.message}`];
+      : [
+          `- terminal: ${state.value.terminalState.reason} - ${state.value.terminalState.message}`
+        ];
   const intentLines = state.value.intents.map(
-    (intent, index) =>
-      `${index + 1}. [${intent.intent}] ${intent.note}`
+    (intent, index) => `${index + 1}. [${intent.intent}] ${intent.note}`
   );
   const eventLines = observedEvents.map(
-    (event, index) =>
-      `${index + 1}. ${event.type} (${event.eventId})`
+    (event, index) => `${index + 1}. ${event.type} (${event.eventId})`
   );
 
   return [
@@ -464,4 +505,97 @@ export function createInteractiveTaskMessage(
     ...eventLines,
     ...warningLines
   ].join("\n");
+}
+
+export function resolveOneShotPrintOutputFormat(
+  options: OneShotPrintTaskOptions = {}
+): Result<OneShotPrintOutputFormat> {
+  if (options.outputFormat !== undefined) {
+    return ok(options.outputFormat);
+  }
+
+  const runtime = new AgentRuntime(options);
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return bootstrapState;
+  }
+
+  return ok(bootstrapState.value.startup.outputFormat);
+}
+
+export function runOneShotPrintTask(
+  task: string,
+  options: OneShotPrintTaskOptions = {}
+): Result<OneShotPrintTaskResult> {
+  const runtime = new AgentRuntime(options);
+  const unsubscribe =
+    options.onEvent === undefined
+      ? undefined
+      : runtime.subscribeToEvents(options.onEvent);
+
+  try {
+    const submittedState = runtime.submitInteractiveTask(task);
+
+    if (!submittedState.ok) {
+      return submittedState;
+    }
+
+    let finalState = submittedState.value;
+
+    if (!isOneShotStopBoundary(finalState)) {
+      const stoppedState = runtime.stopActiveTaskForMaxIterations(
+        "One-shot print mode stopped after the first minimal runtime iteration because repository inspection and tool execution are not available yet."
+      );
+
+      if (!stoppedState.ok) {
+        return stoppedState;
+      }
+
+      finalState = stoppedState.value;
+    }
+
+    return ok(
+      createOneShotPrintTaskResult(
+        finalState,
+        options.outputFormat ?? finalState.request.allowedDefaults.outputFormat
+      )
+    );
+  } finally {
+    unsubscribe?.();
+  }
+}
+
+function createOneShotPrintTaskResult(
+  state: PlannedExecutionFlow,
+  outputFormat: OneShotPrintOutputFormat
+): OneShotPrintTaskResult {
+  return {
+    task: state.request.task,
+    outputFormat,
+    status: state.status,
+    summary: state.summary,
+    sessionId: state.sessionId,
+    taskId: state.taskId,
+    correlationId: state.correlationId,
+    provider: state.request.provider,
+    model: state.request.provider?.model ?? null,
+    waitingState: state.waitingState,
+    terminalState: state.terminalState,
+    warnings: state.warnings,
+    events: state.events
+  };
+}
+
+function isOneShotStopBoundary(state: PlannedExecutionFlow): boolean {
+  if (
+    state.status === "completed" ||
+    state.status === "cancelled" ||
+    state.status === "max-iterations" ||
+    state.status === "failed"
+  ) {
+    return true;
+  }
+
+  return state.waitingState?.reason === "approval-required";
 }

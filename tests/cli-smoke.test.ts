@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { validateRuntimeEvent } from "@sprite/core";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import packageJson from "../packages/cli/package.json" with { type: "json" };
@@ -8,7 +15,11 @@ import packageJson from "../packages/cli/package.json" with { type: "json" };
 const cliPath = resolve(process.cwd(), "packages/cli/dist/index.js");
 const localBinPath = resolve(process.cwd(), "node_modules/.bin/sprite");
 
-function createTempCliWorkspace(): { homeDir: string; projectDir: string; rootDir: string } {
+function createTempCliWorkspace(): {
+  homeDir: string;
+  projectDir: string;
+  rootDir: string;
+} {
   const rootDir = mkdtempSync(join(tmpdir(), "sprite-cli-"));
   const homeDir = join(rootDir, "home");
   const projectDir = join(rootDir, "project");
@@ -27,6 +38,18 @@ function writeJson(path: string, value: unknown): void {
 function writeRaw(path: string, value: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, value);
+}
+
+function parseJsonOutput(stdout: string): Record<string, unknown> {
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+function parseNdjsonOutput(stdout: string): Record<string, unknown>[] {
+  return stdout
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe("sprite cli smoke tests", () => {
@@ -54,7 +77,9 @@ describe("sprite cli smoke tests", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Usage: sprite");
-    expect(result.stdout).toContain("Sprite Harness local developer agent runtime");
+    expect(result.stdout).toContain(
+      "Sprite Harness local developer agent runtime"
+    );
   });
 
   it("shows version output", () => {
@@ -117,7 +142,9 @@ describe("sprite cli smoke tests", () => {
     rmSync(rootDir, { recursive: true, force: true });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("- provider auth: environment (secret redacted)");
+    expect(result.stdout).toContain(
+      "- provider auth: environment (secret redacted)"
+    );
     expect(result.stdout).not.toContain("sk-test-secret");
   });
 
@@ -132,11 +159,19 @@ describe("sprite cli smoke tests", () => {
       output: { format: "text" }
     });
 
-    const result = spawnSync("node", [cliPath, "fix", "the", "provider", "tests"], {
-      cwd: projectDir,
-      env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
-      encoding: "utf8"
-    });
+    const result = spawnSync(
+      "node",
+      [cliPath, "fix", "the", "provider", "tests"],
+      {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          OPENAI_API_KEY: "sk-test-secret"
+        },
+        encoding: "utf8"
+      }
+    );
 
     rmSync(rootDir, { recursive: true, force: true });
 
@@ -151,7 +186,9 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("Runtime events:");
     expect(result.stdout).toContain("task.started");
     expect(result.stdout).toContain("task.waiting");
-    expect(result.stdout).toContain("repository inspection and tool execution start in later stories");
+    expect(result.stdout).toContain(
+      "repository inspection and tool execution start in later stories"
+    );
     expect(result.stdout).not.toContain("sk-test-secret");
   });
 
@@ -167,10 +204,22 @@ describe("sprite cli smoke tests", () => {
 
     const result = spawnSync(
       "node",
-      [cliPath, "--steer", "Focus on the auth warning path first.", "fix", "the", "provider", "tests"],
+      [
+        cliPath,
+        "--steer",
+        "Focus on the auth warning path first.",
+        "fix",
+        "the",
+        "provider",
+        "tests"
+      ],
       {
         cwd: projectDir,
-        env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          OPENAI_API_KEY: "sk-test-secret"
+        },
         encoding: "utf8"
       }
     );
@@ -180,7 +229,9 @@ describe("sprite cli smoke tests", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("- task state: waiting-for-input");
     expect(result.stdout).toContain("Task intents:");
-    expect(result.stdout).toContain("[steer] Focus on the auth warning path first.");
+    expect(result.stdout).toContain(
+      "[steer] Focus on the auth warning path first."
+    );
     expect(result.stdout).toContain("task.steering.received");
     expect(result.stdout).not.toContain("sk-test-secret");
   });
@@ -195,11 +246,19 @@ describe("sprite cli smoke tests", () => {
       }
     });
 
-    const result = spawnSync("node", [cliPath, "--cancel", "fix", "the", "provider", "tests"], {
-      cwd: projectDir,
-      env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "sk-test-secret" },
-      encoding: "utf8"
-    });
+    const result = spawnSync(
+      "node",
+      [cliPath, "--cancel", "fix", "the", "provider", "tests"],
+      {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          OPENAI_API_KEY: "sk-test-secret"
+        },
+        encoding: "utf8"
+      }
+    );
 
     rmSync(rootDir, { recursive: true, force: true });
 
@@ -209,6 +268,150 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("[cancel] User cancelled the active task.");
     expect(result.stdout).toContain("task.cancelled");
     expect(result.stdout).not.toContain("sk-test-secret");
+  });
+
+  it("runs a one-shot print task with human-readable text output", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      },
+      output: { format: "text" }
+    });
+
+    const result = spawnSync(
+      "node",
+      [cliPath, "--print", "fix the print output"],
+      {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          OPENAI_API_KEY: "sk-test-secret"
+        },
+        encoding: "utf8"
+      }
+    );
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("One-shot task result:");
+    expect(result.stdout).toContain("- task: fix the print output");
+    expect(result.stdout).toContain("- status: max-iterations");
+    expect(result.stdout).toContain("- correlation id: corr_");
+    expect(result.stdout).toContain("task.failed");
+    expect(result.stdout).not.toContain("sk-test-secret");
+  });
+
+  it("runs a one-shot print task through the -p alias with JSON output", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      },
+      output: { format: "text" }
+    });
+
+    const result = spawnSync(
+      "node",
+      [cliPath, "-p", "fix the json output", "--output", "json"],
+      {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          OPENAI_API_KEY: "sk-test-secret"
+        },
+        encoding: "utf8"
+      }
+    );
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain("sk-test-secret");
+
+    const output = parseJsonOutput(result.stdout);
+
+    expect(output).toMatchObject({
+      task: "fix the json output",
+      status: "max-iterations",
+      provider: {
+        providerName: "openai-compatible",
+        model: "gpt-5.4",
+        auth: {
+          authenticated: true,
+          source: "environment",
+          secretRedacted: true
+        }
+      }
+    });
+    expect(output.summary).toEqual(expect.any(String));
+    expect(output.sessionId).toEqual(expect.stringMatching(/^session_/));
+    expect(output.taskId).toEqual(expect.stringMatching(/^task_/));
+    expect(output.correlationId).toEqual(expect.stringMatching(/^corr_/));
+    expect(output.events).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "task.failed" })])
+    );
+  });
+
+  it("uses ndjson output defaults for one-shot print events", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "gpt-5.4"
+      },
+      output: { format: "ndjson" }
+    });
+
+    const result = spawnSync(
+      "node",
+      [cliPath, "--print", "stream the events"],
+      {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          OPENAI_API_KEY: "sk-test-secret"
+        },
+        encoding: "utf8"
+      }
+    );
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain("sk-test-secret");
+
+    const events = parseNdjsonOutput(result.stdout);
+
+    expect(events.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "task.failed"
+    ]);
+
+    for (const event of events) {
+      const validation = validateRuntimeEvent(event);
+
+      expect(validation.ok).toBe(true);
+      expect(event).toMatchObject({
+        schemaVersion: 1,
+        eventId: expect.stringMatching(/^evt_/),
+        sessionId: expect.stringMatching(/^session_/),
+        taskId: expect.stringMatching(/^task_/),
+        correlationId: expect.stringMatching(/^corr_/),
+        createdAt: expect.any(String),
+        payload: expect.any(Object)
+      });
+    }
   });
 
   it("survives malformed config files and reports a warning", () => {
