@@ -10,6 +10,12 @@ import {
   type ProviderRuntimeOverride,
   type ResolvedProviderState
 } from "@sprite/providers";
+import {
+  classifyPolicyRequest as classifySandboxPolicyRequest,
+  summarizePolicyRequestForEvent,
+  type PolicyDecision,
+  type PolicyEventMetadata
+} from "@sprite/sandbox";
 import { SpriteError, err, ok, type Result } from "@sprite/shared";
 import {
   createToolRegistry,
@@ -455,6 +461,42 @@ export class AgentRuntime {
     return result;
   }
 
+  classifyPolicyRequest(request: unknown): Result<PolicyDecision> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const decision = classifySandboxPolicyRequest(request);
+
+    if (!decision.ok) {
+      return decision;
+    }
+
+    const eventMetadata = summarizePolicyRequestForEvent(
+      decision.value.modifiedRequest ?? request
+    );
+
+    if (!eventMetadata.ok) {
+      return eventMetadata;
+    }
+
+    const event = this.createPolicyDecisionEvent(
+      activeTask.value,
+      decision.value,
+      eventMetadata.value
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return decision;
+  }
+
   recordFileActivity(
     request: RuntimeFileActivityRequest
   ): Result<FileActivityRecord[]> {
@@ -703,6 +745,35 @@ export class AgentRuntime {
             message: `apply_patch failed with ${error?.code ?? "TOOL_FAILED"}.`
           }
         : basePayload) as RuntimeEventPayload<typeof type>
+    );
+  }
+
+  private createPolicyDecisionEvent(
+    task: PlannedExecutionFlow,
+    decision: PolicyDecision,
+    metadata: PolicyEventMetadata
+  ): RuntimeEventRecord {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "policy.decision.recorded",
+      {
+        action: decision.action,
+        ...metadata,
+        reason: decision.reason,
+        riskLevel: decision.riskLevel,
+        ruleId: decision.ruleId,
+        status: "recorded",
+        summary:
+          metadata.requestType === "command"
+            ? "Command policy decision recorded."
+            : "File edit policy decision recorded."
+      }
     );
   }
 

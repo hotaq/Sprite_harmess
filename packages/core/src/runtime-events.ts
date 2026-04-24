@@ -49,6 +49,9 @@ const FILE_EDIT_EVENT_TYPES = [
   "file.edit.failed",
   "file.edit.requested"
 ] as const;
+const POLICY_ACTIONS = ["allow", "deny", "modify", "require_approval"] as const;
+const POLICY_REQUEST_TYPES = ["command", "file_edit"] as const;
+const POLICY_RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -57,6 +60,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.failed",
   "task.cancelled",
   "task.steering.received",
+  "policy.decision.recorded",
   "file.edit.applied",
   "file.edit.failed",
   "file.edit.requested",
@@ -102,6 +106,20 @@ export interface RuntimeEventPayloadMap {
   };
   "task.steering.received": {
     note: string;
+  };
+  "policy.decision.recorded": {
+    action: (typeof POLICY_ACTIONS)[number];
+    affectedFiles?: string[];
+    command?: string;
+    cwd?: string;
+    envExposure?: "custom" | "none";
+    reason: string;
+    requestType: (typeof POLICY_REQUEST_TYPES)[number];
+    riskLevel: (typeof POLICY_RISK_LEVELS)[number];
+    ruleId: string;
+    status: "recorded";
+    summary: string;
+    timeoutMs?: number;
   };
   "file.edit.applied": {
     affectedFiles: string[];
@@ -483,6 +501,13 @@ export function validateRuntimeEvent(
         note: note.value
       });
     }
+    case "policy.decision.recorded": {
+      return validatePolicyDecisionEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "file.edit.applied":
     case "file.edit.failed":
     case "file.edit.requested": {
@@ -649,6 +674,152 @@ function validateFileActivityEvent(
     ...(totalItemCount.value === undefined
       ? {}
       : { totalItemCount: totalItemCount.value })
+  });
+}
+
+function validatePolicyDecisionEvent(
+  context: RuntimeEventContext,
+  type: "policy.decision.recorded",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"policy.decision.recorded">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const action = requirePayloadLiteral(type, payload, "action", POLICY_ACTIONS);
+  const affectedFiles = optionalPayloadPathArray(
+    type,
+    payload,
+    "affectedFiles"
+  );
+  const command = optionalPayloadString(type, payload, "command");
+  const cwd = optionalPayloadString(type, payload, "cwd");
+  const envExposure = optionalPayloadLiteral(type, payload, "envExposure", [
+    "custom",
+    "none"
+  ] as const);
+  const reason = requirePayloadString(type, payload, "reason");
+  const requestType = requirePayloadLiteral(
+    type,
+    payload,
+    "requestType",
+    POLICY_REQUEST_TYPES
+  );
+  const riskLevel = requirePayloadLiteral(
+    type,
+    payload,
+    "riskLevel",
+    POLICY_RISK_LEVELS
+  );
+  const ruleId = requirePayloadString(type, payload, "ruleId");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const timeoutMs = optionalNonNegativeInteger(type, payload, "timeoutMs");
+
+  if (action.ok === false) {
+    return err(action.error);
+  }
+
+  if (affectedFiles.ok === false) {
+    return err(affectedFiles.error);
+  }
+
+  if (command.ok === false) {
+    return err(command.error);
+  }
+
+  if (cwd.ok === false) {
+    return err(cwd.error);
+  }
+
+  if (envExposure.ok === false) {
+    return err(envExposure.error);
+  }
+
+  if (reason.ok === false) {
+    return err(reason.error);
+  }
+
+  if (containsSecretLikeValue(reason.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload reason must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (requestType.ok === false) {
+    return err(requestType.error);
+  }
+
+  if (riskLevel.ok === false) {
+    return err(riskLevel.error);
+  }
+
+  if (ruleId.ok === false) {
+    return err(ruleId.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (command.value !== undefined && containsSecretLikeValue(command.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload command must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (timeoutMs.ok === false) {
+    return err(timeoutMs.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    action: action.value,
+    ...(affectedFiles.value === undefined
+      ? {}
+      : { affectedFiles: affectedFiles.value }),
+    ...(command.value === undefined ? {} : { command: command.value }),
+    ...(cwd.value === undefined ? {} : { cwd: cwd.value }),
+    ...(envExposure.value === undefined
+      ? {}
+      : { envExposure: envExposure.value }),
+    reason: reason.value,
+    requestType: requestType.value,
+    riskLevel: riskLevel.value,
+    ruleId: ruleId.value,
+    status: status.value,
+    summary: summary.value,
+    ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value })
   });
 }
 
@@ -987,6 +1158,20 @@ function optionalNonNegativeInteger(
   return { ok: true, value };
 }
 
+function optionalPayloadPathArray(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<string[] | undefined, SpriteError> {
+  const value = payload[key];
+
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  return requirePayloadPathArray(type, payload, key);
+}
+
 function requirePayloadPathArray(
   type: RuntimeEventType,
   payload: Record<string, unknown>,
@@ -1142,6 +1327,71 @@ function findForbiddenToolPayloadField(
   for (const key of Object.keys(payload)) {
     if (forbiddenFields.has(key)) {
       return key;
+    }
+  }
+
+  return null;
+}
+
+function findForbiddenPolicyPayloadField(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  const forbiddenFields = new Set([
+    "content",
+    "diff",
+    "env",
+    "hunk",
+    "newText",
+    "oldText",
+    "patch",
+    "query",
+    "rawContent",
+    "rawSnippet",
+    "repositoryInstruction",
+    "snippet",
+    "snippets",
+    "stderr",
+    "stdout"
+  ]);
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findForbiddenPolicyPayloadField(item, seen);
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (forbiddenFields.has(key)) {
+      return key;
+    }
+
+    const nested = findForbiddenPolicyPayloadField(nestedValue, seen);
+
+    if (nested !== null) {
+      return nested;
     }
   }
 

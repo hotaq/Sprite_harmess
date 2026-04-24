@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -357,6 +363,79 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(valid).ok).toBe(true);
     expect(validateRuntimeEvent(rawPatch).ok).toBe(false);
     expect(validateRuntimeEvent(unsafePath).ok).toBe(false);
+    expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
+  });
+
+  it("validates policy decision events without raw command or patch metadata", () => {
+    const valid = createRuntimeEventRecord(
+      {
+        eventId: "evt_policy",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "policy.decision.recorded",
+      {
+        action: "require_approval",
+        command: "npm run test",
+        cwd: "/tmp/project",
+        envExposure: "custom",
+        reason: "Custom environment metadata requires approval.",
+        requestType: "command",
+        riskLevel: "high",
+        ruleId: "command.env.custom",
+        status: "recorded",
+        summary: "Command policy decision recorded.",
+        timeoutMs: 30_000
+      }
+    );
+    const rawStdout = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        stdout: "OPENAI_API_KEY=sk-test-secret"
+      }
+    };
+    const unsafePath = createRuntimeEventRecord(
+      {
+        eventId: "evt_policy_files",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "policy.decision.recorded",
+      {
+        action: "deny",
+        affectedFiles: ["../outside.ts"],
+        reason: "Unsafe path is denied.",
+        requestType: "file_edit",
+        riskLevel: "critical",
+        ruleId: "file_edit.path.unsafe",
+        status: "recorded",
+        summary: "File edit policy decision recorded."
+      }
+    );
+    const invalidAction = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        action: "maybe"
+      }
+    };
+    const secretSummary = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        summary: "Command policy decision OPENAI_API_KEY=sk-test-secret."
+      }
+    };
+
+    expect(validateRuntimeEvent(valid).ok).toBe(true);
+    expect(validateRuntimeEvent(rawStdout).ok).toBe(false);
+    expect(validateRuntimeEvent(unsafePath).ok).toBe(false);
+    expect(validateRuntimeEvent(invalidAction).ok).toBe(false);
     expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
   });
 });
@@ -833,6 +912,122 @@ describe("runtime event subscription", () => {
       path: "src/edit.ts",
       toolName: "apply_patch"
     });
+  });
+
+  it("emits policy decisions with active task correlation id without executing or mutating", () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(
+      projectDir,
+      "src/unchanged.ts",
+      "export const value = 1;\n"
+    );
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("classify policy request");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const decision = runtime.classifyPolicyRequest({
+      args: ["status"],
+      command: "git",
+      cwd: projectDir,
+      timeoutMs: 30_000,
+      type: "command"
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      value: {
+        action: "allow",
+        ruleId: "command.readonly"
+      }
+    });
+    expect(readFileSync(join(projectDir, "src/unchanged.ts"), "utf8")).toBe(
+      "export const value = 1;\n"
+    );
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    const policyEvents = history.filter(
+      (event) => event.type === "policy.decision.recorded"
+    );
+
+    expect(policyEvents).toHaveLength(1);
+    expect(policyEvents[0]).toMatchObject({
+      correlationId: submitted.value.correlationId,
+      payload: {
+        action: "allow",
+        command: "git status",
+        requestType: "command",
+        riskLevel: "low",
+        ruleId: "command.readonly",
+        status: "recorded"
+      }
+    });
+    expect(history.some((event) => event.type.startsWith("tool.call."))).toBe(
+      false
+    );
+  });
+
+  it("does not gate existing apply_patch execution before approval enforcement exists", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "src/edit.ts", "export const value = 1;\n");
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "classify then apply targeted patch"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const decision = runtime.classifyPolicyRequest({
+      affectedFiles: ["package.json"],
+      editKind: "targeted_patch",
+      type: "file_edit"
+    });
+    const result = await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "src/edit.ts",
+            oldText: "value = 1",
+            newText: "value = 2"
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      value: {
+        action: "require_approval",
+        ruleId: "file_edit.package_config"
+      }
+    });
+    expect(result.ok).toBe(true);
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "tool.call.requested",
+      "tool.call.started",
+      "file.edit.requested",
+      "tool.call.completed",
+      "file.edit.applied",
+      "file.activity.recorded"
+    ]);
   });
 
   it("emits patch failure events without changed file activity", async () => {

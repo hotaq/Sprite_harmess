@@ -211,12 +211,34 @@ The current implementation records activity for `read_file`, `list_files`, `sear
 
 Durable audit persistence under `.sprite/sessions/...` is not implemented yet; current audit state is runtime-local.
 
+## Policy Classification
+
+Story 2.4 adds a deterministic policy classifier through `@sprite/sandbox` and
+`AgentRuntime.classifyPolicyRequest()` for runtime/package API use. It classifies
+command and file edit metadata into:
+
+- `allow`
+- `modify`
+- `require_approval`
+- `deny`
+
+Policy decisions are recorded through the canonical
+`policy.decision.recorded` runtime event with metadata-only payloads. The
+classifier validates untrusted request shapes, rejects raw content fields, keeps
+environment values and patch bodies out of decisions, and treats repository or
+tool-output instructions as untrusted input.
+
+This story adds classification and audit only. It does not execute commands,
+create approval prompts, gate `apply_patch`, run configured validation commands,
+or provide the sandbox runner.
+
 Not implemented yet:
 
 - Live provider completions and tool-calling execution
 - Full multi-iteration agent loop progression
-- Patch approval flow and broad-edit risk classification
+- Patch approval flow and approval enforcement
+- Sandboxed command execution
 - TUI
 - RPC server
-- Sandbox and policy engine
+- Sandbox runner
 - Sessions, memory, and skills

@@ -9,6 +9,7 @@
     { "path": "../shared" },
     { "path": "../config" },
     { "path": "../providers" },
+    { "path": "../sandbox" },
     { "path": "../tools" }
   ],
   "include": ["src/**/*.ts"]

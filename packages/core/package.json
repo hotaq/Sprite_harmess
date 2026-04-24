@@ -10,6 +10,7 @@
   "dependencies": {
     "@sprite/config": "0.1.0",
     "@sprite/providers": "0.1.0",
+    "@sprite/sandbox": "0.1.0",
     "@sprite/shared": "0.1.0",
     "@sprite/tools": "0.1.0"
   }

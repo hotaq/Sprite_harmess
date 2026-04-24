@@ -10,6 +10,7 @@
       "@sprite/core": ["packages/core/src/index.ts"],
       "@sprite/config": ["packages/config/src/index.ts"],
       "@sprite/providers": ["packages/providers/src/index.ts"],
+      "@sprite/sandbox": ["packages/sandbox/src/index.ts"],
       "@sprite/tools": ["packages/tools/src/index.ts"]
     },
     "strict": true,
