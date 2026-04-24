@@ -129,7 +129,7 @@ Bootstrap output exposes provider, model, auth source, and capability metadata, 
 
 ## First Interactive Task
 
-Stories 1.4 and 1.5 add the first shared-runtime interactive task path:
+Stories 1.4, 1.5, and 1.6 add the first shared-runtime interactive task path:
 
 ```bash
 sprite "fix the failing provider tests"
@@ -141,7 +141,8 @@ At this stage the runtime:
 - uses current cwd and active provider/model state
 - returns an initial plan-act-observe execution flow
 - exposes explicit waiting or terminal task state
-- records minimal runtime lifecycle events for task state changes
+- emits schema-validated runtime lifecycle events with stable IDs
+- lets adapters subscribe to emitted runtime events instead of deriving task truth from text
 - accepts immediate steering or cancellation intents through the shared runtime
 
 Examples:
@@ -156,14 +157,13 @@ At this stage the runtime does not yet:
 - inspect repository files
 - execute tools or commands
 - apply edits
-- emit the full runtime event stream
+- persist the runtime event stream to session storage
 
 The goal of this slice is to prove that interactive task submission goes through `AgentRuntime`, not to fake full tool execution early.
 
 Not implemented yet:
 
 - Live provider completions and tool-calling execution
-- Full runtime event schema and event bus
 - Full multi-iteration agent loop progression
 - TUI
 - RPC server

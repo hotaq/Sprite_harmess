@@ -1,8 +1,12 @@
 import type { BootstrapState } from "./agent-runtime.js";
+import {
+  createRuntimeEventRecord,
+  type RuntimeEventContext,
+  type RuntimeEventRecord
+} from "./runtime-events.js";
 import type {
   PlannedExecutionFlow,
   PlannedExecutionStep,
-  RuntimeEventRecord,
   TaskIntentRecord,
   TaskRequest,
   TaskTerminalReason,
@@ -66,28 +70,6 @@ interface RuntimeTaskIdentity {
   correlationId: string;
 }
 
-interface RuntimeEventContext extends RuntimeTaskIdentity {
-  eventId: string;
-  createdAt: string;
-}
-
-function createRuntimeEvent(
-  context: RuntimeEventContext,
-  type: RuntimeEventRecord["type"],
-  payload: Record<string, unknown>
-): RuntimeEventRecord {
-  return {
-    schemaVersion: 1,
-    eventId: context.eventId,
-    sessionId: context.sessionId,
-    taskId: context.taskId,
-    correlationId: context.correlationId,
-    type,
-    createdAt: context.createdAt,
-    payload
-  };
-}
-
 export function runInitialPlanActObserveLoop(
   request: TaskRequest,
   identity: RuntimeTaskIdentity,
@@ -124,7 +106,9 @@ export function runInitialPlanActObserveLoop(
         "task.started",
         {
           phase: "plan",
-          status: "planned"
+          status: "planned",
+          providerName: request.provider?.providerName ?? "not-configured",
+          model: request.provider?.model ?? "not-configured"
         }
       ),
       createRuntimeEvent(
@@ -135,7 +119,9 @@ export function runInitialPlanActObserveLoop(
         },
         "task.waiting",
         {
-          reason: "steering-required"
+          reason: "steering-required",
+          message:
+            "Repository inspection and tool execution are deferred to later stories, so the runtime is waiting for steering or cancellation input."
         }
       )
     ]
@@ -172,7 +158,9 @@ export function applyTaskSteering(
     note
   });
   const waitingRecord = createRuntimeEvent(waitingEvent, "task.waiting", {
-    reason: "steering-required"
+    reason: "steering-required",
+    message:
+      "Steering input was recorded, but the runtime is still waiting because tool execution starts in later stories."
   });
 
   return {
@@ -222,6 +210,7 @@ export function cancelTask(
       state,
       createRuntimeEvent(cancelledEvent, "task.cancelled", {
         reason: "cancelled",
+        message: "Task cancelled before repository inspection or tool execution began.",
         note
       })
     )
@@ -246,7 +235,8 @@ export function waitForTaskInput(
     events: appendEvent(
       state,
       createRuntimeEvent(waitingEvent, "task.waiting", {
-        reason
+        reason,
+        message
       })
     )
   };
@@ -270,7 +260,8 @@ export function completeTask(
     events: appendEvent(
       state,
       createRuntimeEvent(completedEvent, "task.completed", {
-        reason: "completed"
+        reason: "completed",
+        message
       })
     )
   };
@@ -310,8 +301,17 @@ function transitionTaskFailure(
     events: appendEvent(
       state,
       createRuntimeEvent(failedEvent, "task.failed", {
-        reason
+        reason,
+        message
       })
     )
   };
+}
+
+function createRuntimeEvent(
+  context: RuntimeTaskIdentity & Pick<RuntimeEventContext, "eventId" | "createdAt">,
+  type: RuntimeEventRecord["type"],
+  payload: Record<string, unknown>
+): RuntimeEventRecord {
+  return createRuntimeEventRecord(context, type, payload);
 }

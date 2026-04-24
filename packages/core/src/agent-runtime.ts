@@ -12,6 +12,11 @@ import {
 import { SpriteError, err, ok, type Result } from "@sprite/shared";
 import { randomUUID } from "node:crypto";
 import {
+  RuntimeEventBus,
+  type RuntimeEventListener,
+  type RuntimeEventRecord
+} from "./runtime-events.js";
+import {
   applyTaskSteering,
   cancelTask,
   completeTask,
@@ -39,6 +44,8 @@ export interface RuntimeStartupOptions extends ConfigLoaderOptions {
 
 export class AgentRuntime {
   private readonly sessionId = `session_${randomUUID()}`;
+  private readonly eventBus = new RuntimeEventBus();
+  private readonly emittedEventIds = new Set<string>();
   private activeTask: PlannedExecutionFlow | null = null;
 
   constructor(private readonly options: RuntimeStartupOptions = {}) {}
@@ -90,10 +97,7 @@ export class AgentRuntime {
         "Interactive task planning is available, but repository inspection and tool execution start in later stories."
       ]
     );
-
-    this.activeTask = taskState;
-
-    return ok(taskState);
+    return this.setActiveTask(taskState);
   }
 
   getActiveTask(): Result<PlannedExecutionFlow> {
@@ -104,6 +108,14 @@ export class AgentRuntime {
     return ok(this.activeTask);
   }
 
+  subscribeToEvents(listener: RuntimeEventListener): () => void {
+    return this.eventBus.subscribe(listener);
+  }
+
+  getEventHistory(taskId?: string): RuntimeEventRecord[] {
+    return this.eventBus.getHistory(taskId);
+  }
+
   cancelActiveTask(note = "User cancelled the active task."): Result<PlannedExecutionFlow> {
     const activeTask = this.getMutableActiveTask();
 
@@ -111,15 +123,15 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    this.activeTask = cancelTask(activeTask.value, note, {
+    return this.setActiveTask(
+      cancelTask(activeTask.value, note, {
       sessionId: activeTask.value.sessionId,
       taskId: activeTask.value.taskId,
       correlationId: activeTask.value.correlationId,
       eventId: this.nextEventId(),
       createdAt: this.now()
-    });
-
-    return ok(this.activeTask);
+      })
+    );
   }
 
   steerActiveTask(note: string): Result<PlannedExecutionFlow> {
@@ -129,7 +141,8 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    this.activeTask = applyTaskSteering(
+    return this.setActiveTask(
+      applyTaskSteering(
       activeTask.value,
       note,
       {
@@ -146,9 +159,8 @@ export class AgentRuntime {
         eventId: this.nextEventId(),
         createdAt: this.now()
       }
+      )
     );
-
-    return ok(this.activeTask);
   }
 
   waitForInput(reason: "approval-required" | "user-input-required", message: string): Result<PlannedExecutionFlow> {
@@ -158,15 +170,15 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    this.activeTask = waitForTaskInput(activeTask.value, reason, message, {
+    return this.setActiveTask(
+      waitForTaskInput(activeTask.value, reason, message, {
       sessionId: activeTask.value.sessionId,
       taskId: activeTask.value.taskId,
       correlationId: activeTask.value.correlationId,
       eventId: this.nextEventId(),
       createdAt: this.now()
-    });
-
-    return ok(this.activeTask);
+      })
+    );
   }
 
   completeActiveTask(
@@ -178,15 +190,15 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    this.activeTask = completeTask(activeTask.value, message, {
+    return this.setActiveTask(
+      completeTask(activeTask.value, message, {
       sessionId: activeTask.value.sessionId,
       taskId: activeTask.value.taskId,
       correlationId: activeTask.value.correlationId,
       eventId: this.nextEventId(),
       createdAt: this.now()
-    });
-
-    return ok(this.activeTask);
+      })
+    );
   }
 
   stopActiveTaskForMaxIterations(
@@ -198,15 +210,15 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    this.activeTask = stopTaskForMaxIterations(activeTask.value, message, {
+    return this.setActiveTask(
+      stopTaskForMaxIterations(activeTask.value, message, {
       sessionId: activeTask.value.sessionId,
       taskId: activeTask.value.taskId,
       correlationId: activeTask.value.correlationId,
       eventId: this.nextEventId(),
       createdAt: this.now()
-    });
-
-    return ok(this.activeTask);
+      })
+    );
   }
 
   failActiveTask(
@@ -218,15 +230,15 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    this.activeTask = failTask(activeTask.value, message, {
+    return this.setActiveTask(
+      failTask(activeTask.value, message, {
       sessionId: activeTask.value.sessionId,
       taskId: activeTask.value.taskId,
       correlationId: activeTask.value.correlationId,
       eventId: this.nextEventId(),
       createdAt: this.now()
-    });
-
-    return ok(this.activeTask);
+      })
+    );
   }
 
   private getMutableActiveTask(): Result<PlannedExecutionFlow> {
@@ -258,6 +270,39 @@ export class AgentRuntime {
 
   private now(): string {
     return new Date().toISOString();
+  }
+
+  private setActiveTask(task: PlannedExecutionFlow): Result<PlannedExecutionFlow> {
+    const emitted = this.emitNewEvents(task.events);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.activeTask = {
+      ...task,
+      events: this.eventBus.getHistory(task.taskId)
+    };
+
+    return ok(this.activeTask);
+  }
+
+  private emitNewEvents(events: RuntimeEventRecord[]): Result<void> {
+    for (const event of events) {
+      if (this.emittedEventIds.has(event.eventId)) {
+        continue;
+      }
+
+      const emitted = this.eventBus.emit(event);
+
+      if (!emitted.ok) {
+        return err(emitted.error);
+      }
+
+      this.emittedEventIds.add(event.eventId);
+    }
+
+    return ok(undefined);
   }
 
   private isTerminalState(task: PlannedExecutionFlow): boolean {
@@ -341,6 +386,10 @@ export function createInteractiveTaskMessage(
   } = {}
 ): string {
   const runtime = new AgentRuntime(options);
+  const observedEvents: RuntimeEventRecord[] = [];
+  const unsubscribe = runtime.subscribeToEvents((event) => {
+    observedEvents.push(event);
+  });
   const initialState = runtime.submitInteractiveTask(task);
 
   if (!initialState.ok) {
@@ -364,6 +413,7 @@ export function createInteractiveTaskMessage(
   }
 
   const state = runtime.getActiveTask();
+  unsubscribe();
 
   if (!state.ok) {
     throw state.error;
@@ -390,7 +440,7 @@ export function createInteractiveTaskMessage(
     (intent, index) =>
       `${index + 1}. [${intent.intent}] ${intent.note}`
   );
-  const eventLines = state.value.events.map(
+  const eventLines = observedEvents.map(
     (event, index) =>
       `${index + 1}. ${event.type} (${event.eventId})`
   );

@@ -1,6 +1,6 @@
 # Story 1.5: Stop, Cancel, and Steer a Running Task
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -164,3 +164,4 @@ gpt-5
 
 - 2026-04-23: Created Story 1.5 with implementation context for runtime-owned cancel, steer, and explicit task stop-state handling.
 - 2026-04-23: Implemented runtime-owned cancel and steer intents, explicit waiting/terminal task states, minimal runtime event records, tests, and docs; moved story to review.
+- 2026-04-23: Review passed after lifecycle guard and unique ID fixes; marked story done.

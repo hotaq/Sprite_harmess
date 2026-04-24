@@ -4,6 +4,7 @@ import type {
   SpriteSandboxMode
 } from "@sprite/config";
 import type { ResolvedProviderState } from "@sprite/providers";
+import type { RuntimeEventRecord } from "./runtime-events.js";
 
 export type RuntimeLoopPhase = "plan" | "act" | "observe";
 export type TaskExecutionStatus =
@@ -22,13 +23,6 @@ export type TaskTerminalReason =
   | "cancelled"
   | "max-iterations"
   | "unrecoverable-error";
-export type RuntimeEventType =
-  | "task.started"
-  | "task.waiting"
-  | "task.completed"
-  | "task.failed"
-  | "task.cancelled"
-  | "task.steering.received";
 export type TaskIntentType = "cancel" | "steer";
 
 export interface TaskStopConditions {
@@ -56,17 +50,6 @@ export interface PlannedExecutionStep {
   phase: RuntimeLoopPhase;
   status: "completed" | "pending";
   summary: string;
-}
-
-export interface RuntimeEventRecord {
-  schemaVersion: 1;
-  eventId: string;
-  sessionId: string;
-  taskId: string;
-  correlationId: string;
-  type: RuntimeEventType;
-  createdAt: string;
-  payload: Record<string, unknown>;
 }
 
 export interface TaskIntentRecord {
