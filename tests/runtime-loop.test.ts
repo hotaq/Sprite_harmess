@@ -21,7 +21,9 @@ describe("AgentRuntime interactive task flow", () => {
 
     expect(result.value.request.task).toBe("fix the failing smoke test");
     expect(result.value.request.cwd).toBe("/tmp/sprite-project");
-    expect(result.value.request.allowedDefaults.toolExecutionEnabled).toBe(false);
+    expect(result.value.request.allowedDefaults.toolExecutionEnabled).toBe(
+      false
+    );
     expect(result.value.request.stopConditions.maxIterations).toBe(1);
     expect(result.value.status).toBe("waiting-for-input");
     expect(result.value.currentPhase).toBe("act");
@@ -70,7 +72,9 @@ describe("AgentRuntime interactive task flow", () => {
     });
 
     runtime.submitInteractiveTask("tighten the provider bootstrap output");
-    const result = runtime.steerActiveTask("Focus on auth state rendering before adding more CLI flags.");
+    const result = runtime.steerActiveTask(
+      "Focus on auth state rendering before adding more CLI flags."
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) {
@@ -156,7 +160,9 @@ describe("AgentRuntime interactive task flow", () => {
     });
 
     runtime.submitInteractiveTask("surface an unrecoverable runtime error");
-    const result = runtime.failActiveTask("Provider call failed in a non-recoverable way.");
+    const result = runtime.failActiveTask(
+      "Provider call failed in a non-recoverable way."
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) {
@@ -220,7 +226,9 @@ describe("AgentRuntime interactive task flow", () => {
     expect(first.value.sessionId).not.toBe(second.value.sessionId);
     expect(first.value.taskId).not.toBe(second.value.taskId);
     expect(first.value.correlationId).not.toBe(second.value.correlationId);
-    expect(first.value.events[0]?.eventId).not.toBe(second.value.events[0]?.eventId);
+    expect(first.value.events[0]?.eventId).not.toBe(
+      second.value.events[0]?.eventId
+    );
   });
 
   it("generates a runtime-owned final summary for a max-iterations boundary", () => {
@@ -231,7 +239,7 @@ describe("AgentRuntime interactive task flow", () => {
 
     runtime.submitInteractiveTask("summarize a stopped task");
     const stopped = runtime.stopActiveTaskForMaxIterations(
-      "Stopped before repository inspection and tool execution were available."
+      "Stopped before provider-driven tool execution was connected."
     );
 
     expect(stopped.ok).toBe(true);
@@ -243,7 +251,7 @@ describe("AgentRuntime interactive task flow", () => {
 
     expect(summary).toMatchObject({
       status: "max-iterations",
-      result: "Stopped before repository inspection and tool execution were available.",
+      result: "Stopped before provider-driven tool execution was connected.",
       provider: null,
       model: null,
       sessionId: stopped.value.sessionId,
@@ -257,7 +265,7 @@ describe("AgentRuntime interactive task flow", () => {
     ]);
     expect(summary.notAttempted).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("Repository inspection and tool execution"),
+        expect.stringContaining("Provider-driven tool execution"),
         expect.stringContaining("Validation")
       ])
     );
@@ -304,18 +312,13 @@ describe("AgentRuntime interactive task flow", () => {
     expect(completed.ok).toBe(true);
     expect(failed.ok).toBe(true);
     expect(approvalRequired.ok).toBe(true);
-    if (
-      !cancelled.ok ||
-      !completed.ok ||
-      !failed.ok ||
-      !approvalRequired.ok
-    ) {
+    if (!cancelled.ok || !completed.ok || !failed.ok || !approvalRequired.ok) {
       return;
     }
 
     expect(createFinalTaskSummary(cancelled.value)).toMatchObject({
       status: "cancelled",
-      result: "Task cancelled before repository inspection or tool execution began.",
+      result: "Task cancelled before provider-driven tool execution began.",
       importantEvents: expect.arrayContaining([
         expect.objectContaining({ type: "task.cancelled" })
       ])

@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-04-21T23:28:12+0700
+# last_updated: 2026-04-24T15:41:49+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,14 +35,14 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-04-24T14:08:47+0700
+last_updated: 2026-04-24T15:41:49+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
 story_location: "{project-root}/_bmad-output/implementation-artifacts"
 
 development_status:
-  epic-1: in-progress
+  epic-1: done
   1-1-initialize-runnable-sprite-workspace: done
   1-2-load-global-and-project-configuration-for-first-use: done
   1-3-configure-openai-compatible-provider-for-mvp-task-execution: done
@@ -51,9 +51,9 @@ development_status:
   1-6-emit-runtime-lifecycle-events-for-first-task-execution: done
   1-7-run-one-shot-print-tasks-with-text-json-and-ndjson-output: done
   1-8-produce-final-summary-for-first-runnable-task: done
-  epic-1-retrospective: optional
-  epic-2: backlog
-  2-1-inspect-and-search-project-files-safely: backlog
+  epic-1-retrospective: done
+  epic-2: in-progress
+  2-1-inspect-and-search-project-files-safely: done
   2-2-track-files-read-changed-and-proposed-for-change: backlog
   2-3-propose-and-apply-patch-based-file-edits: backlog
   2-4-classify-risk-for-commands-and-broad-file-edits: backlog

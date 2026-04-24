@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/shared" },
+    { "path": "./packages/tools" },
     { "path": "./packages/core" },
     { "path": "./packages/cli" },
     { "path": "./packages/config" },
@@ -11,7 +12,6 @@
     { "path": "./packages/sandbox" },
     { "path": "./packages/skills" },
     { "path": "./packages/storage" },
-    { "path": "./packages/tools" },
     { "path": "./packages/tui" }
   ]
 }

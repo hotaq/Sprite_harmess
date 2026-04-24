@@ -31,6 +31,7 @@ const TASK_FAILED_REASONS = [
 const TASK_CANCELLED_REASONS = [
   "cancelled"
 ] as const satisfies readonly TaskTerminalReason[];
+const TOOL_NAMES = ["read_file", "list_files", "search_files"] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -38,10 +39,21 @@ const RUNTIME_EVENT_TYPES = [
   "task.completed",
   "task.failed",
   "task.cancelled",
-  "task.steering.received"
+  "task.steering.received",
+  "tool.call.requested",
+  "tool.call.started",
+  "tool.call.completed",
+  "tool.call.failed"
 ] as const;
 
 export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];
+export type RuntimeToolName = (typeof TOOL_NAMES)[number];
+
+export interface RuntimeEventOutputReference {
+  fullOutputStored: boolean;
+  reason: string;
+  path?: string;
+}
 
 export interface RuntimeEventPayloadMap {
   "task.started": {
@@ -69,6 +81,45 @@ export interface RuntimeEventPayloadMap {
   };
   "task.steering.received": {
     note: string;
+  };
+  "tool.call.requested": {
+    cwd: string;
+    query?: string;
+    status: "requested";
+    summary: string;
+    targetPath?: string;
+    toolCallId: string;
+    toolName: RuntimeToolName;
+  };
+  "tool.call.started": {
+    cwd: string;
+    query?: string;
+    status: "started";
+    summary: string;
+    targetPath?: string;
+    toolCallId: string;
+    toolName: RuntimeToolName;
+  };
+  "tool.call.completed": {
+    cwd: string;
+    outputReference?: RuntimeEventOutputReference;
+    query?: string;
+    status: "completed";
+    summary: string;
+    targetPath?: string;
+    toolCallId: string;
+    toolName: RuntimeToolName;
+  };
+  "tool.call.failed": {
+    cwd: string;
+    errorCode: string;
+    message: string;
+    query?: string;
+    status: "failed";
+    summary: string;
+    targetPath?: string;
+    toolCallId: string;
+    toolName: RuntimeToolName;
   };
 }
 
@@ -374,6 +425,38 @@ export function validateRuntimeEvent(
         note: note.value
       });
     }
+    case "tool.call.requested": {
+      return validateToolLifecycleEvent(
+        context,
+        eventType.value,
+        event.payload,
+        "requested"
+      );
+    }
+    case "tool.call.started": {
+      return validateToolLifecycleEvent(
+        context,
+        eventType.value,
+        event.payload,
+        "started"
+      );
+    }
+    case "tool.call.completed": {
+      return validateToolLifecycleEvent(
+        context,
+        eventType.value,
+        event.payload,
+        "completed"
+      );
+    }
+    case "tool.call.failed": {
+      return validateToolLifecycleEvent(
+        context,
+        eventType.value,
+        event.payload,
+        "failed"
+      );
+    }
   }
 
   return err(
@@ -382,6 +465,109 @@ export function validateRuntimeEvent(
       `Unknown runtime event type '${eventType.value}'.`
     )
   );
+}
+
+function validateToolLifecycleEvent<T extends RuntimeEventType>(
+  context: RuntimeEventContext,
+  type: T,
+  payload: Record<string, unknown>,
+  expectedStatus: string
+): Result<RuntimeEventRecord<T>, SpriteError> {
+  const forbiddenField = findForbiddenToolPayloadField(payload);
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw content field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const cwd = requirePayloadString(type, payload, "cwd");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    expectedStatus
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const toolCallId = requirePayloadString(type, payload, "toolCallId");
+  const toolName = requirePayloadLiteral(type, payload, "toolName", TOOL_NAMES);
+
+  if (cwd.ok === false) {
+    return err(cwd.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  if (toolName.ok === false) {
+    return err(toolName.error);
+  }
+
+  const targetPath = optionalPayloadString(type, payload, "targetPath");
+  const query = optionalPayloadString(type, payload, "query");
+
+  if (targetPath.ok === false) {
+    return err(targetPath.error);
+  }
+
+  if (query.ok === false) {
+    return err(query.error);
+  }
+
+  const basePayload = {
+    cwd: cwd.value,
+    ...(query.value === undefined ? {} : { query: query.value }),
+    status: status.value,
+    summary: summary.value,
+    ...(targetPath.value === undefined ? {} : { targetPath: targetPath.value }),
+    toolCallId: toolCallId.value,
+    toolName: toolName.value
+  };
+
+  if (type === "tool.call.completed") {
+    const outputReference = optionalOutputReference(type, payload);
+
+    if (outputReference.ok === false) {
+      return err(outputReference.error);
+    }
+
+    return okRuntimeEvent(context, type, {
+      ...basePayload,
+      ...(outputReference.value === undefined
+        ? {}
+        : { outputReference: outputReference.value })
+    } as RuntimeEventPayload<T>);
+  }
+
+  if (type === "tool.call.failed") {
+    const errorCode = requirePayloadString(type, payload, "errorCode");
+    const message = requirePayloadString(type, payload, "message");
+
+    if (errorCode.ok === false) {
+      return err(errorCode.error);
+    }
+
+    if (message.ok === false) {
+      return err(message.error);
+    }
+
+    return okRuntimeEvent(context, type, {
+      ...basePayload,
+      errorCode: errorCode.value,
+      message: message.value
+    } as RuntimeEventPayload<T>);
+  }
+
+  return okRuntimeEvent(context, type, basePayload as RuntimeEventPayload<T>);
 }
 
 function okRuntimeEvent<T extends RuntimeEventType>(
@@ -429,6 +615,78 @@ function requirePayloadString(
   return { ok: true, value };
 }
 
+function optionalPayloadString(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<string | undefined, SpriteError> {
+  const value = payload[key];
+
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' optional payload field '${key}' must be a non-empty string when provided.`
+      )
+    );
+  }
+
+  return { ok: true, value };
+}
+
+function optionalOutputReference(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>
+): Result<RuntimeEventOutputReference | undefined, SpriteError> {
+  const value = payload.outputReference;
+
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (!isPlainObject(value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' outputReference must be a plain object.`
+      )
+    );
+  }
+
+  if (typeof value.fullOutputStored !== "boolean") {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' outputReference.fullOutputStored must be a boolean.`
+      )
+    );
+  }
+
+  const reason = requirePayloadString(type, value, "reason");
+  const outputPath = optionalPayloadString(type, value, "path");
+
+  if (reason.ok === false) {
+    return err(reason.error);
+  }
+
+  if (outputPath.ok === false) {
+    return err(outputPath.error);
+  }
+
+  return {
+    ok: true,
+    value: {
+      fullOutputStored: value.fullOutputStored,
+      reason: reason.value,
+      ...(outputPath.value === undefined ? {} : { path: outputPath.value })
+    }
+  };
+}
+
 function requirePayloadLiteral<T extends string>(
   type: RuntimeEventType,
   payload: Record<string, unknown>,
@@ -455,6 +713,27 @@ function requirePayloadLiteral<T extends string>(
 
 function isRuntimeEventType(value: string): value is RuntimeEventType {
   return RUNTIME_EVENT_TYPES.includes(value as RuntimeEventType);
+}
+
+function findForbiddenToolPayloadField(
+  payload: Record<string, unknown>
+): string | null {
+  const forbiddenFields = new Set([
+    "content",
+    "matches",
+    "rawContent",
+    "rawSnippet",
+    "snippet",
+    "snippets"
+  ]);
+
+  for (const key of Object.keys(payload)) {
+    if (forbiddenFields.has(key)) {
+      return key;
+    }
+  }
+
+  return null;
 }
 
 function isIsoUtcTimestamp(value: string): boolean {

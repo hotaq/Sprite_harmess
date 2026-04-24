@@ -187,7 +187,7 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("task.started");
     expect(result.stdout).toContain("task.waiting");
     expect(result.stdout).toContain(
-      "repository inspection and tool execution start in later stories"
+      "repository inspection tools are available through runtime/package APIs"
     );
     expect(result.stdout).not.toContain("sk-test-secret");
   });
@@ -267,7 +267,7 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("- terminal: cancelled");
     expect(result.stdout).toContain("Final summary:");
     expect(result.stdout).toContain("- status: cancelled");
-    expect(result.stdout).toContain("Repository inspection and tool execution");
+    expect(result.stdout).toContain("Provider-driven tool execution");
     expect(result.stdout).toContain("Validation");
     expect(result.stdout).toContain("[cancel] User cancelled the active task.");
     expect(result.stdout).toContain("task.cancelled");
@@ -308,7 +308,7 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("- correlation id: corr_");
     expect(result.stdout).toContain("Final summary:");
     expect(result.stdout).toContain("- result:");
-    expect(result.stdout).toContain("Repository inspection and tool execution");
+    expect(result.stdout).toContain("Provider-driven tool execution");
     expect(result.stdout).toContain("Validation");
     expect(result.stdout).toContain("task.failed");
     expect(result.stdout).not.toContain("sk-test-secret");
@@ -372,7 +372,7 @@ describe("sprite cli smoke tests", () => {
         expect.objectContaining({ type: "task.failed" })
       ]),
       notAttempted: expect.arrayContaining([
-        expect.stringContaining("Repository inspection and tool execution"),
+        expect.stringContaining("Provider-driven tool execution"),
         expect.stringContaining("Validation")
       ])
     });

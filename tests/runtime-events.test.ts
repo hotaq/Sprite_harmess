@@ -1,9 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AgentRuntime,
   createRuntimeEventRecord,
   validateRuntimeEvent
 } from "@sprite/core";
+
+const tempRoots: string[] = [];
+
+function createTempRuntimeProject(): {
+  outsideSecretPath: string;
+  projectDir: string;
+  rootDir: string;
+} {
+  const rootDir = mkdtempSync(join(tmpdir(), "sprite-runtime-"));
+  const projectDir = join(rootDir, "project");
+  const outsideSecretPath = join(rootDir, "outside-secret.txt");
+
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(outsideSecretPath, "OPENAI_API_KEY=sk-test-secret");
+  tempRoots.push(rootDir);
+
+  return { outsideSecretPath, projectDir, rootDir };
+}
+
+afterEach(() => {
+  while (tempRoots.length > 0) {
+    const rootDir = tempRoots.pop();
+
+    if (rootDir !== undefined) {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  }
+});
 
 describe("runtime event contract", () => {
   it("validates the canonical runtime event base shape", () => {
@@ -104,6 +135,76 @@ describe("runtime event contract", () => {
       payload: {
         reason: "cancelled",
         message: "A cancelled reason must not validate as task.failed."
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error).toMatchObject({
+      code: "INVALID_RUNTIME_EVENT"
+    });
+  });
+
+  it("validates canonical tool lifecycle events", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_tool",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "tool.call.completed",
+      {
+        cwd: "/tmp/project",
+        outputReference: {
+          fullOutputStored: false,
+          reason: "Full output persistence is not implemented yet."
+        },
+        status: "completed",
+        summary: "read_file completed for README.md.",
+        targetPath: "README.md",
+        toolCallId: "tool_call_test",
+        toolName: "read_file"
+      }
+    );
+
+    const result = validateRuntimeEvent(event);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value).toMatchObject({
+      type: "tool.call.completed",
+      payload: {
+        toolCallId: "tool_call_test",
+        toolName: "read_file",
+        status: "completed"
+      }
+    });
+  });
+
+  it("rejects tool lifecycle events that include raw content in metadata payloads", () => {
+    const result = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_tool",
+      sessionId: "session_test",
+      taskId: "task_test",
+      correlationId: "corr_test",
+      type: "tool.call.completed",
+      createdAt: "2026-04-23T12:40:00.000Z",
+      payload: {
+        cwd: "/tmp/project",
+        rawContent: "OPENAI_API_KEY=sk-test-secret",
+        status: "completed",
+        summary: "read_file completed.",
+        toolCallId: "tool_call_test",
+        toolName: "read_file"
       }
     });
 
@@ -253,5 +354,86 @@ describe("runtime event subscription", () => {
       runtime.getEventHistory(submitted.value.taskId).map((event) => event.type)
     ).toEqual(["task.started", "task.waiting"]);
     expect(observedTypes).toEqual(["task.started", "task.waiting"]);
+  });
+
+  it("emits tool lifecycle events through AgentRuntime without adapter-owned state", async () => {
+    const runtime = new AgentRuntime({
+      cwd: process.cwd(),
+      homeDir: "/tmp/sprite-home"
+    });
+    const observedTypes: string[] = [];
+    runtime.subscribeToEvents((event) => {
+      observedTypes.push(event.type);
+    });
+
+    const submitted = runtime.submitInteractiveTask("read package metadata");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: { path: "package.json" },
+      toolName: "read_file"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(observedTypes.slice(-3)).toEqual([
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.completed"
+    ]);
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .filter((event) => event.type.startsWith("tool.call."))
+        .map((event) => event.type)
+    ).toEqual([
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.completed"
+    ]);
+  });
+
+  it("emits failed tool lifecycle events without exposing raw file content", async () => {
+    const { outsideSecretPath, projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+
+    const submitted = runtime.submitInteractiveTask("read denied file");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: { path: outsideSecretPath },
+      toolName: "read_file"
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    const toolEvents = runtime
+      .getEventHistory(submitted.value.taskId)
+      .filter((event) => event.type.startsWith("tool.call."));
+
+    expect(toolEvents.map((event) => event.type)).toEqual([
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.failed"
+    ]);
+    expect(JSON.stringify(toolEvents)).not.toContain("outside-secret");
+    expect(JSON.stringify(toolEvents)).not.toContain("sk-test-secret");
   });
 });

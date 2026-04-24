@@ -1,8 +1,5 @@
 import type { ResolvedProviderState } from "@sprite/providers";
-import type {
-  RuntimeEventRecord,
-  RuntimeEventType
-} from "./runtime-events.js";
+import type { RuntimeEventRecord, RuntimeEventType } from "./runtime-events.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
 
 export interface FinalTaskSummaryProvider {
@@ -89,7 +86,7 @@ function collectNotAttempted(state: PlannedExecutionFlow): string[] {
 
   if (!state.request.allowedDefaults.toolExecutionEnabled) {
     notes.push(
-      "Repository inspection and tool execution were not attempted because they are deferred to later stories."
+      "Provider-driven tool execution was not attempted by this initial runtime loop."
     );
   }
 
@@ -117,7 +114,7 @@ function collectUnresolvedRisks(state: PlannedExecutionFlow): string[] {
 
   if (state.status === "max-iterations") {
     risks.push(
-      "The requested task is not verified because the runtime stopped before repository inspection, tool execution, or validation."
+      "The requested task is not verified because the runtime stopped before provider-driven tool execution or validation."
     );
   }
 
@@ -127,9 +124,12 @@ function collectUnresolvedRisks(state: PlannedExecutionFlow): string[] {
     );
   }
 
-  if (state.status === "completed" && !state.request.allowedDefaults.toolExecutionEnabled) {
+  if (
+    state.status === "completed" &&
+    !state.request.allowedDefaults.toolExecutionEnabled
+  ) {
     risks.push(
-      "The completed state is not independently verified because tool execution and validation were not run."
+      "The completed state is not independently verified because provider-driven tool execution and validation were not run."
     );
   }
 

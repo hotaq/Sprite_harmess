@@ -152,14 +152,30 @@ sprite --steer "Check auth-state warnings before adding commands." "fix the fail
 sprite --cancel "fix the failing provider tests"
 ```
 
-At this stage the runtime does not yet:
+At this stage the default interactive CLI task does not yet:
 
-- inspect repository files
 - execute tools or commands
 - apply edits
 - persist the runtime event stream to session storage
 
 The goal of this slice is to prove that interactive task submission goes through `AgentRuntime`, not to fake full tool execution early.
+
+## Repository Inspection Tools
+
+Story 2.1 adds the first safe repository inspection tools through the shared runtime/tool boundary:
+
+- `read_file`
+- `list_files`
+- `search_files`
+
+These tools run inside the resolved project directory, reject path escapes, avoid following directory symlinks during traversal, and summarize large outputs over 32 KB or 500 lines. Tool lifecycle observations use canonical runtime events:
+
+- `tool.call.requested`
+- `tool.call.started`
+- `tool.call.completed`
+- `tool.call.failed`
+
+The current CLI does not expose a direct file-inspection command yet. Tool execution is available through runtime/package APIs and remains separate from patch editing, command execution, approvals, validation command execution, sessions, memory, and skills.
 
 Not implemented yet:
 

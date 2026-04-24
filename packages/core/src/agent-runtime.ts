@@ -11,14 +11,23 @@ import {
   type ResolvedProviderState
 } from "@sprite/providers";
 import { SpriteError, err, ok, type Result } from "@sprite/shared";
+import {
+  createToolRegistry,
+  type ToolExecutionResult,
+  type ToolInputMap,
+  type ToolName
+} from "@sprite/tools";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import {
   createFinalTaskSummary,
   type FinalTaskSummary
 } from "./final-task-summary.js";
 import {
+  createRuntimeEventRecord,
   RuntimeEventBus,
   type RuntimeEventListener,
+  type RuntimeEventPayload,
   type RuntimeEventRecord
 } from "./runtime-events.js";
 import {
@@ -71,10 +80,18 @@ export interface OneShotPrintTaskResult {
   events: RuntimeEventRecord[];
 }
 
+export type RuntimeToolCallRequest = {
+  [Name in ToolName]: {
+    input: ToolInputMap[Name];
+    toolName: Name;
+  };
+}[ToolName];
+
 export class AgentRuntime {
   private readonly sessionId = `session_${randomUUID()}`;
   private readonly eventBus = new RuntimeEventBus();
   private readonly emittedEventIds = new Set<string>();
+  private readonly toolRegistry = createToolRegistry();
   private activeTask: PlannedExecutionFlow | null = null;
 
   constructor(private readonly options: RuntimeStartupOptions = {}) {}
@@ -123,7 +140,7 @@ export class AgentRuntime {
       this.nextEventId(),
       [
         ...bootstrapState.value.warnings,
-        "Interactive task planning is available, but repository inspection and tool execution start in later stories."
+        "Interactive task planning is available; repository inspection tools are available through runtime/package APIs, while provider-driven tool use starts in later stories."
       ]
     );
     return this.setActiveTask(taskState);
@@ -275,6 +292,121 @@ export class AgentRuntime {
     );
   }
 
+  async executeToolCall(
+    request: RuntimeToolCallRequest
+  ): Promise<Result<ToolExecutionResult>> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const toolCallId = this.nextId("tool_call");
+    const requestedEvent = this.createToolLifecycleEvent(
+      activeTask.value,
+      "tool.call.requested",
+      request,
+      {
+        status: "requested",
+        summary: `${request.toolName} requested.`
+      },
+      toolCallId
+    );
+    const startedEvent = this.createToolLifecycleEvent(
+      activeTask.value,
+      "tool.call.started",
+      request,
+      {
+        status: "started",
+        summary: `${request.toolName} started.`
+      },
+      toolCallId
+    );
+    const requestedEmitted = this.emitNewEvents([requestedEvent, startedEvent]);
+
+    if (!requestedEmitted.ok) {
+      return err(requestedEmitted.error);
+    }
+
+    const result = await this.executeRegisteredTool(
+      activeTask.value.request.cwd,
+      request
+    );
+
+    if (result.ok) {
+      const completedEvent = this.createToolLifecycleEvent(
+        activeTask.value,
+        "tool.call.completed",
+        request,
+        {
+          outputReference: result.value.output.reference,
+          status: "completed",
+          summary: result.value.summary
+        },
+        toolCallId
+      );
+      const emitted = this.emitNewEvents([completedEvent]);
+
+      if (!emitted.ok) {
+        return err(emitted.error);
+      }
+
+      this.refreshActiveTaskEvents(activeTask.value.taskId);
+      return result;
+    }
+
+    const toolError =
+      result.error instanceof SpriteError
+        ? result.error
+        : new SpriteError("TOOL_FAILED", result.error.message);
+    const failedEvent = this.createToolLifecycleEvent(
+      activeTask.value,
+      "tool.call.failed",
+      request,
+      {
+        errorCode: toolError.code,
+        message: toolError.message,
+        status: "failed",
+        summary: `${request.toolName} failed with ${toolError.code}.`
+      },
+      toolCallId
+    );
+    const emitted = this.emitNewEvents([failedEvent]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return result;
+  }
+
+  private executeRegisteredTool(
+    cwd: string,
+    request: RuntimeToolCallRequest
+  ): Promise<Result<ToolExecutionResult>> {
+    switch (request.toolName) {
+      case "read_file":
+        return this.toolRegistry.execute({
+          cwd,
+          input: request.input,
+          toolName: request.toolName
+        });
+      case "list_files":
+        return this.toolRegistry.execute({
+          cwd,
+          input: request.input,
+          toolName: request.toolName
+        });
+      case "search_files":
+        return this.toolRegistry.execute({
+          cwd,
+          input: request.input,
+          toolName: request.toolName
+        });
+    }
+  }
+
   private getMutableActiveTask(): Result<PlannedExecutionFlow> {
     const activeTask = this.getActiveTask();
 
@@ -296,6 +428,52 @@ export class AgentRuntime {
 
   private nextEventId(): string {
     return this.nextId("evt");
+  }
+
+  private createToolLifecycleEvent(
+    task: PlannedExecutionFlow,
+    type:
+      | "tool.call.completed"
+      | "tool.call.failed"
+      | "tool.call.requested"
+      | "tool.call.started",
+    request: RuntimeToolCallRequest,
+    detail: Record<string, unknown>,
+    toolCallId: string
+  ): RuntimeEventRecord {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      type,
+      {
+        cwd: task.request.cwd,
+        ...this.safeToolTargetPayload(request),
+        ...detail,
+        toolCallId,
+        toolName: request.toolName
+      } as RuntimeEventPayload<typeof type>
+    );
+  }
+
+  private safeToolTargetPayload(
+    request: RuntimeToolCallRequest
+  ): Record<string, string> {
+    const input = request.input as Record<string, unknown>;
+    const targetPath = input.path;
+
+    if (
+      typeof targetPath === "string" &&
+      isSafeProjectRelativePath(targetPath)
+    ) {
+      return { targetPath };
+    }
+
+    return {};
   }
 
   private nextId(prefix: string): string {
@@ -321,6 +499,17 @@ export class AgentRuntime {
     };
 
     return ok(this.activeTask);
+  }
+
+  private refreshActiveTaskEvents(taskId: string): void {
+    if (this.activeTask === null) {
+      return;
+    }
+
+    this.activeTask = {
+      ...this.activeTask,
+      events: this.eventBus.getHistory(taskId)
+    };
   }
 
   private emitNewEvents(events: RuntimeEventRecord[]): Result<void> {
@@ -349,6 +538,14 @@ export class AgentRuntime {
       task.status === "failed"
     );
   }
+}
+
+function isSafeProjectRelativePath(value: string): boolean {
+  return (
+    value.trim().length > 0 &&
+    !path.isAbsolute(value) &&
+    !value.split(/[\\/]/).includes("..")
+  );
 }
 
 function formatOptionalValue(value: string | null): string {
@@ -596,7 +793,7 @@ export function runOneShotPrintTask(
 
     if (!isOneShotStopBoundary(finalState)) {
       const stoppedState = runtime.stopActiveTaskForMaxIterations(
-        "One-shot print mode stopped after the first minimal runtime iteration because repository inspection and tool execution are not available yet."
+        "One-shot print mode stopped after the first minimal runtime iteration because provider-driven tool execution is not connected yet."
       );
 
       if (!stoppedState.ok) {

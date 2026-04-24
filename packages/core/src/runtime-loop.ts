@@ -55,13 +55,13 @@ function createPlanSteps(request: TaskRequest): PlannedExecutionStep[] {
       phase: "act",
       status: "pending",
       summary:
-        "Repository inspection and tool work are deferred to later stories, so no file search, edits, or command execution have been attempted yet."
+        "Provider-driven tool work is not connected to this initial loop yet, so no file search, edits, or command execution have been attempted automatically."
     },
     {
       phase: "observe",
       status: "pending",
       summary:
-        "Observation remains pending until tool execution, validation, and runtime events exist in later stories."
+        "Observation remains pending until the agent loop can consume tool results and validation events automatically."
     }
   ];
 }
@@ -94,12 +94,12 @@ export function runInitialPlanActObserveLoop(
     currentPhase: "act",
     steps: createPlanSteps(request),
     summary:
-      "Initial execution flow created. The runtime has planned the first loop and is now waiting for user input because repository inspection and tool work are not available yet.",
+      "Initial execution flow created. The runtime has planned the first loop and is now waiting for user input because provider-driven tool work is not connected yet.",
     warnings,
     waitingState: {
       reason: "steering-required",
       message:
-        "Repository inspection and tool execution are deferred to later stories, so the runtime is waiting for steering or cancellation input."
+        "Provider-driven tool execution is not connected to this initial loop yet, so the runtime is waiting for steering or cancellation input."
     },
     terminalState: null,
     intents: [],
@@ -128,7 +128,7 @@ export function runInitialPlanActObserveLoop(
         {
           reason: "steering-required",
           message:
-            "Repository inspection and tool execution are deferred to later stories, so the runtime is waiting for steering or cancellation input."
+            "Provider-driven tool execution is not connected to this initial loop yet, so the runtime is waiting for steering or cancellation input."
         }
       )
     ]
@@ -171,18 +171,18 @@ export function applyTaskSteering(
   const waitingRecord = createRuntimeEvent(waitingEvent, "task.waiting", {
     reason: "steering-required",
     message:
-      "Steering input was recorded, but the runtime is still waiting because tool execution starts in later stories."
+      "Steering input was recorded, but the runtime is still waiting because provider-driven tool execution is not connected yet."
   });
 
   return {
     ...state,
     status: "waiting-for-input",
     summary:
-      "Steering input recorded. The runtime remains paused for follow-up input because repository inspection and tool work are not available yet.",
+      "Steering input recorded. The runtime remains paused for follow-up input because provider-driven tool work is not connected yet.",
     waitingState: {
       reason: "steering-required",
       message:
-        "Steering input was recorded, but the runtime is still waiting because tool execution starts in later stories."
+        "Steering input was recorded, but the runtime is still waiting because provider-driven tool execution is not connected yet."
     },
     terminalState: null,
     intents: appendIntent(state, intentRecord),
@@ -210,8 +210,7 @@ export function cancelTask(
   return {
     ...state,
     status: "cancelled",
-    summary:
-      "Task cancelled before repository inspection or tool execution began.",
+    summary: "Task cancelled before provider-driven tool execution began.",
     waitingState: null,
     terminalState: {
       reason: "cancelled",
@@ -222,8 +221,7 @@ export function cancelTask(
       state,
       createRuntimeEvent(cancelledEvent, "task.cancelled", {
         reason: "cancelled",
-        message:
-          "Task cancelled before repository inspection or tool execution began.",
+        message: "Task cancelled before provider-driven tool execution began.",
         note
       })
     )

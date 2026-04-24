@@ -34,7 +34,12 @@
     "packages/shared/dist/**/*.js",
     "packages/shared/dist/**/*.js.map",
     "packages/shared/dist/**/*.d.ts",
-    "packages/shared/dist/**/*.d.ts.map"
+    "packages/shared/dist/**/*.d.ts.map",
+    "packages/tools/package.json",
+    "packages/tools/dist/**/*.js",
+    "packages/tools/dist/**/*.js.map",
+    "packages/tools/dist/**/*.d.ts",
+    "packages/tools/dist/**/*.d.ts.map"
   ],
   "workspaces": [
     "packages/*"
