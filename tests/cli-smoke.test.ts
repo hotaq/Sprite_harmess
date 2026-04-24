@@ -265,6 +265,10 @@ describe("sprite cli smoke tests", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("- task state: cancelled");
     expect(result.stdout).toContain("- terminal: cancelled");
+    expect(result.stdout).toContain("Final summary:");
+    expect(result.stdout).toContain("- status: cancelled");
+    expect(result.stdout).toContain("Repository inspection and tool execution");
+    expect(result.stdout).toContain("Validation");
     expect(result.stdout).toContain("[cancel] User cancelled the active task.");
     expect(result.stdout).toContain("task.cancelled");
     expect(result.stdout).not.toContain("sk-test-secret");
@@ -302,6 +306,10 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("- task: fix the print output");
     expect(result.stdout).toContain("- status: max-iterations");
     expect(result.stdout).toContain("- correlation id: corr_");
+    expect(result.stdout).toContain("Final summary:");
+    expect(result.stdout).toContain("- result:");
+    expect(result.stdout).toContain("Repository inspection and tool execution");
+    expect(result.stdout).toContain("Validation");
     expect(result.stdout).toContain("task.failed");
     expect(result.stdout).not.toContain("sk-test-secret");
   });
@@ -352,6 +360,22 @@ describe("sprite cli smoke tests", () => {
       }
     });
     expect(output.summary).toEqual(expect.any(String));
+    expect(output.finalSummary).toMatchObject({
+      status: "max-iterations",
+      result: expect.stringContaining("One-shot print mode stopped"),
+      provider: {
+        providerName: "openai-compatible",
+        model: "gpt-5.4"
+      },
+      model: "gpt-5.4",
+      importantEvents: expect.arrayContaining([
+        expect.objectContaining({ type: "task.failed" })
+      ]),
+      notAttempted: expect.arrayContaining([
+        expect.stringContaining("Repository inspection and tool execution"),
+        expect.stringContaining("Validation")
+      ])
+    });
     expect(output.sessionId).toEqual(expect.stringMatching(/^session_/));
     expect(output.taskId).toEqual(expect.stringMatching(/^task_/));
     expect(output.correlationId).toEqual(expect.stringMatching(/^corr_/));

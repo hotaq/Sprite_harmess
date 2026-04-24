@@ -5,6 +5,7 @@ import {
   createInteractiveTaskMessage,
   resolveOneShotPrintOutputFormat,
   runOneShotPrintTask,
+  type FinalTaskSummary,
   type OneShotPrintOutputFormat,
   type OneShotPrintTaskResult
 } from "@sprite/core";
@@ -77,6 +78,7 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
     `- correlation id: ${result.correlationId}`,
     ...waitingLine,
     ...terminalLine,
+    ...renderFinalSummaryText(result.finalSummary),
     "Runtime events:",
     ...eventLines,
     ...warningLines
@@ -85,6 +87,41 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
 
 function renderOneShotJson(result: OneShotPrintTaskResult): string {
   return JSON.stringify(result, null, 2);
+}
+
+function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
+  const providerLabel =
+    summary.provider === null
+      ? "not configured"
+      : `${summary.provider.providerName} (${summary.provider.model ?? "model not configured"})`;
+  const importantEventLines = summary.importantEvents.map((event) => {
+    const reason = event.reason === undefined ? "" : ` - ${event.reason}`;
+    return `- ${event.type} (${event.eventId})${reason}`;
+  });
+  const unresolvedRiskLines =
+    summary.unresolvedRisks.length === 0
+      ? ["- none"]
+      : summary.unresolvedRisks.map((risk) => `- ${risk}`);
+  const notAttemptedLines =
+    summary.notAttempted.length === 0
+      ? ["- none"]
+      : summary.notAttempted.map((note) => `- ${note}`);
+
+  return [
+    "Final summary:",
+    `- status: ${summary.status}`,
+    `- result: ${summary.result}`,
+    `- provider: ${providerLabel}`,
+    `- session id: ${summary.sessionId}`,
+    `- task id: ${summary.taskId}`,
+    `- correlation id: ${summary.correlationId}`,
+    "Important events:",
+    ...importantEventLines,
+    "Unresolved risks:",
+    ...unresolvedRiskLines,
+    "Not attempted:",
+    ...notAttemptedLines
+  ];
 }
 
 export function createProgram(io: CliIO, version = CLI_VERSION): Command {

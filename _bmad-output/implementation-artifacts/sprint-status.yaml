@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-04-24T13:33:05+0700
+last_updated: 2026-04-24T14:08:47+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -50,7 +50,7 @@ development_status:
   1-5-stop-cancel-and-steer-a-running-task: done
   1-6-emit-runtime-lifecycle-events-for-first-task-execution: done
   1-7-run-one-shot-print-tasks-with-text-json-and-ndjson-output: done
-  1-8-produce-final-summary-for-first-runnable-task: backlog
+  1-8-produce-final-summary-for-first-runnable-task: done
   epic-1-retrospective: optional
   epic-2: backlog
   2-1-inspect-and-search-project-files-safely: backlog

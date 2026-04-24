@@ -13,6 +13,10 @@ import {
 import { SpriteError, err, ok, type Result } from "@sprite/shared";
 import { randomUUID } from "node:crypto";
 import {
+  createFinalTaskSummary,
+  type FinalTaskSummary
+} from "./final-task-summary.js";
+import {
   RuntimeEventBus,
   type RuntimeEventListener,
   type RuntimeEventRecord
@@ -62,6 +66,7 @@ export interface OneShotPrintTaskResult {
   model: string | null;
   waitingState: PlannedExecutionFlow["waitingState"];
   terminalState: PlannedExecutionFlow["terminalState"];
+  finalSummary: FinalTaskSummary;
   warnings: string[];
   events: RuntimeEventRecord[];
 }
@@ -485,6 +490,9 @@ export function createInteractiveTaskMessage(
   const eventLines = observedEvents.map(
     (event, index) => `${index + 1}. ${event.type} (${event.eventId})`
   );
+  const finalSummaryLines = shouldRenderFinalSummary(state.value)
+    ? formatFinalSummaryLines(createFinalTaskSummary(state.value))
+    : [];
 
   return [
     `Task received: ${state.value.request.task}`,
@@ -499,12 +507,55 @@ export function createInteractiveTaskMessage(
     ...terminalLine,
     ...stepLines,
     state.value.summary,
+    ...finalSummaryLines,
     "Task intents:",
     ...(intentLines.length === 0 ? ["- none"] : intentLines),
     "Runtime events:",
     ...eventLines,
     ...warningLines
   ].join("\n");
+}
+
+function shouldRenderFinalSummary(state: PlannedExecutionFlow): boolean {
+  return (
+    state.terminalState !== null ||
+    state.waitingState?.reason === "approval-required"
+  );
+}
+
+function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
+  const providerLabel =
+    summary.provider === null
+      ? "not configured"
+      : `${summary.provider.providerName} (${summary.provider.model ?? "model not configured"})`;
+  const importantEventLines = summary.importantEvents.map((event) => {
+    const reason = event.reason === undefined ? "" : ` - ${event.reason}`;
+    return `- ${event.type} (${event.eventId})${reason}`;
+  });
+  const unresolvedRiskLines =
+    summary.unresolvedRisks.length === 0
+      ? ["- none"]
+      : summary.unresolvedRisks.map((risk) => `- ${risk}`);
+  const notAttemptedLines =
+    summary.notAttempted.length === 0
+      ? ["- none"]
+      : summary.notAttempted.map((note) => `- ${note}`);
+
+  return [
+    "Final summary:",
+    `- status: ${summary.status}`,
+    `- result: ${summary.result}`,
+    `- provider: ${providerLabel}`,
+    `- session id: ${summary.sessionId}`,
+    `- task id: ${summary.taskId}`,
+    `- correlation id: ${summary.correlationId}`,
+    "Important events:",
+    ...importantEventLines,
+    "Unresolved risks:",
+    ...unresolvedRiskLines,
+    "Not attempted:",
+    ...notAttemptedLines
+  ];
 }
 
 export function resolveOneShotPrintOutputFormat(
@@ -582,6 +633,7 @@ function createOneShotPrintTaskResult(
     model: state.request.provider?.model ?? null,
     waitingState: state.waitingState,
     terminalState: state.terminalState,
+    finalSummary: createFinalTaskSummary(state),
     warnings: state.warnings,
     events: state.events
   };
