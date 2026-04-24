@@ -63,7 +63,7 @@ export function validateRuntimeEvent(
     );
   }
 
-  const stringFields: Array<[string, string]> = [
+  const stringFields: Array<[string, unknown]> = [
     ["eventId", event.eventId],
     ["sessionId", event.sessionId],
     ["taskId", event.taskId],
@@ -73,7 +73,7 @@ export function validateRuntimeEvent(
   ];
 
   for (const [field, value] of stringFields) {
-    if (value.trim().length === 0) {
+    if (typeof value !== "string" || value.trim().length === 0) {
       return err(
         new SpriteError(
           "INVALID_RUNTIME_EVENT",

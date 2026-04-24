@@ -61,6 +61,36 @@ describe("runtime event contract", () => {
       code: "INVALID_RUNTIME_EVENT"
     });
   });
+
+  it("returns a schema error instead of throwing for non-string base fields", () => {
+    const validate = () =>
+      validateRuntimeEvent({
+        schemaVersion: 1,
+        eventId: undefined,
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        type: "task.waiting",
+        createdAt: "2026-04-23T12:40:00.000Z",
+        payload: {
+          reason: "steering-required",
+          message: "Waiting for steering input."
+        }
+      } as never);
+
+    expect(validate).not.toThrow();
+
+    const result = validate();
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error).toMatchObject({
+      code: "INVALID_RUNTIME_EVENT"
+    });
+  });
 });
 
 describe("runtime event subscription", () => {

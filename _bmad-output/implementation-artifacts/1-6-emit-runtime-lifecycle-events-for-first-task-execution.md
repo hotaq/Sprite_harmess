@@ -145,6 +145,9 @@ gpt-5
 - `env PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm run build`
 - `env PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm test`
 - `env PATH=/opt/homebrew/bin:$PATH npm_config_cache=/tmp/sprite-npm-cache /opt/homebrew/bin/npm pack --dry-run`
+- `env PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm test -- tests/runtime-events.test.ts` (7 tests)
+- `env PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm run typecheck`
+- `env PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm test` (36 tests)
 
 ### Completion Notes List
 
@@ -156,6 +159,8 @@ gpt-5
 - Verified `npm run build`, `npm run typecheck`, `npm test`, and `npm pack --dry-run`.
 - Resolved review finding: event subscribers now receive isolated event copies, event history returns copies, and subscriber exceptions no longer abort runtime task transitions.
 - Added regression tests proving subscriber mutation cannot corrupt canonical runtime event history and subscriber failures cannot stop first-task execution.
+- Resolved review finding: runtime event validation now rejects missing or non-string base fields with `INVALID_RUNTIME_EVENT` instead of throwing.
+- Added a regression test proving malformed base fields return schema errors through the Result contract.
 
 ### File List
 
@@ -174,3 +179,4 @@ gpt-5
 - 2026-04-23: Created Story 1.6 with implementation context for canonical runtime lifecycle events and adapter-facing event consumption.
 - 2026-04-23: Implemented canonical runtime lifecycle events, event subscription in core, contract/sequence tests, and CLI event-backed rendering; moved story to review.
 - 2026-04-24: Addressed review findings by isolating subscriber event objects, protecting event history from adapter mutation, and preventing subscriber failures from aborting runtime transitions.
+- 2026-04-24: Addressed review finding for malformed runtime event base fields and verified targeted/full test suites.
