@@ -1308,6 +1308,26 @@ describe("runtime event subscription", () => {
     expect(JSON.stringify(history)).not.toContain("validation ok");
     expect(JSON.stringify(history)).not.toContain("stdout");
     expect(JSON.stringify(history)).not.toContain("stderr");
+
+    const completed = runtime.completeActiveTask(
+      "Configured validation completed successfully."
+    );
+
+    expect(completed.ok).toBe(true);
+    if (completed.ok) {
+      const summary = createFinalTaskSummary(completed.value);
+
+      expect(summary.unresolvedRisks).not.toContain(
+        "The completed state is not independently verified because provider-driven tool execution and validation were not run."
+      );
+      expect(summary.unresolvedRisks).toEqual([]);
+      expect(summary.notAttempted).toContain(
+        "Provider-driven tool execution was not attempted by this initial runtime loop."
+      );
+      expect(summary.notAttempted).not.toContain(
+        "Validation was not attempted because no validation step ran for this task."
+      );
+    }
   });
 
   it("records skipped validation when no validation commands are configured", async () => {

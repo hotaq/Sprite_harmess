@@ -175,7 +175,8 @@ function collectUnresolvedRisks(state: PlannedExecutionFlow): string[] {
 
   if (
     state.status === "completed" &&
-    !state.request.allowedDefaults.toolExecutionEnabled
+    !state.request.allowedDefaults.toolExecutionEnabled &&
+    !hasValidationCompletedWithStatus(state, "passed")
   ) {
     risks.push(
       "The completed state is not independently verified because provider-driven tool execution and validation were not run."
@@ -183,4 +184,14 @@ function collectUnresolvedRisks(state: PlannedExecutionFlow): string[] {
   }
 
   return risks;
+}
+
+function hasValidationCompletedWithStatus(
+  state: PlannedExecutionFlow,
+  status: "blocked" | "failed" | "passed" | "skipped"
+): boolean {
+  return state.events.some(
+    (event) =>
+      event.type === "validation.completed" && event.payload.status === status
+  );
 }
