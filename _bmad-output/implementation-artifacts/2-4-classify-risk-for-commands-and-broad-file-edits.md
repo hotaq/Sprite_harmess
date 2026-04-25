@@ -1,6 +1,6 @@
 # Story 2.4: Classify Risk for Commands and Broad File Edits
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -63,6 +63,13 @@ so that unsafe actions require explicit review.
   - [x] Update README only for implemented classification behavior and current limitations.
   - [x] Run `npm run build`, `npm run typecheck`, `npm run lint`, `npm test`, `git diff --check`, and targeted Prettier check for touched source, tests, README, and story files.
   - [x] Record validation commands and key implementation notes in the Dev Agent Record before moving the story to review.
+
+### Review Findings
+
+- [x] [Review][Patch] Configured validation scripts allow force/write-like flags without approval [packages/sandbox/src/policy-engine.ts:420]
+- [x] [Review][Patch] Shell-interpreter download pipelines are approval-gated instead of denied [packages/sandbox/src/policy-engine.ts:805]
+- [x] [Review][Patch] Targeted file edits with glob or directory-looking paths are allowed [packages/sandbox/src/policy-engine.ts:845]
+- [x] [Review][Patch] Root `.github/workflows` files are not treated as CI/config mutations [packages/sandbox/src/policy-engine.ts:881]
 
 ## Dev Notes
 
@@ -356,6 +363,8 @@ gpt-5
 - `git diff --check`
 - `npm exec -- prettier --check README.md package.json package-lock.json tsconfig.base.json packages/core/package.json packages/core/tsconfig.json packages/core/src/agent-runtime.ts packages/core/src/runtime-events.ts packages/sandbox/package.json packages/sandbox/tsconfig.json packages/sandbox/src/index.ts packages/sandbox/src/policy-engine.ts tests/policy-engine.test.ts tests/runtime-events.test.ts _bmad-output/implementation-artifacts/2-4-classify-risk-for-commands-and-broad-file-edits.md _bmad-output/implementation-artifacts/2-4-classify-risk-for-commands-and-broad-file-edits-validation-report-2026-04-24.md _bmad-output/implementation-artifacts/sprint-status.yaml`
 - GitNexus `detect_changes(scope: all)`: high affected scope; affected flows include runtime event emit/validation and AgentRuntime CLI flow.
+- Code review fixes: GitNexus impact on policy classifier helpers returned LOW risk.
+- Code review fixes validation: `npm run build`; `npm run typecheck`; `npm run lint`; `npm test` (83 tests); `git diff --check`; targeted Prettier check.
 
 ### Completion Notes List
 
@@ -366,6 +375,7 @@ gpt-5
 - Added `AgentRuntime.classifyPolicyRequest()` to emit policy decision audit events using the active task correlation ID without executing commands, mutating files, or gating existing `apply_patch` behavior.
 - Updated README with implemented classification behavior and current limitations.
 - Added deterministic classifier, runtime event, runtime integration, malformed input, and non-enforcement regression tests.
+- Addressed code review findings for configured validation flags, shell download execution through interpreters, glob/directory edit scopes, and root `.github/workflows` config paths.
 
 ### File List
 
@@ -392,3 +402,4 @@ gpt-5
 - 2026-04-24: Created comprehensive Story 2.4 context and moved story to ready-for-dev.
 - 2026-04-24: Validated and refined Story 2.4 context before implementation.
 - 2026-04-24: Implemented policy classification and audit events; moved story to review.
+- 2026-04-24: Addressed code review findings and moved story to done.

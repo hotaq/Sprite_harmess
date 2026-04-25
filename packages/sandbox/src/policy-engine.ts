@@ -108,6 +108,15 @@ const NETWORK_COMMANDS = new Set(["curl", "wget"]);
 const FILE_WRITING_COMMANDS = new Set(["cp", "mkdir", "mv", "tee", "touch"]);
 const DISK_COMMANDS = new Set(["dd", "diskutil", "fdisk", "mkfs"]);
 const VALIDATION_SCRIPT_NAMES = new Set(["check", "lint", "test", "typecheck"]);
+const VALIDATION_WRITE_INDICATORS = new Set([
+  "--fix",
+  "--update",
+  "--update-snapshot",
+  "--updatesnapshot",
+  "--watch",
+  "--write",
+  "-u"
+]);
 
 export function classifyPolicyRequest(
   input: unknown
@@ -410,6 +419,16 @@ function classifyCommandRequest(
 
   if (PACKAGE_MANAGERS.has(commandName) && isPackageScript(args)) {
     if (isConfiguredValidationCommand(request, commandName, args)) {
+      if (hasUnsafeValidationArgs(args)) {
+        return allowDecision({
+          action: "require_approval",
+          reason:
+            "Configured validation commands with mutating or elevated-risk arguments require approval.",
+          riskLevel: "medium",
+          ruleId: "command.validation.unsafe_args"
+        });
+      }
+
       return allowWithTimeout(request, "command.validation.configured");
     }
 
@@ -483,6 +502,15 @@ function classifyFileEditRequest(
       reason: "Secret or runtime state artifact edits are denied.",
       riskLevel: "critical",
       ruleId: "file_edit.path.secret"
+    });
+  }
+
+  if (request.affectedFiles.some(isGlobOrDirectoryMutationPath)) {
+    return allowDecision({
+      action: "require_approval",
+      reason: "Glob or directory edit scopes require approval.",
+      riskLevel: "medium",
+      ruleId: "file_edit.scope.broad"
     });
   }
 
@@ -745,6 +773,23 @@ function hasForceFlag(args: readonly string[]): boolean {
   );
 }
 
+function hasUnsafeValidationArgs(args: readonly string[]): boolean {
+  return args.some((arg) => {
+    const normalized = normalizedCommandName(arg);
+    const lowered = arg.toLowerCase();
+
+    return (
+      PACKAGE_MUTATION_ARGS.has(normalized) ||
+      NETWORK_COMMANDS.has(normalized) ||
+      SHELL_INTERPRETERS.has(normalized) ||
+      FILE_WRITING_COMMANDS.has(normalized) ||
+      DISK_COMMANDS.has(normalized) ||
+      hasForceFlag([arg]) ||
+      VALIDATION_WRITE_INDICATORS.has(lowered)
+    );
+  });
+}
+
 function hasTraversalSegment(value: string): boolean {
   return value.split(/[\\/]/).includes("..");
 }
@@ -761,10 +806,23 @@ function isShellDownloadExecution(
   commandName: string,
   args: readonly string[]
 ): boolean {
-  return (
+  const directDownloadExecution =
     NETWORK_COMMANDS.has(commandName) &&
     args.includes("|") &&
-    args.some((arg) => SHELL_INTERPRETERS.has(arg))
+    args.some((arg) => SHELL_INTERPRETERS.has(normalizedCommandName(arg)));
+
+  if (directDownloadExecution) {
+    return true;
+  }
+
+  if (!SHELL_INTERPRETERS.has(commandName)) {
+    return false;
+  }
+
+  const shellText = args.join(" ").toLowerCase();
+
+  return /\b(curl|wget)\b[\s\S]*\|[\s\S]*\b(sh|bash|zsh|fish)\b/.test(
+    shellText
   );
 }
 
@@ -781,6 +839,15 @@ function isSafeProjectRelativePath(value: string): boolean {
     value.trim().length > 0 &&
     !path.isAbsolute(value) &&
     !value.split(/[\\/]/).includes("..")
+  );
+}
+
+function isGlobOrDirectoryMutationPath(value: string): boolean {
+  return (
+    value === "." ||
+    value.endsWith("/") ||
+    value.endsWith("\\") ||
+    /[*?[\]{}]/.test(value)
   );
 }
 
@@ -811,6 +878,7 @@ function isPackageOrConfigPath(value: string): boolean {
     basename === "bun.lockb" ||
     basename === ".npmrc" ||
     basename.startsWith("tsconfig") ||
+    normalized.startsWith(".github/workflows/") ||
     normalized.includes("/.github/workflows/") ||
     /(^|[\\/])[^\\/]*(config|rc)\.(json|js|cjs|mjs|ts|yaml|yml)$/.test(value)
   );
