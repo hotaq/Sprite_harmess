@@ -107,7 +107,13 @@ const SHELL_INTERPRETERS = new Set(["bash", "fish", "sh", "zsh"]);
 const NETWORK_COMMANDS = new Set(["curl", "wget"]);
 const FILE_WRITING_COMMANDS = new Set(["cp", "mkdir", "mv", "tee", "touch"]);
 const DISK_COMMANDS = new Set(["dd", "diskutil", "fdisk", "mkfs"]);
-const VALIDATION_SCRIPT_NAMES = new Set(["check", "lint", "test", "typecheck"]);
+const VALIDATION_SCRIPT_NAMES = new Set([
+  "build",
+  "check",
+  "lint",
+  "test",
+  "typecheck"
+]);
 const VALIDATION_WRITE_INDICATORS = new Set([
   "--fix",
   "--update",

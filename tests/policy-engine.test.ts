@@ -64,6 +64,24 @@ describe("policy risk classifier", () => {
         ruleId: "command.validation.configured"
       }
     });
+
+    const buildDecision = classifyPolicyRequest({
+      args: ["run", "build"],
+      command: "npm",
+      configuredValidation: true,
+      cwd: "/tmp/project",
+      timeoutMs: 60_000,
+      type: "command"
+    });
+
+    expect(buildDecision).toMatchObject({
+      ok: true,
+      value: {
+        action: "allow",
+        riskLevel: "low",
+        ruleId: "command.validation.configured"
+      }
+    });
   });
 
   it("requires approval for configured validation commands with force or write indicators", () => {

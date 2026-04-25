@@ -66,6 +66,13 @@ const APPROVAL_DECISIONS = [
   "timeout",
   "alwaysAllowForSession"
 ] as const;
+const VALIDATION_STARTED_STATUSES = ["started"] as const;
+const VALIDATION_COMPLETED_STATUSES = [
+  "blocked",
+  "failed",
+  "passed",
+  "skipped"
+] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -77,6 +84,8 @@ const RUNTIME_EVENT_TYPES = [
   "policy.decision.recorded",
   "approval.requested",
   "approval.resolved",
+  "validation.started",
+  "validation.completed",
   "file.edit.applied",
   "file.edit.failed",
   "file.edit.requested",
@@ -161,6 +170,31 @@ export interface RuntimeEventPayloadMap {
     status: "resolved";
     summary: string;
     toolCallId?: string;
+  };
+  "validation.started": {
+    command: string;
+    cwd: string;
+    name?: string;
+    status: (typeof VALIDATION_STARTED_STATUSES)[number];
+    summary: string;
+    timeoutMs?: number;
+    toolCallId: string;
+    validationId: string;
+  };
+  "validation.completed": {
+    command?: string;
+    cwd?: string;
+    durationMs?: number;
+    errorCode?: string;
+    exitCode?: number | null;
+    message?: string;
+    name?: string;
+    outputReference?: RuntimeEventOutputReference;
+    status: (typeof VALIDATION_COMPLETED_STATUSES)[number];
+    summary: string;
+    timeoutMs?: number;
+    toolCallId?: string;
+    validationId: string;
   };
   "file.edit.applied": {
     affectedFiles: string[];
@@ -571,6 +605,20 @@ export function validateRuntimeEvent(
     }
     case "approval.resolved": {
       return validateApprovalResolvedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "validation.started": {
+      return validateValidationStartedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "validation.completed": {
+      return validateValidationCompletedEvent(
         context,
         eventType.value,
         event.payload
@@ -1164,6 +1212,249 @@ function validateApprovalResolvedEvent(
     status: status.value,
     summary: summary.value,
     ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value })
+  });
+}
+
+function validateValidationStartedEvent(
+  context: RuntimeEventContext,
+  type: "validation.started",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"validation.started">, SpriteError> {
+  const forbiddenField = findForbiddenToolPayloadField(payload);
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw content field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const command = requirePayloadString(type, payload, "command");
+  const cwd = requirePayloadString(type, payload, "cwd");
+  const name = optionalPayloadString(type, payload, "name");
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    VALIDATION_STARTED_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const timeoutMs = optionalNonNegativeInteger(type, payload, "timeoutMs");
+  const toolCallId = requirePayloadString(type, payload, "toolCallId");
+  const validationId = requirePayloadString(type, payload, "validationId");
+
+  if (command.ok === false) {
+    return err(command.error);
+  }
+
+  if (containsSecretLikeValue(command.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload command must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (cwd.ok === false) {
+    return err(cwd.error);
+  }
+
+  if (name.ok === false) {
+    return err(name.error);
+  }
+
+  if (name.value !== undefined && containsSecretLikeValue(name.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload name must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (timeoutMs.ok === false) {
+    return err(timeoutMs.error);
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  if (validationId.ok === false) {
+    return err(validationId.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    command: command.value,
+    cwd: cwd.value,
+    ...(name.value === undefined ? {} : { name: name.value }),
+    status: status.value,
+    summary: summary.value,
+    ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
+    toolCallId: toolCallId.value,
+    validationId: validationId.value
+  });
+}
+
+function validateValidationCompletedEvent(
+  context: RuntimeEventContext,
+  type: "validation.completed",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"validation.completed">, SpriteError> {
+  const forbiddenField = findForbiddenToolPayloadField(payload);
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw content field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const command = optionalPayloadString(type, payload, "command");
+  const cwd = optionalPayloadString(type, payload, "cwd");
+  const durationMs = optionalNonNegativeInteger(type, payload, "durationMs");
+  const errorCode = optionalPayloadString(type, payload, "errorCode");
+  const exitCode = optionalExitCode(type, payload, "exitCode");
+  const message = optionalPayloadString(type, payload, "message");
+  const name = optionalPayloadString(type, payload, "name");
+  const outputReference = optionalOutputReference(type, payload);
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    VALIDATION_COMPLETED_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const timeoutMs = optionalNonNegativeInteger(type, payload, "timeoutMs");
+  const toolCallId = optionalPayloadString(type, payload, "toolCallId");
+  const validationId = requirePayloadString(type, payload, "validationId");
+
+  if (command.ok === false) {
+    return err(command.error);
+  }
+
+  if (command.value !== undefined && containsSecretLikeValue(command.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload command must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (cwd.ok === false) {
+    return err(cwd.error);
+  }
+
+  if (durationMs.ok === false) {
+    return err(durationMs.error);
+  }
+
+  if (errorCode.ok === false) {
+    return err(errorCode.error);
+  }
+
+  if (exitCode.ok === false) {
+    return err(exitCode.error);
+  }
+
+  if (message.ok === false) {
+    return err(message.error);
+  }
+
+  if (message.value !== undefined && containsSecretLikeValue(message.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload message must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (name.ok === false) {
+    return err(name.error);
+  }
+
+  if (name.value !== undefined && containsSecretLikeValue(name.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload name must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (outputReference.ok === false) {
+    return err(outputReference.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (timeoutMs.ok === false) {
+    return err(timeoutMs.error);
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  if (validationId.ok === false) {
+    return err(validationId.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    ...(command.value === undefined ? {} : { command: command.value }),
+    ...(cwd.value === undefined ? {} : { cwd: cwd.value }),
+    ...(durationMs.value === undefined ? {} : { durationMs: durationMs.value }),
+    ...(errorCode.value === undefined ? {} : { errorCode: errorCode.value }),
+    ...(exitCode.value === undefined ? {} : { exitCode: exitCode.value }),
+    ...(message.value === undefined ? {} : { message: message.value }),
+    ...(name.value === undefined ? {} : { name: name.value }),
+    ...(outputReference.value === undefined
+      ? {}
+      : { outputReference: outputReference.value }),
+    status: status.value,
+    summary: summary.value,
+    ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
+    ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value }),
+    validationId: validationId.value
   });
 }
 

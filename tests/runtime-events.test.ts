@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   AgentRuntime,
+  createFinalTaskSummary,
   createRuntimeEventRecord,
   validateRuntimeEvent
 } from "@sprite/core";
@@ -511,6 +512,91 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(rawPatch).ok).toBe(false);
     expect(validateRuntimeEvent(rawEnv).ok).toBe(false);
     expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
+  });
+
+  it("validates validation lifecycle events without raw command output", () => {
+    const started = createRuntimeEventRecord(
+      {
+        eventId: "evt_validation_started",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "validation.started",
+      {
+        command: "npm run typecheck",
+        cwd: "/tmp/project",
+        name: "typecheck",
+        status: "started",
+        summary: "Validation typecheck started.",
+        timeoutMs: 60_000,
+        toolCallId: "tool_call_validation",
+        validationId: "validation_test"
+      }
+    );
+    const completed = createRuntimeEventRecord(
+      {
+        eventId: "evt_validation_completed",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:01.000Z"
+      },
+      "validation.completed",
+      {
+        command: "npm run typecheck",
+        cwd: "/tmp/project",
+        durationMs: 1200,
+        exitCode: 0,
+        name: "typecheck",
+        outputReference: {
+          fullOutputStored: false,
+          reason: "Output fit inline summary limits."
+        },
+        status: "passed",
+        summary: "Validation typecheck passed.",
+        timeoutMs: 60_000,
+        toolCallId: "tool_call_validation",
+        validationId: "validation_test"
+      }
+    );
+    const skipped = createRuntimeEventRecord(
+      {
+        eventId: "evt_validation_skipped",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:02.000Z"
+      },
+      "validation.completed",
+      {
+        message: "No configured validation command was available.",
+        status: "skipped",
+        summary: "Validation skipped: no configured command was available.",
+        validationId: "validation_skipped"
+      }
+    );
+    const rawStdout = {
+      ...completed,
+      payload: {
+        ...completed.payload,
+        stdout: "secret output"
+      }
+    };
+    const secretName = {
+      ...started,
+      payload: {
+        ...started.payload,
+        name: "OPENAI_API_KEY=sk-test-secret"
+      }
+    };
+
+    expect(validateRuntimeEvent(started).ok).toBe(true);
+    expect(validateRuntimeEvent(completed).ok).toBe(true);
+    expect(validateRuntimeEvent(skipped).ok).toBe(true);
+    expect(validateRuntimeEvent(rawStdout).ok).toBe(false);
+    expect(validateRuntimeEvent(secretName).ok).toBe(false);
   });
 });
 
@@ -1119,6 +1205,225 @@ describe("runtime event subscription", () => {
     });
     expect(JSON.stringify(history)).not.toContain("stdout");
     expect(JSON.stringify(history)).not.toContain("stderr");
+  });
+
+  it("runs configured validation commands through policy and sandbox", async () => {
+    const { projectDir, rootDir } = createTempRuntimeProject();
+    writeProjectFile(
+      projectDir,
+      "package.json",
+      JSON.stringify(
+        {
+          scripts: {
+            check: "node -e \"process.stdout.write('validation ok')\""
+          }
+        },
+        null,
+        2
+      )
+    );
+    writeProjectFile(
+      projectDir,
+      ".sprite/config.json",
+      JSON.stringify(
+        {
+          validation: {
+            commands: [
+              {
+                args: ["run", "check"],
+                command: "npm",
+                name: "check",
+                timeoutMs: 30_000
+              }
+            ]
+          }
+        },
+        null,
+        2
+      )
+    );
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: join(rootDir, "home")
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "run configured validation"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const validation = await runtime.runConfiguredValidationCommands();
+
+    expect(validation).toMatchObject({
+      ok: true,
+      value: {
+        results: [
+          {
+            command: "npm run check",
+            name: "check",
+            status: "passed"
+          }
+        ],
+        status: "passed"
+      }
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "validation.started",
+      "policy.decision.recorded",
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.completed",
+      "validation.completed"
+    ]);
+    expect(
+      history.find((event) => event.type === "validation.started")
+    ).toMatchObject({
+      payload: {
+        command: "npm run check",
+        name: "check",
+        status: "started",
+        timeoutMs: 30_000
+      }
+    });
+    expect(
+      history.find((event) => event.type === "validation.completed")
+    ).toMatchObject({
+      payload: {
+        command: "npm run check",
+        name: "check",
+        status: "passed"
+      }
+    });
+    expect(JSON.stringify(history)).not.toContain("validation ok");
+    expect(JSON.stringify(history)).not.toContain("stdout");
+    expect(JSON.stringify(history)).not.toContain("stderr");
+  });
+
+  it("records skipped validation when no validation commands are configured", async () => {
+    const { projectDir, rootDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: join(rootDir, "home")
+    });
+    const submitted = runtime.submitInteractiveTask("skip validation");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const validation = await runtime.runConfiguredValidationCommands();
+
+    expect(validation).toMatchObject({
+      ok: true,
+      value: {
+        reason: "No configured validation command was available.",
+        results: [],
+        status: "skipped"
+      }
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "validation.completed"
+    ]);
+    expect(history[2]).toMatchObject({
+      payload: {
+        message: "No configured validation command was available.",
+        status: "skipped"
+      },
+      type: "validation.completed"
+    });
+
+    const activeTask = runtime.getActiveTask();
+    expect(activeTask.ok).toBe(true);
+    if (activeTask.ok) {
+      expect(createFinalTaskSummary(activeTask.value).notAttempted).toContain(
+        "No relevant validation was available because no validation command was configured."
+      );
+    }
+  });
+
+  it("records failed validation without starting recovery", async () => {
+    const { projectDir, rootDir } = createTempRuntimeProject();
+    writeProjectFile(
+      projectDir,
+      "package.json",
+      JSON.stringify(
+        {
+          scripts: {
+            test: 'node -e "process.exit(1)"'
+          }
+        },
+        null,
+        2
+      )
+    );
+    writeProjectFile(
+      projectDir,
+      ".sprite/config.json",
+      JSON.stringify(
+        {
+          validation: {
+            commands: [
+              {
+                args: ["run", "test"],
+                command: "npm",
+                name: "test"
+              }
+            ]
+          }
+        },
+        null,
+        2
+      )
+    );
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: join(rootDir, "home")
+    });
+    const submitted = runtime.submitInteractiveTask("fail validation");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const validation = await runtime.runConfiguredValidationCommands();
+
+    expect(validation).toMatchObject({
+      ok: true,
+      value: {
+        results: [
+          {
+            errorCode: "TOOL_COMMAND_FAILED",
+            name: "test",
+            status: "failed"
+          }
+        ],
+        status: "failed"
+      }
+    });
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .find((event) => event.type === "validation.completed")
+    ).toMatchObject({
+      payload: {
+        errorCode: "TOOL_COMMAND_FAILED",
+        message: "Validation command failed.",
+        status: "failed"
+      }
+    });
   });
 
   it("does not execute denied run_command requests and requests approval for risky commands", async () => {

@@ -63,6 +63,7 @@ Current bootstrap-visible fields:
 - `provider.model`
 - `output.format` (`text`, `json`, `ndjson`)
 - `sandbox.mode` (`workspace-write`, `read-only`, `full-access`)
+- `validation.commands`
 
 Example:
 
@@ -77,6 +78,16 @@ Example:
   },
   "sandbox": {
     "mode": "workspace-write"
+  },
+  "validation": {
+    "commands": [
+      {
+        "name": "typecheck",
+        "command": "npm",
+        "args": ["run", "typecheck"],
+        "timeoutMs": 60000
+      }
+    ]
   }
 }
 ```
@@ -244,8 +255,34 @@ The runtime rejects approval actions that were not listed in the request's
 Current limitations:
 
 - CLI/TUI/RPC approval prompts remain future adapter work
-- configured validation command orchestration remains Story 2.7
 - provider-driven automatic command use remains future work
+
+## Project Validation Commands
+
+Project validation commands can be configured in `.sprite/config.json` using a
+structured, shell-free command shape:
+
+```json
+{
+  "validation": {
+    "commands": [
+      {
+        "name": "test",
+        "command": "npm",
+        "args": ["run", "test"],
+        "timeoutMs": 60000
+      }
+    ]
+  }
+}
+```
+
+Runtime callers can invoke `AgentRuntime.runConfiguredValidationCommands()` to
+run the configured commands through the same policy, approval, sandbox, and
+tool lifecycle path as `run_command`. Validation emits metadata-only
+`validation.started` and `validation.completed` events. If no validation command
+is configured, the runtime emits a skipped `validation.completed` event so final
+summaries can state that no relevant validation was available.
 
 ## Policy Classification
 
@@ -270,8 +307,8 @@ Policy classification itself remains approval-free. Command execution and
 events, while broad or risky edits wait for approval before any file is written.
 Approval requests always include a timeout value, and tasks waiting on approval
 block further runtime tool execution until the pending approval is resolved.
-This does not run configured validation commands or add provider-driven
-automatic tool-calling.
+Configured validation commands also use policy and sandbox checks; provider-driven
+automatic tool-calling remains future work.
 
 Not implemented yet:
 

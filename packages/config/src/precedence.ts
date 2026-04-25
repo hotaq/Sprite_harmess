@@ -46,6 +46,13 @@ function mergeSandbox(
   return mergeDefined(base, override);
 }
 
+function mergeValidation(
+  base: SpriteConfig["validation"],
+  override: SpriteConfig["validation"]
+): SpriteConfig["validation"] {
+  return mergeDefined(base, override);
+}
+
 export function mergeSpriteConfigs(
   globalConfig?: SpriteConfig | null,
   projectConfig?: SpriteConfig | null
@@ -53,6 +60,10 @@ export function mergeSpriteConfigs(
   return {
     provider: mergeProvider(globalConfig?.provider, projectConfig?.provider),
     output: mergeOutput(globalConfig?.output, projectConfig?.output),
-    sandbox: mergeSandbox(globalConfig?.sandbox, projectConfig?.sandbox)
+    sandbox: mergeSandbox(globalConfig?.sandbox, projectConfig?.sandbox),
+    validation: mergeValidation(
+      globalConfig?.validation,
+      projectConfig?.validation
+    )
   };
 }

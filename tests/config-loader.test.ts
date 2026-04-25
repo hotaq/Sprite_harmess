@@ -53,6 +53,7 @@ describe("resolveStartupConfig", () => {
     expect(result.model).toBeNull();
     expect(result.outputFormat).toBe("text");
     expect(result.sandboxMode).toBe("workspace-write");
+    expect(result.validationCommands).toEqual([]);
     expect(result.globalConfigLoaded).toBe(false);
     expect(result.projectConfigLoaded).toBe(false);
     expect(result.warnings).toEqual([]);
@@ -102,6 +103,7 @@ describe("resolveStartupConfig", () => {
     expect(result.model).toBe("gpt-5.4");
     expect(result.outputFormat).toBe("ndjson");
     expect(result.sandboxMode).toBe("read-only");
+    expect(result.validationCommands).toEqual([]);
     expect(result.globalConfigLoaded).toBe(true);
     expect(result.projectConfigLoaded).toBe(true);
     expect(result.warnings).toEqual([]);
@@ -126,5 +128,71 @@ describe("resolveStartupConfig", () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("Failed to load");
     expect(result.warnings[0]).toContain(join(homeDir, ".sprite/config.json"));
+  });
+
+  it("loads and overrides structured validation commands", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+
+    writeJson(join(homeDir, ".sprite/config.json"), {
+      validation: {
+        commands: [
+          {
+            args: ["run", "typecheck"],
+            command: "npm",
+            name: "global-typecheck",
+            timeoutMs: 60_000
+          }
+        ]
+      }
+    });
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      validation: {
+        commands: [
+          {
+            args: ["run", "test", "--silent"],
+            command: "npm",
+            cwd: ".",
+            name: "project-test",
+            timeoutMs: 45_000
+          }
+        ]
+      }
+    });
+
+    const result = resolveStartupConfig({
+      cwd: projectDir,
+      homeDir
+    });
+
+    expect(result.validationCommands).toEqual([
+      {
+        args: ["run", "test", "--silent"],
+        command: "npm",
+        cwd: ".",
+        name: "project-test",
+        timeoutMs: 45_000
+      }
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("records a warning for malformed validation command config", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      validation: {
+        commands: [{ args: "run test", command: "npm" }]
+      }
+    });
+
+    const result = resolveStartupConfig({
+      cwd: projectDir,
+      homeDir
+    });
+
+    expect(result.validationCommands).toEqual([]);
+    expect(result.projectConfigLoaded).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("validation.commands[0].args");
   });
 });

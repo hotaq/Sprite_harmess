@@ -3,7 +3,8 @@ import {
   toStartupConfig,
   type ConfigLoaderOptions,
   type ResolvedStartupConfig,
-  type SpriteOutputFormat
+  type SpriteOutputFormat,
+  type SpriteValidationCommand
 } from "@sprite/config";
 import {
   initializeProviderAdapter,
@@ -138,6 +139,32 @@ export type RuntimeApprovalResponse =
       >;
       reason?: string;
     };
+
+export type RuntimeValidationCommandStatus = "blocked" | "failed" | "passed";
+export type RuntimeValidationRunStatus =
+  | RuntimeValidationCommandStatus
+  | "skipped";
+
+export interface RuntimeValidationCommandResult {
+  command: string;
+  cwd: string;
+  durationMs?: number;
+  errorCode?: string;
+  exitCode?: number | null;
+  message?: string;
+  name?: string;
+  outputReference?: RuntimeEventPayload<"validation.completed">["outputReference"];
+  status: RuntimeValidationCommandStatus;
+  timeoutMs?: number;
+  toolCallId: string;
+  validationId: string;
+}
+
+export interface RuntimeValidationRunSummary {
+  reason?: string;
+  results: RuntimeValidationCommandResult[];
+  status: RuntimeValidationRunStatus;
+}
 
 interface PendingApprovalRecord {
   approvalRequest: ApprovalRequest;
@@ -384,18 +411,132 @@ export class AgentRuntime {
     }
 
     const toolCallId = this.nextId("tool_call");
+    return this.executeToolCallWithId(activeTask.value, request, toolCallId);
+  }
+
+  async runConfiguredValidationCommands(): Promise<
+    Result<RuntimeValidationRunSummary>
+  > {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    if (activeTask.value.waitingState?.reason === "approval-required") {
+      return err(
+        new SpriteError(
+          "APPROVAL_PENDING",
+          "Resolve the pending approval before running validation commands."
+        )
+      );
+    }
+
+    const validationCommands =
+      activeTask.value.request.startup.validationCommands;
+
+    if (validationCommands.length === 0) {
+      const validationId = this.nextId("validation");
+      const skippedEvent = this.createValidationCompletedEvent(
+        activeTask.value,
+        {
+          message: "No configured validation command was available.",
+          status: "skipped",
+          summary: "Validation skipped: no configured command was available.",
+          validationId
+        }
+      );
+      const emitted = this.emitNewEvents([skippedEvent]);
+
+      if (!emitted.ok) {
+        return err(emitted.error);
+      }
+
+      this.refreshActiveTaskEvents(activeTask.value.taskId);
+      return ok({
+        reason: "No configured validation command was available.",
+        results: [],
+        status: "skipped"
+      });
+    }
+
+    const results: RuntimeValidationCommandResult[] = [];
+
+    for (const command of validationCommands) {
+      const validationId = this.nextId("validation");
+      const toolCallId = this.nextId("tool_call");
+      const request = this.createValidationToolCall(activeTask.value, command);
+      const startedEvent = this.createValidationStartedEvent(
+        activeTask.value,
+        command,
+        request,
+        validationId,
+        toolCallId
+      );
+      const started = this.emitNewEvents([startedEvent]);
+
+      if (!started.ok) {
+        return err(started.error);
+      }
+
+      const result = await this.executeToolCallWithId(
+        activeTask.value,
+        request,
+        toolCallId
+      );
+      const commandResult = this.createValidationCommandResult(
+        command,
+        request,
+        result,
+        validationId,
+        toolCallId
+      );
+      const latestTask = this.getMutableActiveTask();
+      const eventTask = latestTask.ok ? latestTask.value : activeTask.value;
+      const completedEvent = this.createValidationCompletedEvent(
+        eventTask,
+        commandResult
+      );
+      const completed = this.emitNewEvents([completedEvent]);
+
+      if (!completed.ok) {
+        return err(completed.error);
+      }
+
+      this.refreshActiveTaskEvents(eventTask.taskId);
+      results.push(commandResult);
+
+      if (commandResult.status !== "passed") {
+        return ok({
+          results,
+          status: commandResult.status
+        });
+      }
+    }
+
+    return ok({
+      results,
+      status: "passed"
+    });
+  }
+
+  private executeToolCallWithId(
+    task: PlannedExecutionFlow,
+    request: RuntimeToolCallRequest,
+    toolCallId: string
+  ): Promise<Result<ToolExecutionResult>> {
     const policyCheckedRequest = this.preparePolicyCheckedToolCall(
-      activeTask.value,
+      task,
       request,
       toolCallId
     );
 
     if (!policyCheckedRequest.ok) {
-      return err(policyCheckedRequest.error);
+      return Promise.resolve(err(policyCheckedRequest.error));
     }
 
     return this.executeApprovedToolCall(
-      activeTask.value,
+      task,
       policyCheckedRequest.value,
       toolCallId
     );
@@ -992,6 +1133,91 @@ export class AgentRuntime {
     };
   }
 
+  private createValidationToolCall(
+    task: PlannedExecutionFlow,
+    command: SpriteValidationCommand
+  ): Extract<RuntimeToolCallRequest, { toolName: "run_command" }> {
+    const cwd =
+      command.cwd === undefined
+        ? task.request.cwd
+        : path.resolve(task.request.cwd, command.cwd);
+
+    return {
+      input: {
+        ...(command.args === undefined ? {} : { args: command.args }),
+        command: command.command,
+        configuredValidation: true,
+        cwd,
+        ...(command.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: command.timeoutMs })
+      },
+      toolName: "run_command"
+    };
+  }
+
+  private createValidationCommandResult(
+    command: SpriteValidationCommand,
+    request: Extract<RuntimeToolCallRequest, { toolName: "run_command" }>,
+    result: Result<ToolExecutionResult>,
+    validationId: string,
+    toolCallId: string
+  ): RuntimeValidationCommandResult {
+    const base = {
+      command: summarizeRuntimeCommand(request.input),
+      cwd: request.input.cwd ?? "",
+      ...(command.name === undefined ? {} : { name: command.name }),
+      ...(request.input.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: request.input.timeoutMs }),
+      toolCallId,
+      validationId
+    };
+
+    if (result.ok) {
+      return {
+        ...base,
+        durationMs:
+          result.value.toolName === "run_command"
+            ? result.value.durationMs
+            : undefined,
+        exitCode:
+          result.value.toolName === "run_command"
+            ? result.value.exitCode
+            : undefined,
+        outputReference:
+          result.value.toolName === "run_command"
+            ? result.value.output.reference
+            : undefined,
+        status: "passed"
+      };
+    }
+
+    const commandMetadata = getRunCommandErrorMetadata(result.error);
+    const status = isValidationBlockedError(result.error)
+      ? "blocked"
+      : "failed";
+
+    return {
+      ...base,
+      ...(commandMetadata === null
+        ? {}
+        : {
+            durationMs: commandMetadata.durationMs,
+            exitCode: commandMetadata.exitCode,
+            outputReference: commandMetadata.outputReference,
+            timeoutMs: commandMetadata.timeoutMs
+          }),
+      errorCode:
+        result.error instanceof SpriteError ? result.error.code : "TOOL_FAILED",
+      message:
+        status === "blocked"
+          ? "Validation command is blocked pending approval."
+          : "Validation command failed.",
+      status
+    };
+  }
+
   private executeModifiedApprovalRequest(
     task: PlannedExecutionFlow,
     request: CommandPolicyRequest
@@ -1074,6 +1300,92 @@ export class AgentRuntime {
         toolCallId,
         toolName: request.toolName
       } as RuntimeEventPayload<typeof type>
+    );
+  }
+
+  private createValidationStartedEvent(
+    task: PlannedExecutionFlow,
+    command: SpriteValidationCommand,
+    request: Extract<RuntimeToolCallRequest, { toolName: "run_command" }>,
+    validationId: string,
+    toolCallId: string
+  ): RuntimeEventRecord<"validation.started"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "validation.started",
+      {
+        command: summarizeRuntimeCommand(request.input),
+        cwd: request.input.cwd ?? task.request.cwd,
+        ...(command.name === undefined ? {} : { name: command.name }),
+        status: "started",
+        summary: `Validation ${command.name ?? validationId} started.`,
+        ...(request.input.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: request.input.timeoutMs }),
+        toolCallId,
+        validationId
+      }
+    );
+  }
+
+  private createValidationCompletedEvent(
+    task: PlannedExecutionFlow,
+    result:
+      | RuntimeValidationCommandResult
+      | {
+          message: string;
+          status: "skipped";
+          summary: string;
+          validationId: string;
+        }
+  ): RuntimeEventRecord<"validation.completed"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "validation.completed",
+      {
+        ...("command" in result ? { command: result.command } : {}),
+        ...("cwd" in result ? { cwd: result.cwd } : {}),
+        ...("durationMs" in result && result.durationMs !== undefined
+          ? { durationMs: result.durationMs }
+          : {}),
+        ...("errorCode" in result && result.errorCode !== undefined
+          ? { errorCode: result.errorCode }
+          : {}),
+        ...("exitCode" in result && result.exitCode !== undefined
+          ? { exitCode: result.exitCode }
+          : {}),
+        ...("message" in result && result.message !== undefined
+          ? { message: result.message }
+          : {}),
+        ...("name" in result && result.name !== undefined
+          ? { name: result.name }
+          : {}),
+        ...("outputReference" in result && result.outputReference !== undefined
+          ? { outputReference: result.outputReference }
+          : {}),
+        status: result.status,
+        summary:
+          result.status === "skipped"
+            ? result.summary
+            : `Validation ${result.name ?? result.validationId} ${result.status}.`,
+        ...("timeoutMs" in result && result.timeoutMs !== undefined
+          ? { timeoutMs: result.timeoutMs }
+          : {}),
+        ...("toolCallId" in result ? { toolCallId: result.toolCallId } : {}),
+        validationId: result.validationId
+      }
     );
   }
 
@@ -1677,6 +1989,20 @@ function safeCommandPayload(
       ? { timeoutMs: input.timeoutMs }
       : {})
   };
+}
+
+function summarizeRuntimeCommand(input: ToolInputMap["run_command"]): string {
+  return [input.command.trim(), ...(input.args ?? [])]
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
+function isValidationBlockedError(error: unknown): boolean {
+  return (
+    error instanceof SpriteError &&
+    (error.code === "APPROVAL_PENDING" ||
+      error.code === "COMMAND_REQUIRES_APPROVAL")
+  );
 }
 
 function cloneApprovalRequest(request: ApprovalRequest): ApprovalRequest {

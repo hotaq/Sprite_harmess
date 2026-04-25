@@ -99,9 +99,27 @@ function collectNotAttempted(state: PlannedExecutionFlow): string[] {
     );
   }
 
-  notes.push(
-    "Validation was not attempted because command execution and validation are not available in the first minimal runtime."
-  );
+  if (
+    state.events.some(
+      (event) =>
+        event.type === "validation.completed" &&
+        event.payload.status === "skipped"
+    )
+  ) {
+    notes.push(
+      "No relevant validation was available because no validation command was configured."
+    );
+  } else if (
+    !state.events.some(
+      (event) =>
+        event.type === "validation.started" ||
+        event.type === "validation.completed"
+    )
+  ) {
+    notes.push(
+      "Validation was not attempted because no validation step ran for this task."
+    );
+  }
 
   return notes;
 }
@@ -130,6 +148,28 @@ function collectUnresolvedRisks(state: PlannedExecutionFlow): string[] {
   if (state.status === "failed") {
     risks.push(
       "The task failed before recovery and validation could complete."
+    );
+  }
+
+  if (
+    state.events.some(
+      (event) =>
+        event.type === "validation.completed" &&
+        event.payload.status === "failed"
+    )
+  ) {
+    risks.push("At least one configured validation command failed.");
+  }
+
+  if (
+    state.events.some(
+      (event) =>
+        event.type === "validation.completed" &&
+        event.payload.status === "blocked"
+    )
+  ) {
+    risks.push(
+      "At least one configured validation command is blocked pending approval or policy handling."
     );
   }
 

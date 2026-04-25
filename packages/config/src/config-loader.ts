@@ -5,7 +5,8 @@ import {
   parseSpriteConfig,
   type SpriteConfig,
   type SpriteOutputFormat,
-  type SpriteSandboxMode
+  type SpriteSandboxMode,
+  type SpriteValidationCommand
 } from "./config-schema.js";
 import { mergeSpriteConfigs } from "./precedence.js";
 
@@ -28,6 +29,7 @@ export interface ResolvedStartupConfig {
   model: string | null;
   outputFormat: SpriteOutputFormat;
   sandboxMode: SpriteSandboxMode;
+  validationCommands: SpriteValidationCommand[];
   globalConfigPath: string;
   projectConfigPath: string;
   globalConfigLoaded: boolean;
@@ -134,10 +136,25 @@ export function toStartupConfig(
     model: config.provider?.model ?? null,
     outputFormat: config.output?.format ?? DEFAULT_OUTPUT_FORMAT,
     sandboxMode: config.sandbox?.mode ?? DEFAULT_SANDBOX_MODE,
+    validationCommands: cloneValidationCommands(
+      config.validation?.commands ?? []
+    ),
     globalConfigPath: runtimeConfig.globalConfigPath,
     projectConfigPath: runtimeConfig.projectConfigPath,
     globalConfigLoaded: runtimeConfig.globalConfigLoaded,
     projectConfigLoaded: runtimeConfig.projectConfigLoaded,
     warnings: runtimeConfig.warnings
   };
+}
+
+function cloneValidationCommands(
+  commands: readonly SpriteValidationCommand[]
+): SpriteValidationCommand[] {
+  return commands.map((command) => ({
+    ...(command.args === undefined ? {} : { args: [...command.args] }),
+    command: command.command,
+    ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
+    ...(command.name === undefined ? {} : { name: command.name }),
+    ...(command.timeoutMs === undefined ? {} : { timeoutMs: command.timeoutMs })
+  }));
 }
