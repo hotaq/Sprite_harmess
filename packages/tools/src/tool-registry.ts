@@ -94,18 +94,15 @@ export class ToolRegistry {
   ): Promise<Result<ToolExecutionResult, SpriteError>> {
     switch (request.toolName) {
       case "apply_patch":
-        return applyProjectPatch(request.cwd, request.input as ApplyPatchInput);
+        return applyProjectPatch(request.cwd, request.input);
       case "read_file":
-        return readProjectFile(request.cwd, request.input as ReadFileInput);
+        return readProjectFile(request.cwd, request.input);
       case "list_files":
-        return listProjectFiles(request.cwd, request.input as ListFilesInput);
+        return listProjectFiles(request.cwd, request.input);
       case "run_command":
-        return runProjectCommand(request.cwd, request.input as RunCommandInput);
+        return runProjectCommand(request.cwd, request.input);
       case "search_files":
-        return searchProjectFiles(
-          request.cwd,
-          request.input as SearchFilesInput
-        );
+        return searchProjectFiles(request.cwd, request.input);
     }
 
     return Promise.resolve(
