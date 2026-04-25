@@ -28,6 +28,10 @@ function formatAuthStoreError(path: string, error: unknown): string {
   return `Failed to load auth file ${path}: ${message}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function resolveProviderAuthFilePath(
   providerName: string,
   options: AuthStoreOptions = {}
@@ -56,7 +60,11 @@ export function loadApiKeyAuthFile(
   }
 
   try {
-    const rawValue = JSON.parse(readFileSync(path, "utf8")) as { apiKey?: unknown };
+    const rawValue = JSON.parse(readFileSync(path, "utf8")) as unknown;
+
+    if (!isRecord(rawValue)) {
+      throw new Error("auth file must contain a JSON object.");
+    }
 
     if (typeof rawValue.apiKey !== "string") {
       throw new Error("auth file apiKey must be a string.");
