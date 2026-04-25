@@ -53,6 +53,19 @@ const FILE_EDIT_EVENT_TYPES = [
 const POLICY_ACTIONS = ["allow", "deny", "modify", "require_approval"] as const;
 const POLICY_REQUEST_TYPES = ["command", "file_edit"] as const;
 const POLICY_RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
+const APPROVAL_ACTIONS = [
+  "allow",
+  "deny",
+  "edit",
+  "alwaysAllowForSession"
+] as const;
+const APPROVAL_DECISIONS = [
+  "allow",
+  "deny",
+  "edit",
+  "timeout",
+  "alwaysAllowForSession"
+] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -62,6 +75,8 @@ const RUNTIME_EVENT_TYPES = [
   "task.cancelled",
   "task.steering.received",
   "policy.decision.recorded",
+  "approval.requested",
+  "approval.resolved",
   "file.edit.applied",
   "file.edit.failed",
   "file.edit.requested",
@@ -121,6 +136,31 @@ export interface RuntimeEventPayloadMap {
     status: "recorded";
     summary: string;
     timeoutMs?: number;
+  };
+  "approval.requested": {
+    affectedFiles?: string[];
+    allowedActions: (typeof APPROVAL_ACTIONS)[number][];
+    approvalRequestId: string;
+    command?: string;
+    cwd?: string;
+    envExposure?: "custom" | "none";
+    reason: string;
+    requestType: (typeof POLICY_REQUEST_TYPES)[number];
+    riskLevel: (typeof POLICY_RISK_LEVELS)[number];
+    ruleId: string;
+    status: "pending";
+    summary: string;
+    timeoutMs?: number;
+    toolCallId?: string;
+  };
+  "approval.resolved": {
+    approvalRequestId: string;
+    decision: (typeof APPROVAL_DECISIONS)[number];
+    reason?: string;
+    requestType: (typeof POLICY_REQUEST_TYPES)[number];
+    status: "resolved";
+    summary: string;
+    toolCallId?: string;
   };
   "file.edit.applied": {
     affectedFiles: string[];
@@ -522,6 +562,20 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "approval.requested": {
+      return validateApprovalRequestedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "approval.resolved": {
+      return validateApprovalResolvedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "file.edit.applied":
     case "file.edit.failed":
     case "file.edit.requested": {
@@ -834,6 +888,273 @@ function validatePolicyDecisionEvent(
     status: status.value,
     summary: summary.value,
     ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value })
+  });
+}
+
+function validateApprovalRequestedEvent(
+  context: RuntimeEventContext,
+  type: "approval.requested",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"approval.requested">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const affectedFiles = optionalPayloadPathArray(
+    type,
+    payload,
+    "affectedFiles"
+  );
+  const allowedActions = requirePayloadLiteralArray(
+    type,
+    payload,
+    "allowedActions",
+    APPROVAL_ACTIONS
+  );
+  const approvalRequestId = requirePayloadString(
+    type,
+    payload,
+    "approvalRequestId"
+  );
+  const command = optionalPayloadString(type, payload, "command");
+  const cwd = optionalPayloadString(type, payload, "cwd");
+  const envExposure = optionalPayloadLiteral(type, payload, "envExposure", [
+    "custom",
+    "none"
+  ] as const);
+  const reason = requirePayloadString(type, payload, "reason");
+  const requestType = requirePayloadLiteral(
+    type,
+    payload,
+    "requestType",
+    POLICY_REQUEST_TYPES
+  );
+  const riskLevel = requirePayloadLiteral(
+    type,
+    payload,
+    "riskLevel",
+    POLICY_RISK_LEVELS
+  );
+  const ruleId = requirePayloadString(type, payload, "ruleId");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "pending"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const timeoutMs = optionalNonNegativeInteger(type, payload, "timeoutMs");
+  const toolCallId = optionalPayloadString(type, payload, "toolCallId");
+
+  if (affectedFiles.ok === false) {
+    return err(affectedFiles.error);
+  }
+
+  if (allowedActions.ok === false) {
+    return err(allowedActions.error);
+  }
+
+  if (approvalRequestId.ok === false) {
+    return err(approvalRequestId.error);
+  }
+
+  if (command.ok === false) {
+    return err(command.error);
+  }
+
+  if (cwd.ok === false) {
+    return err(cwd.error);
+  }
+
+  if (envExposure.ok === false) {
+    return err(envExposure.error);
+  }
+
+  if (reason.ok === false) {
+    return err(reason.error);
+  }
+
+  if (containsSecretLikeValue(reason.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload reason must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (requestType.ok === false) {
+    return err(requestType.error);
+  }
+
+  if (riskLevel.ok === false) {
+    return err(riskLevel.error);
+  }
+
+  if (ruleId.ok === false) {
+    return err(ruleId.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (command.value !== undefined && containsSecretLikeValue(command.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload command must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (timeoutMs.ok === false) {
+    return err(timeoutMs.error);
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    ...(affectedFiles.value === undefined
+      ? {}
+      : { affectedFiles: affectedFiles.value }),
+    allowedActions: allowedActions.value,
+    approvalRequestId: approvalRequestId.value,
+    ...(command.value === undefined ? {} : { command: command.value }),
+    ...(cwd.value === undefined ? {} : { cwd: cwd.value }),
+    ...(envExposure.value === undefined
+      ? {}
+      : { envExposure: envExposure.value }),
+    reason: reason.value,
+    requestType: requestType.value,
+    riskLevel: riskLevel.value,
+    ruleId: ruleId.value,
+    status: status.value,
+    summary: summary.value,
+    ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
+    ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value })
+  });
+}
+
+function validateApprovalResolvedEvent(
+  context: RuntimeEventContext,
+  type: "approval.resolved",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"approval.resolved">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const approvalRequestId = requirePayloadString(
+    type,
+    payload,
+    "approvalRequestId"
+  );
+  const decision = requirePayloadLiteral(
+    type,
+    payload,
+    "decision",
+    APPROVAL_DECISIONS
+  );
+  const reason = optionalPayloadString(type, payload, "reason");
+  const requestType = requirePayloadLiteral(
+    type,
+    payload,
+    "requestType",
+    POLICY_REQUEST_TYPES
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "resolved"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const toolCallId = optionalPayloadString(type, payload, "toolCallId");
+
+  if (approvalRequestId.ok === false) {
+    return err(approvalRequestId.error);
+  }
+
+  if (decision.ok === false) {
+    return err(decision.error);
+  }
+
+  if (reason.ok === false) {
+    return err(reason.error);
+  }
+
+  if (reason.value !== undefined && containsSecretLikeValue(reason.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload reason must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (requestType.ok === false) {
+    return err(requestType.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    approvalRequestId: approvalRequestId.value,
+    decision: decision.value,
+    ...(reason.value === undefined ? {} : { reason: reason.value }),
+    requestType: requestType.value,
+    status: status.value,
+    summary: summary.value,
+    ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value })
   });
 }
 
@@ -1313,6 +1634,50 @@ function requirePayloadPathArray(
   }
 
   return { ok: true, value: safePaths };
+}
+
+function requirePayloadLiteralArray<T extends string>(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string,
+  allowedValues: readonly T[]
+): Result<T[], SpriteError> {
+  const value = payload[key];
+
+  if (!Array.isArray(value) || value.length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field '${key}' must be a non-empty array.`
+      )
+    );
+  }
+
+  const literals: T[] = [];
+
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${key}' must contain non-empty strings.`
+        )
+      );
+    }
+
+    if (!allowedValues.includes(item as T)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${key}' has unsupported value '${item}'.`
+        )
+      );
+    }
+
+    literals.push(item as T);
+  }
+
+  return { ok: true, value: literals };
 }
 
 function optionalOutputReference(

@@ -438,6 +438,79 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(invalidAction).ok).toBe(false);
     expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
   });
+
+  it("validates approval lifecycle events without raw command or patch metadata", () => {
+    const requested = createRuntimeEventRecord(
+      {
+        eventId: "evt_approval_requested",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "approval.requested",
+      {
+        affectedFiles: ["package.json"],
+        allowedActions: ["allow", "deny", "edit"],
+        approvalRequestId: "appr_test",
+        cwd: "/tmp/project",
+        envExposure: "none",
+        reason: "Package or project configuration edits require approval.",
+        requestType: "file_edit",
+        riskLevel: "high",
+        ruleId: "file_edit.package_config",
+        status: "pending",
+        summary: "File edit approval requested.",
+        toolCallId: "tool_call_test"
+      }
+    );
+    const resolved = createRuntimeEventRecord(
+      {
+        eventId: "evt_approval_resolved",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:00.000Z"
+      },
+      "approval.resolved",
+      {
+        approvalRequestId: "appr_test",
+        decision: "deny",
+        reason: "User denied approval.",
+        requestType: "file_edit",
+        status: "resolved",
+        summary: "Approval denied.",
+        toolCallId: "tool_call_test"
+      }
+    );
+    const rawPatch = {
+      ...requested,
+      payload: {
+        ...requested.payload,
+        oldText: "OPENAI_API_KEY=sk-test-secret"
+      }
+    };
+    const rawEnv = {
+      ...requested,
+      payload: {
+        ...requested.payload,
+        env: { OPENAI_API_KEY: "sk-test-secret" }
+      }
+    };
+    const secretSummary = {
+      ...resolved,
+      payload: {
+        ...resolved.payload,
+        summary: "Approval denied for OPENAI_API_KEY=sk-test-secret."
+      }
+    };
+
+    expect(validateRuntimeEvent(requested).ok).toBe(true);
+    expect(validateRuntimeEvent(resolved).ok).toBe(true);
+    expect(validateRuntimeEvent(rawPatch).ok).toBe(false);
+    expect(validateRuntimeEvent(rawEnv).ok).toBe(false);
+    expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
+  });
 });
 
 describe("runtime event subscription", () => {
@@ -888,6 +961,7 @@ describe("runtime event subscription", () => {
     expect(history.map((event) => event.type)).toEqual([
       "task.started",
       "task.waiting",
+      "policy.decision.recorded",
       "tool.call.requested",
       "tool.call.started",
       "file.edit.requested",
@@ -1046,7 +1120,7 @@ describe("runtime event subscription", () => {
     expect(JSON.stringify(history)).not.toContain("stderr");
   });
 
-  it("does not execute denied or approval-required run_command requests", async () => {
+  it("does not execute denied run_command requests and requests approval for risky commands", async () => {
     const { projectDir } = createTempRuntimeProject();
     const runtime = new AgentRuntime({
       cwd: projectDir,
@@ -1085,24 +1159,290 @@ describe("runtime event subscription", () => {
       error: { code: "COMMAND_REQUIRES_APPROVAL" },
       ok: false
     });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
 
     const history = runtime.getEventHistory(submitted.value.taskId);
     expect(history.map((event) => event.type)).toEqual([
       "task.started",
       "task.waiting",
       "policy.decision.recorded",
-      "policy.decision.recorded"
+      "policy.decision.recorded",
+      "approval.requested",
+      "task.waiting"
     ]);
+    expect(history[4]).toMatchObject({
+      correlationId: submitted.value.correlationId,
+      payload: {
+        allowedActions: ["allow", "deny", "edit"],
+        approvalRequestId: expect.stringMatching(/^appr_/),
+        command: "node",
+        requestType: "command",
+        riskLevel: "medium",
+        ruleId: "command.unknown",
+        status: "pending",
+        timeoutMs: 30_000
+      },
+      type: "approval.requested"
+    });
     const activeTask = runtime.getActiveTask();
     expect(activeTask.ok).toBe(true);
     if (activeTask.ok) {
       expect(activeTask.value.events.map((event) => event.type)).toEqual(
         history.map((event) => event.type)
       );
+      expect(activeTask.value.waitingState).toMatchObject({
+        reason: "approval-required"
+      });
     }
     expect(history.some((event) => event.type.startsWith("tool.call."))).toBe(
       false
     );
+  });
+
+  it("allows, denies, times out, and edits pending command approvals", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const allowRuntime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const allowSubmitted = allowRuntime.submitInteractiveTask(
+      "approve node version command"
+    );
+
+    expect(allowSubmitted.ok).toBe(true);
+    if (!allowSubmitted.ok) {
+      return;
+    }
+
+    const pending = await allowRuntime.executeToolCall({
+      input: {
+        args: ["--version"],
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(pending.ok).toBe(false);
+    const approval = allowRuntime.getPendingApprovals()[0];
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const approved = await allowRuntime.respondToApproval({
+      action: "allow",
+      approvalRequestId: approval.approvalRequestId
+    });
+
+    expect(approved).toMatchObject({
+      ok: true,
+      value: {
+        status: "completed",
+        toolName: "run_command"
+      }
+    });
+    expect(
+      allowRuntime
+        .getEventHistory(allowSubmitted.value.taskId)
+        .map((event) => event.type)
+    ).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "approval.requested",
+      "task.waiting",
+      "approval.resolved",
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.completed"
+    ]);
+
+    const denyRuntime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const denySubmitted = denyRuntime.submitInteractiveTask("deny command");
+
+    expect(denySubmitted.ok).toBe(true);
+    if (!denySubmitted.ok) {
+      return;
+    }
+
+    await denyRuntime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const deniedApproval = denyRuntime.getPendingApprovals()[0];
+
+    expect(deniedApproval).toBeDefined();
+    if (deniedApproval === undefined) {
+      return;
+    }
+
+    const denied = await denyRuntime.respondToApproval({
+      action: "deny",
+      approvalRequestId: deniedApproval.approvalRequestId,
+      reason: "Do not run this command."
+    });
+
+    expect(denied).toMatchObject({
+      error: { code: "APPROVAL_DENIED" },
+      ok: false
+    });
+    expect(denyRuntime.getActiveTask()).toMatchObject({
+      ok: true,
+      value: {
+        waitingState: null
+      }
+    });
+    expect(
+      denyRuntime
+        .getEventHistory(denySubmitted.value.taskId)
+        .map((event) => event.type)
+        .includes("approval.resolved")
+    ).toBe(true);
+    expect(
+      denyRuntime
+        .getEventHistory(denySubmitted.value.taskId)
+        .some((event) => event.type.startsWith("tool.call."))
+    ).toBe(false);
+
+    const timeoutRuntime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    timeoutRuntime.submitInteractiveTask("timeout command approval");
+    await timeoutRuntime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const timedOutApproval = timeoutRuntime.getPendingApprovals()[0];
+
+    expect(timedOutApproval).toBeDefined();
+    if (timedOutApproval === undefined) {
+      return;
+    }
+
+    const timedOut = await timeoutRuntime.respondToApproval({
+      action: "timeout",
+      approvalRequestId: timedOutApproval.approvalRequestId
+    });
+
+    expect(timedOut).toMatchObject({
+      error: { code: "APPROVAL_TIMED_OUT" },
+      ok: false
+    });
+
+    const editRuntime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const editSubmitted = editRuntime.submitInteractiveTask("edit command");
+
+    expect(editSubmitted.ok).toBe(true);
+    if (!editSubmitted.ok) {
+      return;
+    }
+
+    await editRuntime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const editedApproval = editRuntime.getPendingApprovals()[0];
+
+    expect(editedApproval).toBeDefined();
+    if (editedApproval === undefined) {
+      return;
+    }
+
+    const edited = await editRuntime.respondToApproval({
+      action: "edit",
+      approvalRequestId: editedApproval.approvalRequestId,
+      modifiedRequest: {
+        command: "pwd",
+        cwd: projectDir,
+        timeoutMs: 30_000,
+        type: "command"
+      }
+    });
+
+    expect(edited).toMatchObject({
+      ok: true,
+      value: {
+        command: "pwd",
+        status: "completed",
+        toolName: "run_command"
+      }
+    });
+    expect(
+      editRuntime
+        .getEventHistory(editSubmitted.value.taskId)
+        .filter((event) => event.type === "policy.decision.recorded")
+    ).toHaveLength(2);
+  });
+
+  it("isolates approval event mutations from subscribers and history readers", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    let observedStatus: unknown;
+
+    runtime.subscribeToEvents((event) => {
+      if (event.type === "approval.requested") {
+        event.payload.status = "mutated-by-subscriber";
+      }
+    });
+    runtime.subscribeToEvents((event) => {
+      if (event.type === "approval.requested") {
+        observedStatus = event.payload.status;
+      }
+    });
+
+    const submitted = runtime.submitInteractiveTask(
+      "approval events are cloned"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    const approvalEvent = runtime
+      .getEventHistory(submitted.value.taskId)
+      .find((event) => event.type === "approval.requested");
+
+    expect(observedStatus).toBe("pending");
+    expect(approvalEvent?.payload.status).toBe("pending");
+
+    if (approvalEvent !== undefined) {
+      approvalEvent.payload.status = "mutated-by-history-reader";
+    }
+
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .find((event) => event.type === "approval.requested")?.payload.status
+    ).toBe("pending");
   });
 
   it("emits failed run_command lifecycle events for command failures", async () => {
@@ -1155,7 +1495,7 @@ describe("runtime event subscription", () => {
     });
   });
 
-  it("does not gate existing apply_patch execution before approval enforcement exists", async () => {
+  it("records file edit policy before safe apply_patch execution", async () => {
     const { projectDir } = createTempRuntimeProject();
     writeProjectFile(projectDir, "src/edit.ts", "export const value = 1;\n");
     const runtime = new AgentRuntime({
@@ -1203,6 +1543,7 @@ describe("runtime event subscription", () => {
       "task.started",
       "task.waiting",
       "policy.decision.recorded",
+      "policy.decision.recorded",
       "tool.call.requested",
       "tool.call.started",
       "file.edit.requested",
@@ -1210,6 +1551,203 @@ describe("runtime event subscription", () => {
       "file.edit.applied",
       "file.activity.recorded"
     ]);
+  });
+
+  it("requires approval before applying broad or risky apply_patch edits", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "package.json", '{"name":"old"}\n');
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("approve package patch");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const pending = await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "package.json",
+            oldText: '"old"',
+            newText: '"new"'
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+
+    expect(pending).toMatchObject({
+      error: { code: "FILE_EDIT_REQUIRES_APPROVAL" },
+      ok: false
+    });
+    expect(readFileSync(join(projectDir, "package.json"), "utf8")).toBe(
+      '{"name":"old"}\n'
+    );
+
+    const approval = runtime.getPendingApprovals()[0];
+    expect(approval).toMatchObject({
+      affectedFiles: ["package.json"],
+      approvalRequestId: expect.stringMatching(/^appr_/),
+      cwd: projectDir,
+      envExposure: "none",
+      requestType: "file_edit",
+      riskLevel: "high",
+      ruleId: "file_edit.package_config"
+    });
+
+    const approved = await runtime.respondToApproval({
+      action: "allow",
+      approvalRequestId: approval?.approvalRequestId ?? ""
+    });
+
+    expect(approved).toMatchObject({
+      ok: true,
+      value: {
+        affectedFiles: ["package.json"],
+        status: "completed",
+        toolName: "apply_patch"
+      }
+    });
+    expect(readFileSync(join(projectDir, "package.json"), "utf8")).toBe(
+      '{"name":"new"}\n'
+    );
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "approval.requested",
+      "task.waiting",
+      "approval.resolved",
+      "tool.call.requested",
+      "tool.call.started",
+      "file.edit.requested",
+      "tool.call.completed",
+      "file.edit.applied",
+      "file.activity.recorded"
+    ]);
+  });
+
+  it("edits pending apply_patch approvals by reclassifying modified tool calls", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "package.json", '{"name":"old"}\n');
+    writeProjectFile(projectDir, "src/edit.ts", "export const value = 1;\n");
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("edit risky patch request");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "package.json",
+            oldText: '"old"',
+            newText: '"new"'
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const edited = await runtime.respondToApproval({
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId,
+      modifiedToolCall: {
+        input: {
+          edits: [
+            {
+              path: "src/edit.ts",
+              oldText: "value = 1",
+              newText: "value = 2"
+            }
+          ]
+        },
+        toolName: "apply_patch"
+      },
+      reason: "Apply the safer source edit instead."
+    });
+
+    expect(edited).toMatchObject({
+      ok: true,
+      value: {
+        affectedFiles: ["src/edit.ts"],
+        toolName: "apply_patch"
+      }
+    });
+    expect(readFileSync(join(projectDir, "package.json"), "utf8")).toBe(
+      '{"name":"old"}\n'
+    );
+    expect(readFileSync(join(projectDir, "src/edit.ts"), "utf8")).toBe(
+      "export const value = 2;\n"
+    );
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(
+      history.filter((event) => event.type === "policy.decision.recorded")
+    ).toHaveLength(2);
+    expect(
+      history.find((event) => event.type === "approval.resolved")?.payload
+    ).toMatchObject({
+      decision: "edit",
+      status: "resolved"
+    });
+  });
+
+  it("does not apply denied risky apply_patch edits", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, ".env.local", "SECRET=old\n");
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("deny secret patch");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const denied = await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: ".env.local",
+            oldText: "old",
+            newText: "new"
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+
+    expect(denied).toMatchObject({
+      error: { code: "FILE_EDIT_DENIED_BY_POLICY" },
+      ok: false
+    });
+    expect(readFileSync(join(projectDir, ".env.local"), "utf8")).toBe(
+      "SECRET=old\n"
+    );
+    expect(
+      runtime.getEventHistory(submitted.value.taskId).map((event) => event.type)
+    ).toEqual(["task.started", "task.waiting", "policy.decision.recorded"]);
   });
 
   it("emits patch failure events without changed file activity", async () => {
@@ -1245,6 +1783,7 @@ describe("runtime event subscription", () => {
     expect(history.map((event) => event.type)).toEqual([
       "task.started",
       "task.waiting",
+      "policy.decision.recorded",
       "tool.call.requested",
       "tool.call.started",
       "file.edit.requested",

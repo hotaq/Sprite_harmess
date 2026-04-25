@@ -176,7 +176,7 @@ These tools run inside the resolved project directory, reject path escapes, avoi
 - `tool.call.completed`
 - `tool.call.failed`
 
-The current CLI does not expose direct commands for file inspection, patching, or command execution yet. Tool execution is available through runtime/package APIs and remains separate from provider-driven automatic tool use, approvals, validation command execution, sessions, memory, and skills.
+The current CLI does not expose direct commands for file inspection, patching, command execution, or approval responses yet. Tool execution and approval response handling are available through runtime/package APIs and remain separate from provider-driven automatic tool use, validation command execution, sessions, memory, and skills.
 
 ## Patch-Based File Edits
 
@@ -231,9 +231,14 @@ Command tool events use metadata-only payloads. They can identify command, cwd,
 status, timeout, exit code, duration, and output reference, but do not include
 raw stdout, stderr, custom environment values, or command output bodies.
 
+Approval-required command requests now create metadata-only approval events and
+pending runtime approvals. Runtime callers can respond with allow, deny, edit,
+or timeout decisions; approved commands still execute through `run_command` and
+`SandboxRunner`, while denial and timeout return structured observations.
+
 Current limitations:
 
-- approval prompts remain Story 2.6
+- CLI/TUI/RPC approval prompts remain future adapter work
 - configured validation command orchestration remains Story 2.7
 - provider-driven automatic command use remains future work
 
@@ -254,16 +259,17 @@ classifier validates untrusted request shapes, rejects raw content fields, keeps
 environment values and patch bodies out of decisions, and treats repository or
 tool-output instructions as untrusted input.
 
-Policy classification itself remains approval-free. Command execution is now
-available through the policy-gated `run_command` runtime/tool path, but this
-does not create approval prompts, gate `apply_patch`, run configured validation
-commands, or add provider-driven automatic tool-calling.
+Policy classification itself remains approval-free. Command execution and
+`apply_patch` now use runtime approval gates when policy returns
+`require_approval`; safe targeted patches still use the existing patch lifecycle
+events, while broad or risky edits wait for approval before any file is written.
+This does not run configured validation commands or add provider-driven
+automatic tool-calling.
 
 Not implemented yet:
 
 - Live provider completions and tool-calling execution
 - Full multi-iteration agent loop progression
-- Patch approval flow and approval enforcement
 - TUI
 - RPC server
 - Sessions, memory, and skills

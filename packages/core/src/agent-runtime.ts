@@ -13,9 +13,14 @@ import {
 import {
   classifyPolicyRequest as classifySandboxPolicyRequest,
   summarizePolicyRequestForEvent,
+  type ApprovalAction,
+  type ApprovalRequest,
+  type ApprovalResponse,
   type CommandPolicyRequest,
+  type FileEditPolicyRequest,
   type PolicyDecision,
-  type PolicyEventMetadata
+  type PolicyEventMetadata,
+  type PolicyRequest
 } from "@sprite/sandbox";
 import { SpriteError, err, ok, type Result } from "@sprite/shared";
 import {
@@ -116,10 +121,29 @@ interface RuntimeFileEditMetadata {
   editId: string;
 }
 
+export type RuntimeApprovalResponse =
+  | Exclude<ApprovalResponse, { action: "edit" }>
+  | ({
+      action: "edit";
+      approvalRequestId: string;
+      reason?: string;
+    } & (
+      | { modifiedRequest: CommandPolicyRequest | FileEditPolicyRequest }
+      | { modifiedToolCall: RuntimeToolCallRequest }
+    ));
+
+interface PendingApprovalRecord {
+  approvalRequest: ApprovalRequest;
+  policyRequest: PolicyRequest;
+  toolCallId: string;
+  toolCallRequest: RuntimeToolCallRequest;
+}
+
 export class AgentRuntime {
   private readonly sessionId = `session_${randomUUID()}`;
   private readonly eventBus = new RuntimeEventBus();
   private readonly emittedEventIds = new Set<string>();
+  private readonly pendingApprovals = new Map<string, PendingApprovalRecord>();
   private readonly toolRegistry = createToolRegistry();
   private activeTask: PlannedExecutionFlow | null = null;
 
@@ -189,6 +213,15 @@ export class AgentRuntime {
 
   getEventHistory(taskId?: string): RuntimeEventRecord[] {
     return this.eventBus.getHistory(taskId);
+  }
+
+  getPendingApprovals(taskId?: string): ApprovalRequest[] {
+    return Array.from(this.pendingApprovals.values())
+      .filter(
+        (record) =>
+          taskId === undefined || record.approvalRequest.taskId === taskId
+      )
+      .map((record) => cloneApprovalRequest(record.approvalRequest));
   }
 
   cancelActiveTask(
@@ -330,19 +363,115 @@ export class AgentRuntime {
       return activeTask;
     }
 
+    const toolCallId = this.nextId("tool_call");
     const policyCheckedRequest = this.preparePolicyCheckedToolCall(
       activeTask.value,
-      request
+      request,
+      toolCallId
     );
 
     if (!policyCheckedRequest.ok) {
       return err(policyCheckedRequest.error);
     }
 
-    const executableRequest = policyCheckedRequest.value;
-    const toolCallId = this.nextId("tool_call");
-    const requestedEvent = this.createToolLifecycleEvent(
+    return this.executeApprovedToolCall(
       activeTask.value,
+      policyCheckedRequest.value,
+      toolCallId
+    );
+  }
+
+  async respondToApproval(
+    response: RuntimeApprovalResponse
+  ): Promise<Result<ToolExecutionResult>> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const pending = this.pendingApprovals.get(response.approvalRequestId);
+
+    if (pending === undefined) {
+      return err(
+        new SpriteError(
+          "APPROVAL_NOT_FOUND",
+          "No pending approval exists for the provided approvalRequestId."
+        )
+      );
+    }
+
+    if (pending.approvalRequest.taskId !== activeTask.value.taskId) {
+      return err(
+        new SpriteError(
+          "APPROVAL_SCOPE_MISMATCH",
+          "Approval response does not belong to the active task."
+        )
+      );
+    }
+
+    const resolvedEvent = this.createApprovalResolvedEvent(
+      activeTask.value,
+      pending.approvalRequest,
+      response
+    );
+    const emitted = this.emitNewEvents([resolvedEvent]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.pendingApprovals.delete(response.approvalRequestId);
+    this.activeTask = {
+      ...activeTask.value,
+      summary: `Approval ${response.action} recorded.`,
+      waitingState: null,
+      events: this.eventBus.getHistory(activeTask.value.taskId)
+    };
+
+    if (response.action === "deny") {
+      return err(
+        new SpriteError(
+          "APPROVAL_DENIED",
+          response.reason ?? "Approval was denied."
+        )
+      );
+    }
+
+    if (response.action === "timeout") {
+      return err(
+        new SpriteError(
+          "APPROVAL_TIMED_OUT",
+          "Approval timed out and defaulted to deny."
+        )
+      );
+    }
+
+    if (response.action === "edit") {
+      if ("modifiedToolCall" in response) {
+        return this.executeToolCall(response.modifiedToolCall);
+      }
+
+      return this.executeModifiedApprovalRequest(
+        activeTask.value,
+        response.modifiedRequest
+      );
+    }
+
+    return this.executeApprovedToolCall(
+      activeTask.value,
+      pending.toolCallRequest,
+      pending.toolCallId
+    );
+  }
+
+  private async executeApprovedToolCall(
+    task: PlannedExecutionFlow,
+    executableRequest: RuntimeToolCallRequest,
+    toolCallId: string
+  ): Promise<Result<ToolExecutionResult>> {
+    const requestedEvent = this.createToolLifecycleEvent(
+      task,
       "tool.call.requested",
       executableRequest,
       {
@@ -352,7 +481,7 @@ export class AgentRuntime {
       toolCallId
     );
     const startedEvent = this.createToolLifecycleEvent(
-      activeTask.value,
+      task,
       "tool.call.started",
       executableRequest,
       {
@@ -371,7 +500,7 @@ export class AgentRuntime {
 
     if (fileEditMetadata !== null) {
       const editRequested = this.createFileEditEvent(
-        activeTask.value,
+        task,
         fileEditMetadata,
         "requested",
         toolCallId
@@ -384,13 +513,13 @@ export class AgentRuntime {
     }
 
     const result = await this.executeRegisteredTool(
-      activeTask.value.request.cwd,
+      task.request.cwd,
       executableRequest
     );
 
     if (result.ok) {
       const completedEvent = this.createToolLifecycleEvent(
-        activeTask.value,
+        task,
         "tool.call.completed",
         executableRequest,
         {
@@ -402,17 +531,17 @@ export class AgentRuntime {
         toolCallId
       );
       const fileActivity = this.createToolResultFileActivity(
-        activeTask.value,
+        task,
         result.value,
         toolCallId
       );
       const activityEvents = fileActivity.map((record) =>
-        this.createFileActivityEvent(activeTask.value, record)
+        this.createFileActivityEvent(task, record)
       );
       const fileEditAppliedEvent =
         result.value.toolName === "apply_patch"
           ? this.createFileEditEvent(
-              activeTask.value,
+              task,
               {
                 affectedFiles: result.value.affectedFiles,
                 editId: fileEditMetadata?.editId ?? this.nextId("file_edit")
@@ -432,7 +561,7 @@ export class AgentRuntime {
       }
 
       this.appendActiveTaskFileActivity(fileActivity);
-      this.refreshActiveTaskEvents(activeTask.value.taskId);
+      this.refreshActiveTaskEvents(task.taskId);
       return result;
     }
 
@@ -445,7 +574,7 @@ export class AgentRuntime {
         ? getRunCommandErrorMetadata(toolError)
         : null;
     const failedEvent = this.createToolLifecycleEvent(
-      activeTask.value,
+      task,
       "tool.call.failed",
       executableRequest,
       {
@@ -461,7 +590,7 @@ export class AgentRuntime {
       fileEditMetadata === null
         ? undefined
         : this.createFileEditEvent(
-            activeTask.value,
+            task,
             fileEditMetadata,
             "failed",
             toolCallId,
@@ -476,7 +605,7 @@ export class AgentRuntime {
       return err(emitted.error);
     }
 
-    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    this.refreshActiveTaskEvents(task.taskId);
     return result;
   }
 
@@ -644,16 +773,27 @@ export class AgentRuntime {
 
   private preparePolicyCheckedToolCall(
     task: PlannedExecutionFlow,
-    request: RuntimeToolCallRequest
+    request: RuntimeToolCallRequest,
+    toolCallId: string
   ): Result<RuntimeToolCallRequest> {
-    if (request.toolName !== "run_command") {
+    if (
+      request.toolName !== "run_command" &&
+      request.toolName !== "apply_patch"
+    ) {
       return ok(request);
     }
 
-    const policyRequest = this.createCommandPolicyRequest(task, request);
+    const policyRequest =
+      request.toolName === "run_command"
+        ? this.createCommandPolicyRequest(task, request)
+        : this.createFileEditPolicyRequest(request);
 
     if (!policyRequest.ok) {
       return err(policyRequest.error);
+    }
+
+    if (policyRequest.value === null) {
+      return ok(request);
     }
 
     const decision = classifySandboxPolicyRequest(policyRequest.value);
@@ -684,15 +824,38 @@ export class AgentRuntime {
     this.refreshActiveTaskEvents(task.taskId);
 
     if (decision.value.action === "deny") {
-      return err(
-        new SpriteError("COMMAND_DENIED_BY_POLICY", decision.value.reason)
-      );
+      const code =
+        policyRequest.value.type === "command"
+          ? "COMMAND_DENIED_BY_POLICY"
+          : "FILE_EDIT_DENIED_BY_POLICY";
+
+      return err(new SpriteError(code, decision.value.reason));
     }
 
     if (decision.value.action === "require_approval") {
-      return err(
-        new SpriteError("COMMAND_REQUIRES_APPROVAL", decision.value.reason)
+      const approval = this.requestApproval(
+        task,
+        request,
+        policyRequest.value,
+        decision.value,
+        eventMetadata.value,
+        toolCallId
       );
+
+      if (!approval.ok) {
+        return err(approval.error);
+      }
+
+      const code =
+        policyRequest.value.type === "command"
+          ? "COMMAND_REQUIRES_APPROVAL"
+          : "FILE_EDIT_REQUIRES_APPROVAL";
+
+      return err(new SpriteError(code, decision.value.reason));
+    }
+
+    if (policyRequest.value.type === "file_edit") {
+      return ok(request);
     }
 
     const commandRequest =
@@ -751,6 +914,29 @@ export class AgentRuntime {
     });
   }
 
+  private createFileEditPolicyRequest(
+    request: Extract<RuntimeToolCallRequest, { toolName: "apply_patch" }>
+  ): Result<FileEditPolicyRequest | null> {
+    const metadata = this.createFileEditMetadata(request);
+
+    if (metadata === null) {
+      return ok(null);
+    }
+
+    const summary =
+      typeof request.input.summary === "string" &&
+      request.input.summary.trim().length > 0
+        ? request.input.summary.trim()
+        : "apply_patch targeted patch request.";
+
+    return ok({
+      affectedFiles: metadata.affectedFiles,
+      editKind: "targeted_patch",
+      summary,
+      type: "file_edit"
+    });
+  }
+
   private createRunCommandInput(
     request: CommandPolicyRequest
   ): ToolInputMap["run_command"] {
@@ -766,6 +952,75 @@ export class AgentRuntime {
         ? {}
         : { timeoutMs: request.timeoutMs })
     };
+  }
+
+  private executeModifiedApprovalRequest(
+    task: PlannedExecutionFlow,
+    request: CommandPolicyRequest | FileEditPolicyRequest
+  ): Promise<Result<ToolExecutionResult>> {
+    if (request.type === "command") {
+      return this.executePolicyCheckedModifiedToolCall(task, {
+        input: this.createRunCommandInput(request),
+        toolName: "run_command"
+      });
+    }
+
+    const policyDecision = classifySandboxPolicyRequest(request);
+
+    if (!policyDecision.ok) {
+      return Promise.resolve(err(policyDecision.error));
+    }
+
+    const eventMetadata = summarizePolicyRequestForEvent(
+      policyDecision.value.modifiedRequest ?? request
+    );
+
+    if (!eventMetadata.ok) {
+      return Promise.resolve(err(eventMetadata.error));
+    }
+
+    const event = this.createPolicyDecisionEvent(
+      task,
+      policyDecision.value,
+      eventMetadata.value
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return Promise.resolve(err(emitted.error));
+    }
+
+    this.refreshActiveTaskEvents(task.taskId);
+    return Promise.resolve(
+      err(
+        new SpriteError(
+          "APPROVAL_EDIT_REQUIRES_TOOL_CALL",
+          "Edited file approvals must provide a modified apply_patch tool call."
+        )
+      )
+    );
+  }
+
+  private executePolicyCheckedModifiedToolCall(
+    task: PlannedExecutionFlow,
+    request: RuntimeToolCallRequest
+  ): Promise<Result<ToolExecutionResult>> {
+    const toolCallId = this.nextId("tool_call");
+    const policyCheckedRequest = this.preparePolicyCheckedToolCall(
+      task,
+      request,
+      toolCallId
+    );
+
+    if (!policyCheckedRequest.ok) {
+      return Promise.resolve(err(policyCheckedRequest.error));
+    }
+
+    return this.executeApprovedToolCall(
+      task,
+      policyCheckedRequest.value,
+      toolCallId
+    );
   }
 
   private getMutableActiveTask(): Result<PlannedExecutionFlow> {
@@ -924,6 +1179,189 @@ export class AgentRuntime {
           metadata.requestType === "command"
             ? "Command policy decision recorded."
             : "File edit policy decision recorded."
+      }
+    );
+  }
+
+  private requestApproval(
+    task: PlannedExecutionFlow,
+    toolCallRequest: RuntimeToolCallRequest,
+    policyRequest: PolicyRequest,
+    decision: PolicyDecision,
+    metadata: PolicyEventMetadata,
+    toolCallId: string
+  ): Result<ApprovalRequest> {
+    const approvalRequest = this.createApprovalRequest(
+      task,
+      decision,
+      metadata,
+      toolCallId
+    );
+    const requestedEvent = this.createApprovalRequestedEvent(
+      task,
+      approvalRequest
+    );
+    const waitingMessage =
+      metadata.requestType === "command"
+        ? "Runtime is waiting for approval before executing the requested command."
+        : "Runtime is waiting for approval before applying the requested file edit.";
+    const waitingEvent = this.createTaskWaitingEvent(
+      task,
+      "approval-required",
+      waitingMessage
+    );
+    const emitted = this.emitNewEvents([requestedEvent, waitingEvent]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.pendingApprovals.set(approvalRequest.approvalRequestId, {
+      approvalRequest,
+      policyRequest,
+      toolCallId,
+      toolCallRequest
+    });
+    this.activeTask = {
+      ...task,
+      status: "waiting-for-input",
+      summary: waitingMessage,
+      waitingState: {
+        reason: "approval-required",
+        message: waitingMessage
+      },
+      terminalState: null,
+      events: this.eventBus.getHistory(task.taskId)
+    };
+
+    return ok(approvalRequest);
+  }
+
+  private createApprovalRequest(
+    task: PlannedExecutionFlow,
+    decision: PolicyDecision,
+    metadata: PolicyEventMetadata,
+    toolCallId: string
+  ): ApprovalRequest {
+    const allowedActions: ApprovalAction[] = ["allow", "deny", "edit"];
+    const requestType = metadata.requestType;
+    const cwd = metadata.cwd ?? task.request.cwd;
+    const envExposure = metadata.envExposure ?? "none";
+
+    return {
+      ...(metadata.affectedFiles === undefined
+        ? {}
+        : { affectedFiles: [...metadata.affectedFiles] }),
+      allowedActions,
+      approvalRequestId: this.nextId("appr"),
+      ...(metadata.command === undefined ? {} : { command: metadata.command }),
+      correlationId: task.correlationId,
+      cwd,
+      envExposure,
+      reason: decision.reason,
+      requestType,
+      riskLevel: decision.riskLevel,
+      ruleId: decision.ruleId,
+      summary:
+        decision.approvalSummary ??
+        (requestType === "command"
+          ? "Command approval requested."
+          : "File edit approval requested."),
+      taskId: task.taskId,
+      ...(metadata.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: metadata.timeoutMs }),
+      toolCallId
+    };
+  }
+
+  private createApprovalRequestedEvent(
+    task: PlannedExecutionFlow,
+    request: ApprovalRequest
+  ): RuntimeEventRecord {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "approval.requested",
+      {
+        ...(request.affectedFiles === undefined
+          ? {}
+          : { affectedFiles: request.affectedFiles }),
+        allowedActions: request.allowedActions,
+        approvalRequestId: request.approvalRequestId,
+        ...(request.command === undefined ? {} : { command: request.command }),
+        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+        ...(request.envExposure === undefined
+          ? {}
+          : { envExposure: request.envExposure }),
+        reason: request.reason,
+        requestType: request.requestType,
+        riskLevel: request.riskLevel,
+        ruleId: request.ruleId,
+        status: "pending",
+        summary: request.summary,
+        ...(request.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: request.timeoutMs }),
+        ...(request.toolCallId === undefined
+          ? {}
+          : { toolCallId: request.toolCallId })
+      }
+    );
+  }
+
+  private createApprovalResolvedEvent(
+    task: PlannedExecutionFlow,
+    approvalRequest: ApprovalRequest,
+    response: RuntimeApprovalResponse
+  ): RuntimeEventRecord {
+    const reason = "reason" in response ? response.reason : undefined;
+
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "approval.resolved",
+      {
+        approvalRequestId: approvalRequest.approvalRequestId,
+        decision: response.action,
+        ...(reason === undefined ? {} : { reason }),
+        requestType: approvalRequest.requestType,
+        status: "resolved",
+        summary: `Approval ${response.action}.`,
+        ...(approvalRequest.toolCallId === undefined
+          ? {}
+          : { toolCallId: approvalRequest.toolCallId })
+      }
+    );
+  }
+
+  private createTaskWaitingEvent(
+    task: PlannedExecutionFlow,
+    reason: "approval-required" | "user-input-required",
+    message: string
+  ): RuntimeEventRecord {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "task.waiting",
+      {
+        reason,
+        message
       }
     );
   }
@@ -1169,6 +1607,16 @@ function safeCommandPayload(
     input.timeoutMs > 0
       ? { timeoutMs: input.timeoutMs }
       : {})
+  };
+}
+
+function cloneApprovalRequest(request: ApprovalRequest): ApprovalRequest {
+  return {
+    ...request,
+    ...(request.affectedFiles === undefined
+      ? {}
+      : { affectedFiles: [...request.affectedFiles] }),
+    allowedActions: [...request.allowedActions]
   };
 }
 
