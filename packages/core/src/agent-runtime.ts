@@ -132,11 +132,13 @@ export type RuntimeApprovalResponse =
       action: "edit";
       approvalRequestId: string;
       modifiedRequest: CommandPolicyRequest;
+      modifiedToolCall?: never;
       reason?: string;
     }
   | {
       action: "edit";
       approvalRequestId: string;
+      modifiedRequest?: never;
       modifiedToolCall: Extract<
         RuntimeToolCallRequest,
         { toolName: "apply_patch" }
@@ -634,13 +636,28 @@ export class AgentRuntime {
     }
 
     if (response.action === "edit") {
-      if ("modifiedToolCall" in response) {
+      if (
+        "modifiedToolCall" in response &&
+        response.modifiedToolCall !== undefined
+      ) {
         return this.executeToolCall(response.modifiedToolCall);
       }
 
-      return this.executeModifiedApprovalRequest(
-        activeTask.value,
-        response.modifiedRequest
+      if (
+        "modifiedRequest" in response &&
+        response.modifiedRequest !== undefined
+      ) {
+        return this.executeModifiedApprovalRequest(
+          activeTask.value,
+          response.modifiedRequest
+        );
+      }
+
+      return err(
+        new SpriteError(
+          "APPROVAL_EDIT_PAYLOAD_INVALID",
+          "Approval edit responses must provide exactly one modified request payload."
+        )
       );
     }
 
@@ -1587,12 +1604,32 @@ export class AgentRuntime {
       return ok(undefined);
     }
 
+    const hasModifiedRequest = Object.hasOwn(response, "modifiedRequest");
+    const hasModifiedToolCall = Object.hasOwn(response, "modifiedToolCall");
+
+    if (hasModifiedRequest === hasModifiedToolCall) {
+      return err(
+        new SpriteError(
+          "APPROVAL_EDIT_PAYLOAD_INVALID",
+          "Approval edit responses must provide exactly one modified request payload."
+        )
+      );
+    }
+
+    const modifiedRequest = hasModifiedRequest
+      ? (response as { modifiedRequest?: unknown }).modifiedRequest
+      : undefined;
+    const modifiedToolCall = hasModifiedToolCall
+      ? (response as { modifiedToolCall?: unknown }).modifiedToolCall
+      : undefined;
     const isCommandEdit =
-      "modifiedRequest" in response &&
-      response.modifiedRequest.type === "command";
+      typeof modifiedRequest === "object" &&
+      modifiedRequest !== null &&
+      (modifiedRequest as { type?: unknown }).type === "command";
     const isFileEditToolCall =
-      "modifiedToolCall" in response &&
-      response.modifiedToolCall.toolName === "apply_patch";
+      typeof modifiedToolCall === "object" &&
+      modifiedToolCall !== null &&
+      (modifiedToolCall as { toolName?: unknown }).toolName === "apply_patch";
 
     if (approvalRequest.requestType === "command" && !isCommandEdit) {
       return err(

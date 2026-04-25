@@ -14,7 +14,10 @@ import {
   createRuntimeEventRecord,
   validateRuntimeEvent
 } from "@sprite/core";
-import type { RuntimeToolCallRequest } from "@sprite/core";
+import type {
+  RuntimeApprovalResponse,
+  RuntimeToolCallRequest
+} from "@sprite/core";
 
 const tempRoots: string[] = [];
 
@@ -1761,6 +1764,116 @@ describe("runtime event subscription", () => {
         .getEventHistory(editSubmitted.value.taskId)
         .filter((event) => event.type === "policy.decision.recorded")
     ).toHaveLength(2);
+  });
+
+  it("rejects approval edit responses with both modified payload shapes", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "reject ambiguous approval edit"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const rejected = await runtime.respondToApproval({
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId,
+      modifiedRequest: {
+        command: "pwd",
+        cwd: projectDir,
+        timeoutMs: 30_000,
+        type: "command"
+      },
+      modifiedToolCall: {
+        input: {
+          edits: [
+            {
+              path: "src/edit.ts",
+              oldText: "value = 1",
+              newText: "value = 2"
+            }
+          ]
+        },
+        toolName: "apply_patch"
+      }
+    } as unknown as RuntimeApprovalResponse);
+
+    expect(rejected).toMatchObject({
+      error: { code: "APPROVAL_EDIT_PAYLOAD_INVALID" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .some((event) => event.type === "approval.resolved")
+    ).toBe(false);
+  });
+
+  it("rejects approval edit responses without a modified payload", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "reject empty approval edit"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const rejected = await runtime.respondToApproval({
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId
+    } as unknown as RuntimeApprovalResponse);
+
+    expect(rejected).toMatchObject({
+      error: { code: "APPROVAL_EDIT_PAYLOAD_INVALID" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .some((event) => event.type === "approval.resolved")
+    ).toBe(false);
   });
 
   it("rejects unoffered approval actions without consuming the pending approval", async () => {
