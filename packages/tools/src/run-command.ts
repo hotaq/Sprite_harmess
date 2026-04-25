@@ -9,7 +9,6 @@ import {
 export interface RunCommandInput {
   args?: string[];
   command: string;
-  configuredValidation?: boolean;
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;

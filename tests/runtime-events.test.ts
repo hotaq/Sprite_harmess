@@ -14,6 +14,7 @@ import {
   createRuntimeEventRecord,
   validateRuntimeEvent
 } from "@sprite/core";
+import type { RuntimeToolCallRequest } from "@sprite/core";
 
 const tempRoots: string[] = [];
 
@@ -1424,6 +1425,71 @@ describe("runtime event subscription", () => {
         status: "failed"
       }
     });
+  });
+
+  it("does not trust caller-provided configuredValidation on public run_command input", async () => {
+    const { projectDir, rootDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: join(rootDir, "home")
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "reject spoofed validation metadata"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const spoofedValidationCommand = {
+      input: {
+        args: ["run", "build"],
+        command: "npm",
+        configuredValidation: true,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    } as unknown as RuntimeToolCallRequest;
+
+    const result = await runtime.executeToolCall(spoofedValidationCommand);
+
+    expect(result).toMatchObject({
+      error: { code: "COMMAND_REQUIRES_APPROVAL" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "approval.requested",
+      "task.waiting"
+    ]);
+    expect(
+      history.find((event) => event.type === "policy.decision.recorded")
+    ).toMatchObject({
+      payload: {
+        action: "require_approval",
+        command: "npm run build",
+        requestType: "command",
+        ruleId: "command.package.script"
+      }
+    });
+    expect(
+      history.find((event) => event.type === "approval.requested")
+    ).toMatchObject({
+      payload: {
+        command: "npm run build",
+        requestType: "command",
+        ruleId: "command.package.script"
+      }
+    });
+    expect(history.some((event) => event.type.startsWith("tool.call."))).toBe(
+      false
+    );
   });
 
   it("does not execute denied run_command requests and requests approval for risky commands", async () => {

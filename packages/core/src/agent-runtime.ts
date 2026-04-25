@@ -122,6 +122,10 @@ interface RuntimeFileEditMetadata {
   editId: string;
 }
 
+interface RuntimeCommandPolicyOptions {
+  configuredValidation?: boolean;
+}
+
 export type RuntimeApprovalResponse =
   | Exclude<ApprovalResponse, { action: "edit" }>
   | {
@@ -482,7 +486,8 @@ export class AgentRuntime {
       const result = await this.executeToolCallWithId(
         activeTask.value,
         request,
-        toolCallId
+        toolCallId,
+        { configuredValidation: true }
       );
       const commandResult = this.createValidationCommandResult(
         command,
@@ -523,12 +528,14 @@ export class AgentRuntime {
   private executeToolCallWithId(
     task: PlannedExecutionFlow,
     request: RuntimeToolCallRequest,
-    toolCallId: string
+    toolCallId: string,
+    options: RuntimeCommandPolicyOptions = {}
   ): Promise<Result<ToolExecutionResult>> {
     const policyCheckedRequest = this.preparePolicyCheckedToolCall(
       task,
       request,
-      toolCallId
+      toolCallId,
+      options
     );
 
     if (!policyCheckedRequest.ok) {
@@ -953,7 +960,8 @@ export class AgentRuntime {
   private preparePolicyCheckedToolCall(
     task: PlannedExecutionFlow,
     request: RuntimeToolCallRequest,
-    toolCallId: string
+    toolCallId: string,
+    options: RuntimeCommandPolicyOptions = {}
   ): Result<RuntimeToolCallRequest> {
     if (
       request.toolName !== "run_command" &&
@@ -964,7 +972,7 @@ export class AgentRuntime {
 
     const policyRequest =
       request.toolName === "run_command"
-        ? this.createCommandPolicyRequest(task, request)
+        ? this.createCommandPolicyRequest(task, request, options)
         : this.createFileEditPolicyRequest(request);
 
     if (!policyRequest.ok) {
@@ -1059,7 +1067,8 @@ export class AgentRuntime {
 
   private createCommandPolicyRequest(
     task: PlannedExecutionFlow,
-    request: Extract<RuntimeToolCallRequest, { toolName: "run_command" }>
+    request: Extract<RuntimeToolCallRequest, { toolName: "run_command" }>,
+    options: RuntimeCommandPolicyOptions = {}
   ): Result<CommandPolicyRequest> {
     const input = request.input as unknown as Record<string, unknown>;
     const requestedCwd = input.cwd;
@@ -1076,9 +1085,9 @@ export class AgentRuntime {
     return ok({
       ...(input.args === undefined ? {} : { args: input.args as string[] }),
       command: input.command as string,
-      ...(input.configuredValidation === undefined
+      ...(options.configuredValidation === undefined
         ? {}
-        : { configuredValidation: input.configuredValidation as boolean }),
+        : { configuredValidation: options.configuredValidation }),
       cwd:
         requestedCwd === undefined
           ? task.request.cwd
@@ -1122,9 +1131,6 @@ export class AgentRuntime {
     return {
       ...(request.args === undefined ? {} : { args: request.args }),
       command: request.command,
-      ...(request.configuredValidation === undefined
-        ? {}
-        : { configuredValidation: request.configuredValidation }),
       cwd: request.cwd,
       ...(request.env === undefined ? {} : { env: request.env }),
       ...(request.timeoutMs === undefined
@@ -1146,7 +1152,6 @@ export class AgentRuntime {
       input: {
         ...(command.args === undefined ? {} : { args: command.args }),
         command: command.command,
-        configuredValidation: true,
         cwd,
         ...(command.timeoutMs === undefined
           ? {}
