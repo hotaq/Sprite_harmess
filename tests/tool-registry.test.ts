@@ -506,4 +506,85 @@ describe("tool registry repository inspection", () => {
     expect(result.value.summary).not.toContain("sk-test-secret");
     expect(result.value.output.content).toContain("sk-test-secret");
   });
+
+  it("executes run_command through the tool registry with bounded output", async () => {
+    const { projectDir } = createTempProject();
+    const registry = createToolRegistry();
+
+    const result = await registry.execute({
+      cwd: projectDir,
+      toolName: "run_command",
+      input: {
+        args: ["-e", "console.log('hello from command')"],
+        command: process.execPath,
+        timeoutMs: 30_000
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value).toMatchObject({
+      exitCode: 0,
+      status: "completed",
+      timedOut: false,
+      toolName: "run_command"
+    });
+    expect(result.value.command).toBe(
+      `${process.execPath} -e console.log('hello from command')`
+    );
+    expect(result.value.output.content).toContain("hello from command");
+    expect(result.value.output.reference.fullOutputStored).toBe(false);
+  });
+
+  it("returns structured run_command failures for non-zero exit and timeout", async () => {
+    const { projectDir } = createTempProject();
+    const registry = createToolRegistry();
+
+    const failed = await registry.execute({
+      cwd: projectDir,
+      toolName: "run_command",
+      input: {
+        args: ["-e", "process.exit(9)"],
+        command: process.execPath,
+        timeoutMs: 30_000
+      }
+    });
+    const timedOut = await registry.execute({
+      cwd: projectDir,
+      toolName: "run_command",
+      input: {
+        args: ["-e", "setTimeout(() => {}, 5_000)"],
+        command: process.execPath,
+        timeoutMs: 50
+      }
+    });
+
+    expect(failed).toMatchObject({
+      error: { code: "TOOL_COMMAND_FAILED" },
+      ok: false
+    });
+    expect(timedOut).toMatchObject({
+      error: { code: "TOOL_COMMAND_TIMEOUT" },
+      ok: false
+    });
+  });
+
+  it("rejects malformed run_command input before sandbox execution", async () => {
+    const { projectDir } = createTempProject();
+    const registry = createToolRegistry();
+
+    const malformed = await registry.execute({
+      cwd: projectDir,
+      toolName: "run_command",
+      input: { command: "" }
+    });
+
+    expect(malformed).toMatchObject({
+      error: { code: "TOOL_INVALID_INPUT" },
+      ok: false
+    });
+  });
 });

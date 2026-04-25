@@ -13,12 +13,15 @@ import {
 import {
   classifyPolicyRequest as classifySandboxPolicyRequest,
   summarizePolicyRequestForEvent,
+  type CommandPolicyRequest,
   type PolicyDecision,
   type PolicyEventMetadata
 } from "@sprite/sandbox";
 import { SpriteError, err, ok, type Result } from "@sprite/shared";
 import {
   createToolRegistry,
+  getRunCommandErrorMetadata,
+  type RunCommandFailureMetadata,
   type ToolExecutionResult,
   type ToolInputMap,
   type ToolName
@@ -327,24 +330,34 @@ export class AgentRuntime {
       return activeTask;
     }
 
+    const policyCheckedRequest = this.preparePolicyCheckedToolCall(
+      activeTask.value,
+      request
+    );
+
+    if (!policyCheckedRequest.ok) {
+      return err(policyCheckedRequest.error);
+    }
+
+    const executableRequest = policyCheckedRequest.value;
     const toolCallId = this.nextId("tool_call");
     const requestedEvent = this.createToolLifecycleEvent(
       activeTask.value,
       "tool.call.requested",
-      request,
+      executableRequest,
       {
         status: "requested",
-        summary: `${request.toolName} requested.`
+        summary: `${executableRequest.toolName} requested.`
       },
       toolCallId
     );
     const startedEvent = this.createToolLifecycleEvent(
       activeTask.value,
       "tool.call.started",
-      request,
+      executableRequest,
       {
         status: "started",
-        summary: `${request.toolName} started.`
+        summary: `${executableRequest.toolName} started.`
       },
       toolCallId
     );
@@ -354,7 +367,7 @@ export class AgentRuntime {
       return err(requestedEmitted.error);
     }
 
-    const fileEditMetadata = this.createFileEditMetadata(request);
+    const fileEditMetadata = this.createFileEditMetadata(executableRequest);
 
     if (fileEditMetadata !== null) {
       const editRequested = this.createFileEditEvent(
@@ -372,15 +385,16 @@ export class AgentRuntime {
 
     const result = await this.executeRegisteredTool(
       activeTask.value.request.cwd,
-      request
+      executableRequest
     );
 
     if (result.ok) {
       const completedEvent = this.createToolLifecycleEvent(
         activeTask.value,
         "tool.call.completed",
-        request,
+        executableRequest,
         {
+          ...this.createCommandResultEventMetadata(result.value),
           outputReference: result.value.output.reference,
           status: "completed",
           summary: result.value.summary
@@ -426,15 +440,20 @@ export class AgentRuntime {
       result.error instanceof SpriteError
         ? result.error
         : new SpriteError("TOOL_FAILED", result.error.message);
+    const commandErrorMetadata =
+      executableRequest.toolName === "run_command"
+        ? getRunCommandErrorMetadata(toolError)
+        : null;
     const failedEvent = this.createToolLifecycleEvent(
       activeTask.value,
       "tool.call.failed",
-      request,
+      executableRequest,
       {
+        ...this.createCommandFailureEventMetadata(commandErrorMetadata),
         errorCode: toolError.code,
         message: toolError.message,
         status: "failed",
-        summary: `${request.toolName} failed with ${toolError.code}.`
+        summary: `${executableRequest.toolName} failed with ${toolError.code}.`
       },
       toolCallId
     );
@@ -608,6 +627,12 @@ export class AgentRuntime {
           input: request.input,
           toolName: request.toolName
         });
+      case "run_command":
+        return this.toolRegistry.execute({
+          cwd,
+          input: request.input,
+          toolName: request.toolName
+        });
       case "search_files":
         return this.toolRegistry.execute({
           cwd,
@@ -615,6 +640,132 @@ export class AgentRuntime {
           toolName: request.toolName
         });
     }
+  }
+
+  private preparePolicyCheckedToolCall(
+    task: PlannedExecutionFlow,
+    request: RuntimeToolCallRequest
+  ): Result<RuntimeToolCallRequest> {
+    if (request.toolName !== "run_command") {
+      return ok(request);
+    }
+
+    const policyRequest = this.createCommandPolicyRequest(task, request);
+
+    if (!policyRequest.ok) {
+      return err(policyRequest.error);
+    }
+
+    const decision = classifySandboxPolicyRequest(policyRequest.value);
+
+    if (!decision.ok) {
+      return decision;
+    }
+
+    const eventMetadata = summarizePolicyRequestForEvent(
+      decision.value.modifiedRequest ?? policyRequest.value
+    );
+
+    if (!eventMetadata.ok) {
+      return eventMetadata;
+    }
+
+    const event = this.createPolicyDecisionEvent(
+      task,
+      decision.value,
+      eventMetadata.value
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(task.taskId);
+
+    if (decision.value.action === "deny") {
+      return err(
+        new SpriteError("COMMAND_DENIED_BY_POLICY", decision.value.reason)
+      );
+    }
+
+    if (decision.value.action === "require_approval") {
+      return err(
+        new SpriteError("COMMAND_REQUIRES_APPROVAL", decision.value.reason)
+      );
+    }
+
+    const commandRequest =
+      decision.value.action === "modify"
+        ? decision.value.modifiedRequest
+        : policyRequest.value;
+
+    if (commandRequest === undefined || commandRequest.type !== "command") {
+      return err(
+        new SpriteError(
+          "COMMAND_POLICY_INVALID_MODIFICATION",
+          "Policy did not provide an executable command request."
+        )
+      );
+    }
+
+    return ok({
+      input: this.createRunCommandInput(commandRequest),
+      toolName: "run_command"
+    });
+  }
+
+  private createCommandPolicyRequest(
+    task: PlannedExecutionFlow,
+    request: Extract<RuntimeToolCallRequest, { toolName: "run_command" }>
+  ): Result<CommandPolicyRequest> {
+    const input = request.input as unknown as Record<string, unknown>;
+    const requestedCwd = input.cwd;
+
+    if (requestedCwd !== undefined && typeof requestedCwd !== "string") {
+      return err(
+        new SpriteError(
+          "TOOL_INVALID_INPUT",
+          "run_command cwd must be a string when provided."
+        )
+      );
+    }
+
+    return ok({
+      ...(input.args === undefined ? {} : { args: input.args as string[] }),
+      command: input.command as string,
+      ...(input.configuredValidation === undefined
+        ? {}
+        : { configuredValidation: input.configuredValidation as boolean }),
+      cwd:
+        requestedCwd === undefined
+          ? task.request.cwd
+          : path.resolve(task.request.cwd, requestedCwd),
+      ...(input.env === undefined
+        ? {}
+        : { env: input.env as Record<string, string> }),
+      ...(input.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: input.timeoutMs as number }),
+      type: "command"
+    });
+  }
+
+  private createRunCommandInput(
+    request: CommandPolicyRequest
+  ): ToolInputMap["run_command"] {
+    return {
+      ...(request.args === undefined ? {} : { args: request.args }),
+      command: request.command,
+      ...(request.configuredValidation === undefined
+        ? {}
+        : { configuredValidation: request.configuredValidation }),
+      cwd: request.cwd,
+      ...(request.env === undefined ? {} : { env: request.env }),
+      ...(request.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: request.timeoutMs })
+    };
   }
 
   private getMutableActiveTask(): Result<PlannedExecutionFlow> {
@@ -787,6 +938,35 @@ export class AgentRuntime {
     );
   }
 
+  private createCommandResultEventMetadata(
+    result: ToolExecutionResult
+  ): Record<string, unknown> {
+    if (result.toolName !== "run_command") {
+      return {};
+    }
+
+    return {
+      durationMs: result.durationMs,
+      exitCode: result.exitCode,
+      timeoutMs: result.timeoutMs
+    };
+  }
+
+  private createCommandFailureEventMetadata(
+    metadata: RunCommandFailureMetadata | null
+  ): Record<string, unknown> {
+    if (metadata === null) {
+      return {};
+    }
+
+    return {
+      durationMs: metadata.durationMs,
+      exitCode: metadata.exitCode,
+      outputReference: metadata.outputReference,
+      timeoutMs: metadata.timeoutMs
+    };
+  }
+
   private createFileActivityRecord(
     task: PlannedExecutionFlow,
     draft: {
@@ -855,8 +1035,13 @@ export class AgentRuntime {
 
   private safeToolTargetPayload(
     request: RuntimeToolCallRequest
-  ): Record<string, string> {
+  ): Record<string, number | string> {
     const input = request.input as Record<string, unknown>;
+
+    if (request.toolName === "run_command") {
+      return safeCommandPayload(input);
+    }
+
     const targetPath = input.path;
 
     if (
@@ -965,6 +1150,26 @@ function hasStringPath(value: unknown): value is { path: string } {
     "path" in value &&
     typeof value.path === "string"
   );
+}
+
+function safeCommandPayload(
+  input: Record<string, unknown>
+): Record<string, number | string> {
+  if (typeof input.command !== "string" || input.command.trim().length === 0) {
+    return {};
+  }
+
+  const args = Array.isArray(input.args)
+    ? input.args.filter((arg): arg is string => typeof arg === "string")
+    : [];
+  return {
+    command: [input.command.trim(), ...args].join(" "),
+    ...(typeof input.timeoutMs === "number" &&
+    Number.isInteger(input.timeoutMs) &&
+    input.timeoutMs > 0
+      ? { timeoutMs: input.timeoutMs }
+      : {})
+  };
 }
 
 function formatOptionalValue(value: string | null): string {

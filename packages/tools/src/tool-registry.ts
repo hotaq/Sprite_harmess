@@ -19,6 +19,11 @@ import {
   type ReadFileResult
 } from "./read-file.js";
 import {
+  runProjectCommand,
+  type RunCommandInput,
+  type RunCommandResult
+} from "./run-command.js";
+import {
   searchProjectFiles,
   type SearchFilesInput,
   type SearchFilesResult
@@ -28,6 +33,7 @@ export type ToolName =
   | "apply_patch"
   | "list_files"
   | "read_file"
+  | "run_command"
   | "search_files";
 
 export type ToolExecutionStatus = "completed";
@@ -36,12 +42,14 @@ export type ToolExecutionResult =
   | ApplyPatchResult
   | ListFilesResult
   | ReadFileResult
+  | RunCommandResult
   | SearchFilesResult;
 
 export type ToolInputMap = {
   apply_patch: ApplyPatchInput;
   list_files: ListFilesInput;
   read_file: ReadFileInput;
+  run_command: RunCommandInput;
   search_files: SearchFilesInput;
 };
 
@@ -52,9 +60,15 @@ export type ToolExecutionRequest<TName extends ToolName = ToolName> =
       ? { cwd: string; input: ReadFileInput; toolName: "read_file" }
       : TName extends "list_files"
         ? { cwd: string; input: ListFilesInput; toolName: "list_files" }
-        : TName extends "search_files"
-          ? { cwd: string; input: SearchFilesInput; toolName: "search_files" }
-          : never;
+        : TName extends "run_command"
+          ? { cwd: string; input: RunCommandInput; toolName: "run_command" }
+          : TName extends "search_files"
+            ? {
+                cwd: string;
+                input: SearchFilesInput;
+                toolName: "search_files";
+              }
+            : never;
 
 export class ToolRegistry {
   execute(
@@ -70,6 +84,9 @@ export class ToolRegistry {
     request: ToolExecutionRequest<"search_files">
   ): Promise<Result<SearchFilesResult, SpriteError>>;
   execute(
+    request: ToolExecutionRequest<"run_command">
+  ): Promise<Result<RunCommandResult, SpriteError>>;
+  execute(
     request: ToolExecutionRequest
   ): Promise<Result<ToolExecutionResult, SpriteError>>;
   execute(
@@ -82,6 +99,8 @@ export class ToolRegistry {
         return readProjectFile(request.cwd, request.input as ReadFileInput);
       case "list_files":
         return listProjectFiles(request.cwd, request.input as ListFilesInput);
+      case "run_command":
+        return runProjectCommand(request.cwd, request.input as RunCommandInput);
       case "search_files":
         return searchProjectFiles(
           request.cwd,
@@ -106,6 +125,8 @@ export type {
   ListFilesResult,
   ReadFileInput,
   ReadFileResult,
+  RunCommandInput,
+  RunCommandResult,
   SearchFilesInput,
   SearchFilesResult,
   ToolOutputReference,

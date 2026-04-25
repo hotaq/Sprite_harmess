@@ -42,6 +42,7 @@ const TOOL_NAMES = [
   "apply_patch",
   "read_file",
   "list_files",
+  "run_command",
   "search_files"
 ] as const;
 const FILE_EDIT_EVENT_TYPES = [
@@ -159,41 +160,54 @@ export interface RuntimeEventPayloadMap {
     totalItemCount?: number;
   };
   "tool.call.requested": {
+    command?: string;
     cwd: string;
     query?: string;
     status: "requested";
     summary: string;
     targetPath?: string;
+    timeoutMs?: number;
     toolCallId: string;
     toolName: RuntimeToolName;
   };
   "tool.call.started": {
+    command?: string;
     cwd: string;
     query?: string;
     status: "started";
     summary: string;
     targetPath?: string;
+    timeoutMs?: number;
     toolCallId: string;
     toolName: RuntimeToolName;
   };
   "tool.call.completed": {
+    command?: string;
     cwd: string;
+    durationMs?: number;
+    exitCode?: number | null;
     outputReference?: RuntimeEventOutputReference;
     query?: string;
     status: "completed";
     summary: string;
     targetPath?: string;
+    timeoutMs?: number;
     toolCallId: string;
     toolName: RuntimeToolName;
   };
   "tool.call.failed": {
+    command?: string;
     cwd: string;
+    durationMs?: number;
     errorCode: string;
+    exitCode?: number | null;
     message: string;
+    outputReference?: RuntimeEventOutputReference;
     query?: string;
     status: "failed";
     summary: string;
     targetPath?: string;
+    timeoutMs?: number;
     toolCallId: string;
     toolName: RuntimeToolName;
   };
@@ -978,6 +992,8 @@ function validateToolLifecycleEvent<T extends RuntimeEventType>(
 
   const targetPath = optionalPayloadString(type, payload, "targetPath");
   const query = optionalPayloadString(type, payload, "query");
+  const command = optionalPayloadString(type, payload, "command");
+  const timeoutMs = optionalNonNegativeInteger(type, payload, "timeoutMs");
 
   if (targetPath.ok === false) {
     return err(targetPath.error);
@@ -987,18 +1003,47 @@ function validateToolLifecycleEvent<T extends RuntimeEventType>(
     return err(query.error);
   }
 
+  if (command.ok === false) {
+    return err(command.error);
+  }
+
+  if (timeoutMs.ok === false) {
+    return err(timeoutMs.error);
+  }
+
+  if (command.value !== undefined && containsSecretLikeValue(command.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload command must not include secret-looking values.`
+      )
+    );
+  }
+
   const basePayload = {
+    ...(command.value === undefined ? {} : { command: command.value }),
     cwd: cwd.value,
     ...(query.value === undefined ? {} : { query: query.value }),
     status: status.value,
     summary: summary.value,
     ...(targetPath.value === undefined ? {} : { targetPath: targetPath.value }),
+    ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
     toolCallId: toolCallId.value,
     toolName: toolName.value
   };
 
   if (type === "tool.call.completed") {
+    const durationMs = optionalNonNegativeInteger(type, payload, "durationMs");
+    const exitCode = optionalExitCode(type, payload, "exitCode");
     const outputReference = optionalOutputReference(type, payload);
+
+    if (durationMs.ok === false) {
+      return err(durationMs.error);
+    }
+
+    if (exitCode.ok === false) {
+      return err(exitCode.error);
+    }
 
     if (outputReference.ok === false) {
       return err(outputReference.error);
@@ -1006,6 +1051,10 @@ function validateToolLifecycleEvent<T extends RuntimeEventType>(
 
     return okRuntimeEvent(context, type, {
       ...basePayload,
+      ...(durationMs.value === undefined
+        ? {}
+        : { durationMs: durationMs.value }),
+      ...(exitCode.value === undefined ? {} : { exitCode: exitCode.value }),
       ...(outputReference.value === undefined
         ? {}
         : { outputReference: outputReference.value })
@@ -1013,21 +1062,43 @@ function validateToolLifecycleEvent<T extends RuntimeEventType>(
   }
 
   if (type === "tool.call.failed") {
+    const durationMs = optionalNonNegativeInteger(type, payload, "durationMs");
     const errorCode = requirePayloadString(type, payload, "errorCode");
+    const exitCode = optionalExitCode(type, payload, "exitCode");
     const message = requirePayloadString(type, payload, "message");
+    const outputReference = optionalOutputReference(type, payload);
+
+    if (durationMs.ok === false) {
+      return err(durationMs.error);
+    }
 
     if (errorCode.ok === false) {
       return err(errorCode.error);
+    }
+
+    if (exitCode.ok === false) {
+      return err(exitCode.error);
     }
 
     if (message.ok === false) {
       return err(message.error);
     }
 
+    if (outputReference.ok === false) {
+      return err(outputReference.error);
+    }
+
     return okRuntimeEvent(context, type, {
       ...basePayload,
+      ...(durationMs.value === undefined
+        ? {}
+        : { durationMs: durationMs.value }),
       errorCode: errorCode.value,
-      message: message.value
+      ...(exitCode.value === undefined ? {} : { exitCode: exitCode.value }),
+      message: message.value,
+      ...(outputReference.value === undefined
+        ? {}
+        : { outputReference: outputReference.value })
     } as RuntimeEventPayload<T>);
   }
 
@@ -1151,6 +1222,33 @@ function optionalNonNegativeInteger(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
         `Runtime event '${type}' optional payload field '${key}' must be a non-negative integer when provided.`
+      )
+    );
+  }
+
+  return { ok: true, value };
+}
+
+function optionalExitCode(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<number | null | undefined, SpriteError> {
+  const value = payload[key];
+
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (value === null) {
+    return { ok: true, value: null };
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' optional payload field '${key}' must be a non-negative integer or null when provided.`
       )
     );
   }
@@ -1313,6 +1411,7 @@ function findForbiddenToolPayloadField(
   const forbiddenFields = new Set([
     "content",
     "diff",
+    "env",
     "hunk",
     "matches",
     "newText",
@@ -1321,7 +1420,9 @@ function findForbiddenToolPayloadField(
     "rawContent",
     "rawSnippet",
     "snippet",
-    "snippets"
+    "snippets",
+    "stderr",
+    "stdout"
   ]);
 
   for (const key of Object.keys(payload)) {

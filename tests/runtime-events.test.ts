@@ -973,6 +973,188 @@ describe("runtime event subscription", () => {
     );
   });
 
+  it("executes allowed run_command requests after recording policy decisions", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("run pwd safely");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: {
+        command: "pwd",
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value).toMatchObject({
+      command: "pwd",
+      status: "completed",
+      timedOut: false,
+      toolName: "run_command"
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.completed"
+    ]);
+    expect(history[2]).toMatchObject({
+      correlationId: submitted.value.correlationId,
+      payload: {
+        action: "allow",
+        command: "pwd",
+        requestType: "command",
+        status: "recorded"
+      },
+      type: "policy.decision.recorded"
+    });
+    expect(history[3]?.payload).toMatchObject({
+      command: "pwd",
+      status: "requested",
+      timeoutMs: 30_000,
+      toolName: "run_command"
+    });
+    expect(history[5]?.payload).toMatchObject({
+      command: "pwd",
+      durationMs: expect.any(Number),
+      exitCode: 0,
+      outputReference: {
+        fullOutputStored: false
+      },
+      status: "completed",
+      timeoutMs: 30_000,
+      toolName: "run_command"
+    });
+    expect(JSON.stringify(history)).not.toContain("stdout");
+    expect(JSON.stringify(history)).not.toContain("stderr");
+  });
+
+  it("does not execute denied or approval-required run_command requests", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "do not run unsafe commands"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const denied = await runtime.executeToolCall({
+      input: {
+        args: ["-rf", "/"],
+        command: "sudo",
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const approvalRequired = await runtime.executeToolCall({
+      input: {
+        command: "node",
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(denied).toMatchObject({
+      error: { code: "COMMAND_DENIED_BY_POLICY" },
+      ok: false
+    });
+    expect(approvalRequired).toMatchObject({
+      error: { code: "COMMAND_REQUIRES_APPROVAL" },
+      ok: false
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "policy.decision.recorded"
+    ]);
+    const activeTask = runtime.getActiveTask();
+    expect(activeTask.ok).toBe(true);
+    if (activeTask.ok) {
+      expect(activeTask.value.events.map((event) => event.type)).toEqual(
+        history.map((event) => event.type)
+      );
+    }
+    expect(history.some((event) => event.type.startsWith("tool.call."))).toBe(
+      false
+    );
+  });
+
+  it("emits failed run_command lifecycle events for command failures", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("run git status failure");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const result = await runtime.executeToolCall({
+      input: {
+        args: ["status"],
+        command: "git",
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(result).toMatchObject({
+      error: { code: "TOOL_COMMAND_FAILED" },
+      ok: false
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "tool.call.requested",
+      "tool.call.started",
+      "tool.call.failed"
+    ]);
+    expect(history[5]?.payload).toMatchObject({
+      command: "git status",
+      durationMs: expect.any(Number),
+      errorCode: "TOOL_COMMAND_FAILED",
+      exitCode: expect.any(Number),
+      outputReference: {
+        fullOutputStored: false
+      },
+      status: "failed",
+      timeoutMs: 30_000,
+      toolName: "run_command"
+    });
+  });
+
   it("does not gate existing apply_patch execution before approval enforcement exists", async () => {
     const { projectDir } = createTempRuntimeProject();
     writeProjectFile(projectDir, "src/edit.ts", "export const value = 1;\n");

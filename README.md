@@ -176,7 +176,7 @@ These tools run inside the resolved project directory, reject path escapes, avoi
 - `tool.call.completed`
 - `tool.call.failed`
 
-The current CLI does not expose direct file-inspection or patch commands yet. Tool execution is available through runtime/package APIs and remains separate from provider-driven automatic tool use, command execution, approvals, validation command execution, sessions, memory, and skills.
+The current CLI does not expose direct commands for file inspection, patching, or command execution yet. Tool execution is available through runtime/package APIs and remains separate from provider-driven automatic tool use, approvals, validation command execution, sessions, memory, and skills.
 
 ## Patch-Based File Edits
 
@@ -211,6 +211,32 @@ The current implementation records activity for `read_file`, `list_files`, `sear
 
 Durable audit persistence under `.sprite/sessions/...` is not implemented yet; current audit state is runtime-local.
 
+## Sandboxed Command Execution
+
+Story 2.5 adds sandboxed command execution for runtime/package API use through
+the `run_command` tool. Runtime command execution classifies the request first,
+records `policy.decision.recorded`, and only executes `allow` decisions or
+mechanically safe `modify` decisions supplied by the policy classifier.
+
+Allowed commands execute through `SandboxRunner` with:
+
+- `shell: false`
+- structured command and args
+- resolved cwd enforcement inside the configured project boundary
+- symlink escape rejection
+- mandatory timeouts
+- minimal inherited environment exposure (`PATH` only)
+
+Command tool events use metadata-only payloads. They can identify command, cwd,
+status, timeout, exit code, duration, and output reference, but do not include
+raw stdout, stderr, custom environment values, or command output bodies.
+
+Current limitations:
+
+- approval prompts remain Story 2.6
+- configured validation command orchestration remains Story 2.7
+- provider-driven automatic command use remains future work
+
 ## Policy Classification
 
 Story 2.4 adds a deterministic policy classifier through `@sprite/sandbox` and
@@ -228,17 +254,16 @@ classifier validates untrusted request shapes, rejects raw content fields, keeps
 environment values and patch bodies out of decisions, and treats repository or
 tool-output instructions as untrusted input.
 
-This story adds classification and audit only. It does not execute commands,
-create approval prompts, gate `apply_patch`, run configured validation commands,
-or provide the sandbox runner.
+Policy classification itself remains approval-free. Command execution is now
+available through the policy-gated `run_command` runtime/tool path, but this
+does not create approval prompts, gate `apply_patch`, run configured validation
+commands, or add provider-driven automatic tool-calling.
 
 Not implemented yet:
 
 - Live provider completions and tool-calling execution
 - Full multi-iteration agent loop progression
 - Patch approval flow and approval enforcement
-- Sandboxed command execution
 - TUI
 - RPC server
-- Sandbox runner
 - Sessions, memory, and skills

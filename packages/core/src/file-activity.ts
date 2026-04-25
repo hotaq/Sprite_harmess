@@ -18,6 +18,7 @@ const FILE_ACTIVITY_TOOL_NAMES = [
   "apply_patch",
   "list_files",
   "read_file",
+  "run_command",
   "search_files"
 ] as const satisfies readonly ToolName[];
 const FORBIDDEN_FILE_ACTIVITY_FIELDS = new Set([
@@ -89,6 +90,8 @@ export function deriveFileActivityDrafts(
           toolName: result.toolName
         }
       ];
+    case "run_command":
+      return [];
     case "list_files":
       return [
         {
