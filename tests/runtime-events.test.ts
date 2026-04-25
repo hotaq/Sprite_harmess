@@ -461,6 +461,7 @@ describe("runtime event contract", () => {
         ruleId: "file_edit.package_config",
         status: "pending",
         summary: "File edit approval requested.",
+        timeoutMs: 30_000,
         toolCallId: "tool_call_test"
       }
     );
@@ -1391,6 +1392,104 @@ describe("runtime event subscription", () => {
     ).toHaveLength(2);
   });
 
+  it("rejects unoffered approval actions without consuming the pending approval", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("reject unoffered action");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const rejected = await runtime.respondToApproval({
+      action: "alwaysAllowForSession",
+      approvalRequestId: approval.approvalRequestId
+    });
+
+    expect(rejected).toMatchObject({
+      error: { code: "APPROVAL_ACTION_NOT_ALLOWED" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .some((event) => event.type === "approval.resolved")
+    ).toBe(false);
+  });
+
+  it("blocks tool execution while an approval is pending and clears stale approvals", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("block while pending");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    const blocked = await runtime.executeToolCall({
+      input: { path: "package.json" },
+      toolName: "read_file"
+    });
+
+    expect(blocked).toMatchObject({
+      error: { code: "APPROVAL_PENDING" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+
+    const cancelled = runtime.cancelActiveTask();
+    expect(cancelled.ok).toBe(true);
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+
+    const runtimeWithReplacement = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    runtimeWithReplacement.submitInteractiveTask("create stale approval");
+    await runtimeWithReplacement.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    expect(runtimeWithReplacement.getPendingApprovals()).toHaveLength(1);
+
+    runtimeWithReplacement.submitInteractiveTask("replace active task");
+    expect(runtimeWithReplacement.getPendingApprovals()).toHaveLength(0);
+  });
+
   it("isolates approval event mutations from subscribers and history readers", async () => {
     const { projectDir } = createTempRuntimeProject();
     const runtime = new AgentRuntime({
@@ -1596,7 +1695,8 @@ describe("runtime event subscription", () => {
       envExposure: "none",
       requestType: "file_edit",
       riskLevel: "high",
-      ruleId: "file_edit.package_config"
+      ruleId: "file_edit.package_config",
+      timeoutMs: 30_000
     });
 
     const approved = await runtime.respondToApproval({
@@ -1709,6 +1809,65 @@ describe("runtime event subscription", () => {
       decision: "edit",
       status: "resolved"
     });
+  });
+
+  it("rejects approval edits that switch request type", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "package.json", '{"name":"old"}\n');
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("reject mismatched edit");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "package.json",
+            oldText: '"old"',
+            newText: '"new"'
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const rejected = await runtime.respondToApproval({
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId,
+      modifiedRequest: {
+        command: "pwd",
+        cwd: projectDir,
+        timeoutMs: 30_000,
+        type: "command"
+      }
+    });
+
+    expect(rejected).toMatchObject({
+      error: { code: "APPROVAL_TYPE_MISMATCH" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+    expect(readFileSync(join(projectDir, "package.json"), "utf8")).toBe(
+      '{"name":"old"}\n'
+    );
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .some((event) => event.type === "approval.resolved")
+    ).toBe(false);
   });
 
   it("does not apply denied risky apply_patch edits", async () => {

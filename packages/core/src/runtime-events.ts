@@ -150,7 +150,7 @@ export interface RuntimeEventPayloadMap {
     ruleId: string;
     status: "pending";
     summary: string;
-    timeoutMs?: number;
+    timeoutMs: number;
     toolCallId?: string;
   };
   "approval.resolved": {
@@ -1032,6 +1032,15 @@ function validateApprovalRequestedEvent(
     return err(timeoutMs.error);
   }
 
+  if (timeoutMs.value === undefined) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload timeoutMs must be provided.`
+      )
+    );
+  }
+
   if (toolCallId.ok === false) {
     return err(toolCallId.error);
   }
@@ -1053,7 +1062,7 @@ function validateApprovalRequestedEvent(
     ruleId: ruleId.value,
     status: status.value,
     summary: summary.value,
-    ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
+    timeoutMs: timeoutMs.value,
     ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value })
   });
 }

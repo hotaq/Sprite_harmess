@@ -1,6 +1,5 @@
 import type {
   CommandPolicyRequest,
-  FileEditPolicyRequest,
   PolicyRequestType,
   RiskLevel
 } from "./policy-engine.js";
@@ -38,8 +37,22 @@ export interface ApprovalRequest {
   ruleId: string;
   summary: string;
   taskId: string;
-  timeoutMs?: number;
+  timeoutMs: number;
   toolCallId?: string;
+}
+
+export interface ApprovalApplyPatchEdit {
+  path: string;
+  oldText: string;
+  newText: string;
+}
+
+export interface ApprovalApplyPatchToolCall {
+  input: {
+    edits: ApprovalApplyPatchEdit[];
+    summary?: string;
+  };
+  toolName: "apply_patch";
 }
 
 export type ApprovalResponse =
@@ -58,7 +71,13 @@ export type ApprovalResponse =
   | {
       action: "edit";
       approvalRequestId: string;
-      modifiedRequest: CommandPolicyRequest | FileEditPolicyRequest;
+      modifiedRequest: CommandPolicyRequest;
+      reason?: string;
+    }
+  | {
+      action: "edit";
+      approvalRequestId: string;
+      modifiedToolCall: ApprovalApplyPatchToolCall;
       reason?: string;
     }
   | {

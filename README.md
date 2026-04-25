@@ -234,7 +234,12 @@ raw stdout, stderr, custom environment values, or command output bodies.
 Approval-required command requests now create metadata-only approval events and
 pending runtime approvals. Runtime callers can respond with allow, deny, edit,
 or timeout decisions; approved commands still execute through `run_command` and
-`SandboxRunner`, while denial and timeout return structured observations.
+`SandboxRunner`, while denial and timeout return structured observations. Edit
+responses keep the original request type: command approvals use a modified
+command request, and file edit approvals use a modified `apply_patch` tool call
+so the runtime receives the exact replacement text needed to apply the patch.
+The runtime rejects approval actions that were not listed in the request's
+`allowedActions`.
 
 Current limitations:
 
@@ -263,6 +268,8 @@ Policy classification itself remains approval-free. Command execution and
 `apply_patch` now use runtime approval gates when policy returns
 `require_approval`; safe targeted patches still use the existing patch lifecycle
 events, while broad or risky edits wait for approval before any file is written.
+Approval requests always include a timeout value, and tasks waiting on approval
+block further runtime tool execution until the pending approval is resolved.
 This does not run configured validation commands or add provider-driven
 automatic tool-calling.
 

@@ -1,6 +1,6 @@
 # Story 2.6: Approve, Deny, or Modify Risky Actions
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -21,7 +21,7 @@ so that I remain in control of destructive or broad actions.
   - [x] Define an `ApprovalRequest` model with request ID, request type, summary, cwd, affected files, risk level, reason, rule ID, environment exposure, timeout, allowed actions, task ID, tool call ID when available, and correlation ID.
   - [x] Generate stable approval IDs with the `appr_` prefix.
   - [x] Define approval response types for allow, deny, edit, timeout, and session-scoped allow if implemented in this slice.
-  - [x] Keep approval contracts metadata-only. Do not include raw patch bodies, `oldText`, `newText`, stdout, stderr, raw env values, repository instructions, or secret-looking values.
+  - [x] Keep approval request/event contracts metadata-only. Do not include raw patch bodies, `oldText`, `newText`, stdout, stderr, raw env values, repository instructions, or secret-looking values in emitted approval metadata; modified file-edit responses carry a bounded `apply_patch` tool call so the approved edit can be applied.
 - [x] Add approval runtime events and validation (AC: 1, 2)
   - [x] Add `approval.requested` and `approval.resolved` to `packages/core/src/runtime-events.ts`.
   - [x] Validate approval event payloads with the same strict `Result<SpriteError>` pattern used by existing runtime events.
@@ -52,6 +52,15 @@ so that I remain in control of destructive or broad actions.
   - [x] Update README or architecture-facing docs only where current limitations change.
   - [x] Run `npm run build`, `npm run typecheck`, `npm run lint`, `npm test`, `git diff --check`, and a targeted Prettier check for touched source, tests, docs, and story files.
   - [x] Run GitNexus impact before editing code symbols and `gitnexus_detect_changes()` before committing.
+
+### Review Findings
+
+- [x] [Review][Dismiss] Define the structured observation contract for denied/timed-out approvals — resolved by user decision: `Result.err(SpriteError)` is the intended structured observation shape for this slice.
+- [x] [Review][Patch] Align file-edit approval edit contract with runtime behavior [packages/core/src/agent-runtime.ts:124] — resolved by user decision: make `modifiedToolCall` the official runtime/shared contract for file edit approvals, then update shared contract/docs/tests to match.
+- [x] [Review][Patch] File-edit approval requests can omit the required timeout [packages/core/src/agent-runtime.ts:1240]
+- [x] [Review][Patch] `respondToApproval()` accepts valid-but-not-offered actions such as `alwaysAllowForSession` and treats them as allow [packages/core/src/agent-runtime.ts:384]
+- [x] [Review][Patch] Edited approval responses can switch request/tool type instead of staying within the approved request type [packages/core/src/agent-runtime.ts:450]
+- [x] [Review][Patch] Pending approval lifecycle allows additional tool calls while waiting and leaves stale approvals after task transitions [packages/core/src/agent-runtime.ts:357]
 
 ## Dev Notes
 
@@ -147,7 +156,7 @@ export interface ApprovalRequest {
   ruleId: string;
   summary: string;
   taskId: string;
-  timeoutMs?: number;
+  timeoutMs: number;
   toolCallId?: string;
   correlationId: string;
 }
@@ -168,11 +177,25 @@ export type ApprovalResponse =
   | {
       action: "edit";
       approvalRequestId: string;
-      modifiedRequest: CommandPolicyRequest | FileEditPolicyRequest;
+      modifiedRequest: CommandPolicyRequest;
+      reason?: string;
+    }
+  | {
+      action: "edit";
+      approvalRequestId: string;
+      modifiedToolCall: {
+        toolName: "apply_patch";
+        input: {
+          edits: Array<{ path: string; oldText: string; newText: string }>;
+          summary?: string;
+        };
+      };
       reason?: string;
     }
   | { action: "timeout"; approvalRequestId: string };
 ```
+
+Command approval edits keep using `modifiedRequest`. File-edit approval edits use `modifiedToolCall` because runtime application happens through the `apply_patch` tool call, not through a `FileEditPolicyRequest` alone.
 
 If `timeout` is implemented as a resolved status instead of a response action, keep the event and structured observation stable and explicit.
 
@@ -248,6 +271,7 @@ GitNexus may be stale after the Story 2.5 commit. Before editing code for this s
 
 | Date       | Version | Description                                                    | Author     |
 | ---------- | ------- | -------------------------------------------------------------- | ---------- |
+| 2026-04-26 | 1.1     | Addressed BMAD code review approval contract findings.         | Codex      |
 | 2026-04-25 | 1.0     | Implemented runtime approval flow for commands and file edits. | Chinnaphat |
 | 2026-04-25 | 0.1     | Initial ready-for-dev story draft for 2.6.                     | Chinnaphat |
 
@@ -267,6 +291,8 @@ GPT-5 Codex
 - `rtk npm test`: 101 tests passed.
 - `rtk npm exec prettier -- --check packages/sandbox/src/approval-service.ts packages/sandbox/src/index.ts packages/core/src/runtime-events.ts packages/core/src/agent-runtime.ts tests/runtime-events.test.ts README.md _bmad-output/implementation-artifacts/2-6-approve-deny-or-modify-risky-actions.md _bmad-output/implementation-artifacts/sprint-status.yaml`: passed.
 - `rtk git diff --check`: passed.
+- `rtk npm test -- tests/runtime-events.test.ts`: 37 tests passed after code review fixes.
+- `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, and targeted Prettier check: passed after code review fixes.
 - GitNexus impact: `AgentRuntime` CRITICAL blast radius; `validateRuntimeEvent` LOW; `waitForTaskInput` LOW.
 - GitNexus detect changes: critical affected scope due shared `AgentRuntime` and runtime event contract changes.
 
@@ -279,6 +305,7 @@ GPT-5 Codex
 - Cleared active approval waiting state after approval resolution so a resolved deny/timeout does not leave stale `approval-required` task state.
 - Added policy gating for `apply_patch` metadata before file writes; broad/risky edits wait for approval, denied edits do not apply, and safe targeted patches keep the existing tool/file edit lifecycle after the policy event.
 - Updated README to document runtime/package approval behavior and remaining adapter limitations.
+- Addressed BMAD code review findings: file-edit approvals now use an official modified `apply_patch` tool-call contract, approval requests always include a timeout, unsupported approval actions are rejected, edited approvals cannot switch request type, and pending approvals block further tool execution until resolved.
 
 ### File List
 
@@ -293,4 +320,6 @@ GPT-5 Codex
 
 ## QA Results
 
-TBD
+- 2026-04-26 BMAD code review complete. Decision on denial/timeout observation shape resolved as intentional `Result.err(SpriteError)` behavior for this slice.
+- All non-deferred patch findings were fixed and checked off in the Review Findings section.
+- Verification passed: targeted runtime-events tests, full build, typecheck, lint, full test suite, `git diff --check`, and targeted Prettier check.

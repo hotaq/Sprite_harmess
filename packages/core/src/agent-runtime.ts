@@ -123,14 +123,21 @@ interface RuntimeFileEditMetadata {
 
 export type RuntimeApprovalResponse =
   | Exclude<ApprovalResponse, { action: "edit" }>
-  | ({
+  | {
       action: "edit";
       approvalRequestId: string;
+      modifiedRequest: CommandPolicyRequest;
       reason?: string;
-    } & (
-      | { modifiedRequest: CommandPolicyRequest | FileEditPolicyRequest }
-      | { modifiedToolCall: RuntimeToolCallRequest }
-    ));
+    }
+  | {
+      action: "edit";
+      approvalRequestId: string;
+      modifiedToolCall: Extract<
+        RuntimeToolCallRequest,
+        { toolName: "apply_patch" }
+      >;
+      reason?: string;
+    };
 
 interface PendingApprovalRecord {
   approvalRequest: ApprovalRequest;
@@ -138,6 +145,8 @@ interface PendingApprovalRecord {
   toolCallId: string;
   toolCallRequest: RuntimeToolCallRequest;
 }
+
+const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
 
 export class AgentRuntime {
   private readonly sessionId = `session_${randomUUID()}`;
@@ -176,6 +185,8 @@ export class AgentRuntime {
     if (!bootstrapState.ok) {
       return bootstrapState;
     }
+
+    this.pendingApprovals.clear();
 
     const request = createTaskRequest(task, bootstrapState.value);
     const taskId = this.nextId("task");
@@ -363,6 +374,15 @@ export class AgentRuntime {
       return activeTask;
     }
 
+    if (activeTask.value.waitingState?.reason === "approval-required") {
+      return err(
+        new SpriteError(
+          "APPROVAL_PENDING",
+          "Resolve the pending approval before executing another tool call."
+        )
+      );
+    }
+
     const toolCallId = this.nextId("tool_call");
     const policyCheckedRequest = this.preparePolicyCheckedToolCall(
       activeTask.value,
@@ -408,6 +428,24 @@ export class AgentRuntime {
           "Approval response does not belong to the active task."
         )
       );
+    }
+
+    const actionValidation = this.validateApprovalResponseAction(
+      pending.approvalRequest,
+      response
+    );
+
+    if (!actionValidation.ok) {
+      return err(actionValidation.error);
+    }
+
+    const editValidation = this.validateEditedApprovalResponse(
+      pending.approvalRequest,
+      response
+    );
+
+    if (!editValidation.ok) {
+      return err(editValidation.error);
     }
 
     const resolvedEvent = this.createApprovalResolvedEvent(
@@ -956,49 +994,12 @@ export class AgentRuntime {
 
   private executeModifiedApprovalRequest(
     task: PlannedExecutionFlow,
-    request: CommandPolicyRequest | FileEditPolicyRequest
+    request: CommandPolicyRequest
   ): Promise<Result<ToolExecutionResult>> {
-    if (request.type === "command") {
-      return this.executePolicyCheckedModifiedToolCall(task, {
-        input: this.createRunCommandInput(request),
-        toolName: "run_command"
-      });
-    }
-
-    const policyDecision = classifySandboxPolicyRequest(request);
-
-    if (!policyDecision.ok) {
-      return Promise.resolve(err(policyDecision.error));
-    }
-
-    const eventMetadata = summarizePolicyRequestForEvent(
-      policyDecision.value.modifiedRequest ?? request
-    );
-
-    if (!eventMetadata.ok) {
-      return Promise.resolve(err(eventMetadata.error));
-    }
-
-    const event = this.createPolicyDecisionEvent(
-      task,
-      policyDecision.value,
-      eventMetadata.value
-    );
-    const emitted = this.emitNewEvents([event]);
-
-    if (!emitted.ok) {
-      return Promise.resolve(err(emitted.error));
-    }
-
-    this.refreshActiveTaskEvents(task.taskId);
-    return Promise.resolve(
-      err(
-        new SpriteError(
-          "APPROVAL_EDIT_REQUIRES_TOOL_CALL",
-          "Edited file approvals must provide a modified apply_patch tool call."
-        )
-      )
-    );
+    return this.executePolicyCheckedModifiedToolCall(task, {
+      input: this.createRunCommandInput(request),
+      toolName: "run_command"
+    });
   }
 
   private executePolicyCheckedModifiedToolCall(
@@ -1237,6 +1238,66 @@ export class AgentRuntime {
     return ok(approvalRequest);
   }
 
+  private validateApprovalResponseAction(
+    approvalRequest: ApprovalRequest,
+    response: RuntimeApprovalResponse
+  ): Result<void> {
+    if (response.action === "timeout") {
+      return ok(undefined);
+    }
+
+    if (
+      !approvalRequest.allowedActions.includes(
+        response.action as ApprovalAction
+      )
+    ) {
+      return err(
+        new SpriteError(
+          "APPROVAL_ACTION_NOT_ALLOWED",
+          `Approval action '${response.action}' is not allowed for this request.`
+        )
+      );
+    }
+
+    return ok(undefined);
+  }
+
+  private validateEditedApprovalResponse(
+    approvalRequest: ApprovalRequest,
+    response: RuntimeApprovalResponse
+  ): Result<void> {
+    if (response.action !== "edit") {
+      return ok(undefined);
+    }
+
+    const isCommandEdit =
+      "modifiedRequest" in response &&
+      response.modifiedRequest.type === "command";
+    const isFileEditToolCall =
+      "modifiedToolCall" in response &&
+      response.modifiedToolCall.toolName === "apply_patch";
+
+    if (approvalRequest.requestType === "command" && !isCommandEdit) {
+      return err(
+        new SpriteError(
+          "APPROVAL_TYPE_MISMATCH",
+          "Command approvals must be edited with a modified command request."
+        )
+      );
+    }
+
+    if (approvalRequest.requestType === "file_edit" && !isFileEditToolCall) {
+      return err(
+        new SpriteError(
+          "APPROVAL_TYPE_MISMATCH",
+          "File edit approvals must be edited with a modified apply_patch tool call."
+        )
+      );
+    }
+
+    return ok(undefined);
+  }
+
   private createApprovalRequest(
     task: PlannedExecutionFlow,
     decision: PolicyDecision,
@@ -1268,9 +1329,7 @@ export class AgentRuntime {
           ? "Command approval requested."
           : "File edit approval requested."),
       taskId: task.taskId,
-      ...(metadata.timeoutMs === undefined
-        ? {}
-        : { timeoutMs: metadata.timeoutMs }),
+      timeoutMs: metadata.timeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS,
       toolCallId
     };
   }
@@ -1305,9 +1364,7 @@ export class AgentRuntime {
         ruleId: request.ruleId,
         status: "pending",
         summary: request.summary,
-        ...(request.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: request.timeoutMs }),
+        timeoutMs: request.timeoutMs,
         ...(request.toolCallId === undefined
           ? {}
           : { toolCallId: request.toolCallId })
@@ -1509,12 +1566,24 @@ export class AgentRuntime {
       return err(emitted.error);
     }
 
+    if (this.isTerminalState(task)) {
+      this.clearPendingApprovalsForTask(task.taskId);
+    }
+
     this.activeTask = {
       ...task,
       events: this.eventBus.getHistory(task.taskId)
     };
 
     return ok(this.activeTask);
+  }
+
+  private clearPendingApprovalsForTask(taskId: string): void {
+    for (const [approvalRequestId, record] of this.pendingApprovals) {
+      if (record.approvalRequest.taskId === taskId) {
+        this.pendingApprovals.delete(approvalRequestId);
+      }
+    }
   }
 
   private refreshActiveTaskEvents(taskId: string): void {
