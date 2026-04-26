@@ -1,6 +1,6 @@
 # Story 2.8: Recover from Failed Validation or Denied Actions
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -42,6 +42,10 @@ so that it remains useful under safety constraints.
   - [x] Add runtime integration tests for failed validation recovery, policy-denied command recovery, approval-denied recovery, and ask-user recovery state.
   - [x] Update README to document recovery behavior and current adapter/provider-loop limitations.
   - [x] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, and targeted Prettier check for touched files.
+
+### Review Findings
+
+- [x] [Review][Patch] Prevent ask-user recovery from bypassing pending approval gates [`packages/core/src/agent-runtime.ts:548`] — fixed by rejecting `ask_user` recovery while the active task still has unresolved approval and covering the gate with a regression test.
 
 ## Dev Notes
 
@@ -215,6 +219,7 @@ Codex
 - 2026-04-26: Targeted verification passed: `rtk npm test -- tests/runtime-events.test.ts tests/runtime-loop.test.ts` (61 tests).
 - 2026-04-26: Full verification passed: `rtk npm run build && rtk npm run typecheck && rtk npm run lint && rtk npm test` (117 tests).
 - 2026-04-26: Formatting/static checks passed: `rtk git diff --check` and targeted Prettier check.
+- 2026-04-26: Code review found and fixed an approval-gate bypass edge case in `recordRecoveryAction()`; targeted regression passed: `rtk npm test -- tests/runtime-events.test.ts` (48 tests).
 
 ### Completion Notes List
 
@@ -223,6 +228,7 @@ Codex
 - `ask_user` recovery now reuses existing `task.waiting` / `user-input-required` state, preserving adapter-neutral input handling.
 - Final summaries include recovery event details while failed or blocked validation remains an unresolved risk until a later validation passes.
 - Added regression coverage for recovery event validation, failed validation recovery, policy-denied command recovery, approval-denied ask-user recovery, and command-failure recovery.
+- Added review follow-up coverage proving pending approvals still block ask-user recovery and follow-up tool calls.
 - Documented recovery behavior and limitations in README.
 
 ### File List
@@ -240,8 +246,9 @@ Codex
 | Date       | Version | Description                                 | Author |
 | ---------- | ------- | ------------------------------------------- | ------ |
 | 2026-04-26 | 1.0     | Implemented recovery event and runtime API. | Codex  |
+| 2026-04-26 | 1.1     | Fixed approval-gate review finding.         | Codex  |
 | 2026-04-26 | 0.1     | Created Story 2.8 implementation context.   | Codex  |
 
 ## QA Results
 
-Ready for BMAD code review. Implementation self-check passed build, typecheck, lint, targeted tests, full test suite, diff check, and targeted Prettier check.
+BMAD code review completed. One patch finding was fixed and covered by regression test; story is done pending normal repository verification/commit hygiene.

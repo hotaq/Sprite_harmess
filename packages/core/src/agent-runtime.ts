@@ -554,6 +554,18 @@ export class AgentRuntime {
       return activeTask;
     }
 
+    if (
+      request.decision === "ask_user" &&
+      this.hasPendingApprovalForTask(activeTask.value.taskId)
+    ) {
+      return err(
+        new SpriteError(
+          "APPROVAL_PENDING",
+          "Resolve the pending approval before recording a separate user-input recovery action."
+        )
+      );
+    }
+
     const recoveryEvent = this.createRecoveryRecordedEvent(
       activeTask.value,
       request
@@ -2048,6 +2060,16 @@ export class AgentRuntime {
         this.pendingApprovals.delete(approvalRequestId);
       }
     }
+  }
+
+  private hasPendingApprovalForTask(taskId: string): boolean {
+    for (const record of this.pendingApprovals.values()) {
+      if (record.approvalRequest.taskId === taskId) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private refreshActiveTaskEvents(taskId: string): void {

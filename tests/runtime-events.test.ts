@@ -2072,6 +2072,82 @@ describe("runtime event subscription", () => {
     ]);
   });
 
+  it("keeps approval-required blocking active before ask-user recovery", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "do not bypass pending approval with recovery"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const recovery = runtime.recordRecoveryAction({
+      decision: "ask_user",
+      nextAction:
+        "Ask the user whether to run a safer read-only command instead.",
+      sourceEventId: approval.approvalRequestId,
+      summary: "Recovery should wait for the existing approval gate.",
+      toolCallId: approval.toolCallId,
+      trigger: "approval_denied"
+    });
+
+    expect(recovery).toMatchObject({
+      error: { code: "APPROVAL_PENDING" },
+      ok: false
+    });
+    expect(runtime.getActiveTask()).toMatchObject({
+      ok: true,
+      value: {
+        status: "waiting-for-input",
+        waitingState: {
+          reason: "approval-required"
+        }
+      }
+    });
+    expect(
+      runtime.getEventHistory(submitted.value.taskId).map((event) => event.type)
+    ).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "approval.requested",
+      "task.waiting"
+    ]);
+
+    const followUp = await runtime.executeToolCall({
+      input: {
+        command: "pwd",
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(followUp).toMatchObject({
+      error: { code: "APPROVAL_PENDING" },
+      ok: false
+    });
+  });
+
   it("rejects approval edit responses with both modified payload shapes", async () => {
     const { projectDir } = createTempRuntimeProject();
     const runtime = new AgentRuntime({
