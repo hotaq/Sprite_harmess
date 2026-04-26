@@ -73,6 +73,22 @@ const VALIDATION_COMPLETED_STATUSES = [
   "passed",
   "skipped"
 ] as const;
+const RECOVERY_TRIGGERS = [
+  "approval_denied",
+  "approval_timed_out",
+  "command_failed",
+  "command_timed_out",
+  "policy_denied",
+  "sandbox_violation",
+  "validation_blocked",
+  "validation_failed"
+] as const;
+const RECOVERY_DECISIONS = [
+  "ask_user",
+  "choose_safer_alternative",
+  "retry_with_fix",
+  "stop"
+] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -81,6 +97,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.failed",
   "task.cancelled",
   "task.steering.received",
+  "task.recovery.recorded",
   "policy.decision.recorded",
   "approval.requested",
   "approval.resolved",
@@ -131,6 +148,19 @@ export interface RuntimeEventPayloadMap {
   };
   "task.steering.received": {
     note: string;
+  };
+  "task.recovery.recorded": {
+    decision: (typeof RECOVERY_DECISIONS)[number];
+    errorCode?: string;
+    message?: string;
+    nextAction: string;
+    ruleId?: string;
+    sourceEventId?: string;
+    status: "recorded";
+    summary: string;
+    toolCallId?: string;
+    trigger: (typeof RECOVERY_TRIGGERS)[number];
+    validationId?: string;
   };
   "policy.decision.recorded": {
     action: (typeof POLICY_ACTIONS)[number];
@@ -589,6 +619,13 @@ export function validateRuntimeEvent(
         note: note.value
       });
     }
+    case "task.recovery.recorded": {
+      return validateTaskRecoveryRecordedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "policy.decision.recorded": {
       return validatePolicyDecisionEvent(
         context,
@@ -790,6 +827,139 @@ function validateFileActivityEvent(
     ...(totalItemCount.value === undefined
       ? {}
       : { totalItemCount: totalItemCount.value })
+  });
+}
+
+function validateTaskRecoveryRecordedEvent(
+  context: RuntimeEventContext,
+  type: "task.recovery.recorded",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"task.recovery.recorded">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const decision = requirePayloadLiteral(
+    type,
+    payload,
+    "decision",
+    RECOVERY_DECISIONS
+  );
+  const errorCode = optionalPayloadString(type, payload, "errorCode");
+  const message = optionalPayloadString(type, payload, "message");
+  const nextAction = requirePayloadString(type, payload, "nextAction");
+  const ruleId = optionalPayloadString(type, payload, "ruleId");
+  const sourceEventId = optionalPayloadString(type, payload, "sourceEventId");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const toolCallId = optionalPayloadString(type, payload, "toolCallId");
+  const trigger = requirePayloadLiteral(
+    type,
+    payload,
+    "trigger",
+    RECOVERY_TRIGGERS
+  );
+  const validationId = optionalPayloadString(type, payload, "validationId");
+
+  if (decision.ok === false) {
+    return err(decision.error);
+  }
+
+  if (errorCode.ok === false) {
+    return err(errorCode.error);
+  }
+
+  if (message.ok === false) {
+    return err(message.error);
+  }
+
+  if (message.value !== undefined && containsSecretLikeValue(message.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload message must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (nextAction.ok === false) {
+    return err(nextAction.error);
+  }
+
+  if (containsSecretLikeValue(nextAction.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload nextAction must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (ruleId.ok === false) {
+    return err(ruleId.error);
+  }
+
+  if (sourceEventId.ok === false) {
+    return err(sourceEventId.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (containsSecretLikeValue(summary.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload summary must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (toolCallId.ok === false) {
+    return err(toolCallId.error);
+  }
+
+  if (trigger.ok === false) {
+    return err(trigger.error);
+  }
+
+  if (validationId.ok === false) {
+    return err(validationId.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    decision: decision.value,
+    ...(errorCode.value === undefined ? {} : { errorCode: errorCode.value }),
+    ...(message.value === undefined ? {} : { message: message.value }),
+    nextAction: nextAction.value,
+    ...(ruleId.value === undefined ? {} : { ruleId: ruleId.value }),
+    ...(sourceEventId.value === undefined
+      ? {}
+      : { sourceEventId: sourceEventId.value }),
+    status: status.value,
+    summary: summary.value,
+    ...(toolCallId.value === undefined ? {} : { toolCallId: toolCallId.value }),
+    trigger: trigger.value,
+    ...(validationId.value === undefined
+      ? {}
+      : { validationId: validationId.value })
   });
 }
 

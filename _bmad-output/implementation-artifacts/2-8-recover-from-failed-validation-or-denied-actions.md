@@ -1,6 +1,6 @@
 # Story 2.8: Recover from Failed Validation or Denied Actions
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,31 +17,31 @@ so that it remains useful under safety constraints.
 
 ## Tasks / Subtasks
 
-- [ ] Add a metadata-only recovery event and runtime contract (AC: 1, 2)
-  - [ ] Extend `packages/core/src/runtime-events.ts` with a `task.recovery.recorded` event type and validator.
-  - [ ] Model recovery triggers for validation failed/blocked, policy denial, approval denial/timeout, command failure/timeout, and sandbox violation.
-  - [ ] Model recovery decisions as a bounded enum such as `retry_with_fix`, `choose_safer_alternative`, `ask_user`, and `stop`.
-  - [ ] Reject raw stdout, stderr, command output, environment values, repository instructions, and secret-looking values in recovery event payloads.
-- [ ] Add `AgentRuntime` recovery recording APIs (AC: 1, 2)
-  - [ ] Add a runtime method that records a recovery path for the active task and refreshes task history.
-  - [ ] Allow the agent loop/adapters to record the chosen recovery decision without bypassing policy or approval gates.
-  - [ ] For `ask_user`, move the task into `waiting-for-input` with `user-input-required` using existing task waiting semantics.
-  - [ ] Preserve existing approval-required blocking behavior; do not execute a follow-up tool while approval is pending.
-- [ ] Connect validation failures and blocked validation to recovery observations (AC: 1)
-  - [ ] When configured validation returns `failed`, expose summarized output references and a follow-up action in the recovery record.
-  - [ ] When configured validation returns `blocked`, record that approval/policy handling is required rather than claiming validation completed.
-  - [ ] Keep large validation output summarized through existing `ToolOutputSummary.reference`; do not copy raw stdout/stderr into runtime events.
-- [ ] Connect denied/sandbox/failed command paths to recovery observations (AC: 2)
-  - [ ] Record a recovery path after `COMMAND_DENIED_BY_POLICY`, `FILE_EDIT_DENIED_BY_POLICY`, approval denial, approval timeout, command failure, command timeout, and sandbox violation results.
-  - [ ] Ensure denied or unsafe requests still do not emit tool started/completed events and do not mutate files.
-  - [ ] Include machine-readable fields (`errorCode`, `toolCallId`, `ruleId` or source event ID when available) so audit readers can trace the recovery path.
-- [ ] Update final summaries, docs, and tests (AC: 1, 2)
-  - [ ] Include recovery events in final summary important events without exposing raw output.
-  - [ ] Update unresolved-risk wording so a recorded recovery path is visible but does not falsely mark failed validation as passed.
-  - [ ] Add runtime event validator tests for valid and forbidden recovery payloads.
-  - [ ] Add runtime integration tests for failed validation recovery, policy-denied command recovery, approval-denied recovery, and ask-user recovery state.
-  - [ ] Update README to document recovery behavior and current adapter/provider-loop limitations.
-  - [ ] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, and targeted Prettier check for touched files.
+- [x] Add a metadata-only recovery event and runtime contract (AC: 1, 2)
+  - [x] Extend `packages/core/src/runtime-events.ts` with a `task.recovery.recorded` event type and validator.
+  - [x] Model recovery triggers for validation failed/blocked, policy denial, approval denial/timeout, command failure/timeout, and sandbox violation.
+  - [x] Model recovery decisions as a bounded enum such as `retry_with_fix`, `choose_safer_alternative`, `ask_user`, and `stop`.
+  - [x] Reject raw stdout, stderr, command output, environment values, repository instructions, and secret-looking values in recovery event payloads.
+- [x] Add `AgentRuntime` recovery recording APIs (AC: 1, 2)
+  - [x] Add a runtime method that records a recovery path for the active task and refreshes task history.
+  - [x] Allow the agent loop/adapters to record the chosen recovery decision without bypassing policy or approval gates.
+  - [x] For `ask_user`, move the task into `waiting-for-input` with `user-input-required` using existing task waiting semantics.
+  - [x] Preserve existing approval-required blocking behavior; do not execute a follow-up tool while approval is pending.
+- [x] Connect validation failures and blocked validation to recovery observations (AC: 1)
+  - [x] When configured validation returns `failed`, expose summarized output references and a follow-up action in the recovery record.
+  - [x] When configured validation returns `blocked`, record that approval/policy handling is required rather than claiming validation completed.
+  - [x] Keep large validation output summarized through existing `ToolOutputSummary.reference`; do not copy raw stdout/stderr into runtime events.
+- [x] Connect denied/sandbox/failed command paths to recovery observations (AC: 2)
+  - [x] Record a recovery path after `COMMAND_DENIED_BY_POLICY`, `FILE_EDIT_DENIED_BY_POLICY`, approval denial, approval timeout, command failure, command timeout, and sandbox violation results.
+  - [x] Ensure denied or unsafe requests still do not emit tool started/completed events and do not mutate files.
+  - [x] Include machine-readable fields (`errorCode`, `toolCallId`, `ruleId` or source event ID when available) so audit readers can trace the recovery path.
+- [x] Update final summaries, docs, and tests (AC: 1, 2)
+  - [x] Include recovery events in final summary important events without exposing raw output.
+  - [x] Update unresolved-risk wording so a recorded recovery path is visible but does not falsely mark failed validation as passed.
+  - [x] Add runtime event validator tests for valid and forbidden recovery payloads.
+  - [x] Add runtime integration tests for failed validation recovery, policy-denied command recovery, approval-denied recovery, and ask-user recovery state.
+  - [x] Update README to document recovery behavior and current adapter/provider-loop limitations.
+  - [x] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, and targeted Prettier check for touched files.
 
 ## Dev Notes
 
@@ -211,22 +211,37 @@ Codex
 
 - 2026-04-26: Created Story 2.8 context after Story 2.7 was marked done.
 - 2026-04-26: Used `rtk omx explore` to map recovery-related runtime files and current gaps.
+- 2026-04-26: GitNexus impact before runtime edits: `AgentRuntime` CRITICAL, `createFinalTaskSummary` HIGH, `validateRuntimeEvent` LOW.
+- 2026-04-26: Targeted verification passed: `rtk npm test -- tests/runtime-events.test.ts tests/runtime-loop.test.ts` (61 tests).
+- 2026-04-26: Full verification passed: `rtk npm run build && rtk npm run typecheck && rtk npm run lint && rtk npm test` (117 tests).
+- 2026-04-26: Formatting/static checks passed: `rtk git diff --check` and targeted Prettier check.
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created.
+- Added schema-validated `task.recovery.recorded` runtime events with bounded recovery triggers and decisions.
+- Added `AgentRuntime.recordRecoveryAction()` so the runtime can record recovery paths for validation failures, policy denials, approval denials/timeouts, command failures/timeouts, and sandbox violations.
+- `ask_user` recovery now reuses existing `task.waiting` / `user-input-required` state, preserving adapter-neutral input handling.
+- Final summaries include recovery event details while failed or blocked validation remains an unresolved risk until a later validation passes.
+- Added regression coverage for recovery event validation, failed validation recovery, policy-denied command recovery, approval-denied ask-user recovery, and command-failure recovery.
+- Documented recovery behavior and limitations in README.
 
 ### File List
 
+- `README.md`
 - `_bmad-output/implementation-artifacts/2-8-recover-from-failed-validation-or-denied-actions.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/final-task-summary.ts`
+- `packages/core/src/runtime-events.ts`
+- `tests/runtime-events.test.ts`
 
 ## Change Log
 
-| Date       | Version | Description                               | Author |
-| ---------- | ------- | ----------------------------------------- | ------ |
-| 2026-04-26 | 0.1     | Created Story 2.8 implementation context. | Codex  |
+| Date       | Version | Description                                 | Author |
+| ---------- | ------- | ------------------------------------------- | ------ |
+| 2026-04-26 | 1.0     | Implemented recovery event and runtime API. | Codex  |
+| 2026-04-26 | 0.1     | Created Story 2.8 implementation context.   | Codex  |
 
 ## QA Results
 
-Pending implementation.
+Ready for BMAD code review. Implementation self-check passed build, typecheck, lint, targeted tests, full test suite, diff check, and targeted Prettier check.

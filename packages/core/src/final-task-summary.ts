@@ -12,8 +12,12 @@ export interface FinalTaskSummaryEvent {
   eventId: string;
   type: RuntimeEventType;
   createdAt: string;
+  decision?: string;
   reason?: string;
   message?: string;
+  nextAction?: string;
+  summary?: string;
+  trigger?: string;
 }
 
 export interface FinalTaskSummary {
@@ -84,6 +88,17 @@ function summarizeEvent(event: RuntimeEventRecord): FinalTaskSummaryEvent {
       ...summary,
       reason: event.payload.reason,
       message: event.payload.message
+    };
+  }
+
+  if (event.type === "task.recovery.recorded") {
+    return {
+      ...summary,
+      decision: event.payload.decision,
+      message: event.payload.message,
+      nextAction: event.payload.nextAction,
+      summary: event.payload.summary,
+      trigger: event.payload.trigger
     };
   }
 

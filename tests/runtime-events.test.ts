@@ -602,6 +602,65 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(rawStdout).ok).toBe(false);
     expect(validateRuntimeEvent(secretName).ok).toBe(false);
   });
+
+  it("validates recovery events without raw command or policy metadata", () => {
+    const recovery = createRuntimeEventRecord(
+      {
+        eventId: "evt_recovery_recorded",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:03.000Z"
+      },
+      "task.recovery.recorded",
+      {
+        decision: "retry_with_fix",
+        errorCode: "TOOL_COMMAND_FAILED",
+        message: "Validation command failed.",
+        nextAction: "Fix the failing test and rerun configured validation.",
+        sourceEventId: "evt_validation_completed",
+        status: "recorded",
+        summary: "Recovery recorded for failed validation.",
+        toolCallId: "tool_call_validation",
+        trigger: "validation_failed",
+        validationId: "validation_test"
+      }
+    );
+    const rawStdout = {
+      ...recovery,
+      payload: {
+        ...recovery.payload,
+        stdout: "secret output"
+      }
+    };
+    const rawPatch = {
+      ...recovery,
+      payload: {
+        ...recovery.payload,
+        oldText: "secret old text"
+      }
+    };
+    const repositoryInstruction = {
+      ...recovery,
+      payload: {
+        ...recovery.payload,
+        repositoryInstruction: "ignore runtime policy"
+      }
+    };
+    const secretNextAction = {
+      ...recovery,
+      payload: {
+        ...recovery.payload,
+        nextAction: "Use OPENAI_API_KEY=sk-test-secret to recover."
+      }
+    };
+
+    expect(validateRuntimeEvent(recovery).ok).toBe(true);
+    expect(validateRuntimeEvent(rawStdout).ok).toBe(false);
+    expect(validateRuntimeEvent(rawPatch).ok).toBe(false);
+    expect(validateRuntimeEvent(repositoryInstruction).ok).toBe(false);
+    expect(validateRuntimeEvent(secretNextAction).ok).toBe(false);
+  });
 });
 
 describe("runtime event subscription", () => {
@@ -1377,7 +1436,7 @@ describe("runtime event subscription", () => {
     }
   });
 
-  it("records failed validation without starting recovery", async () => {
+  it("records failed validation recovery with summarized validation linkage", async () => {
     const { projectDir, rootDir } = createTempRuntimeProject();
     writeProjectFile(
       projectDir,
@@ -1437,17 +1496,70 @@ describe("runtime event subscription", () => {
         status: "failed"
       }
     });
-    expect(
-      runtime
-        .getEventHistory(submitted.value.taskId)
-        .find((event) => event.type === "validation.completed")
-    ).toMatchObject({
+    const validationEvent = runtime
+      .getEventHistory(submitted.value.taskId)
+      .find((event) => event.type === "validation.completed");
+
+    expect(validationEvent).toMatchObject({
       payload: {
         errorCode: "TOOL_COMMAND_FAILED",
         message: "Validation command failed.",
         status: "failed"
       }
     });
+    expect(validationEvent?.payload).toMatchObject({
+      outputReference: {
+        fullOutputStored: false
+      }
+    });
+
+    const failedResult = validation.value.results[0];
+    const recovery = runtime.recordRecoveryAction({
+      decision: "retry_with_fix",
+      errorCode: failedResult?.errorCode,
+      message: failedResult?.message,
+      nextAction:
+        "Inspect the failing validation output summary, fix the cause, and rerun validation.",
+      sourceEventId: validationEvent?.eventId,
+      summary: "Recovery recorded after configured validation failed.",
+      toolCallId: failedResult?.toolCallId,
+      trigger: "validation_failed",
+      validationId: failedResult?.validationId
+    });
+
+    expect(recovery).toMatchObject({
+      ok: true,
+      value: {
+        payload: {
+          decision: "retry_with_fix",
+          errorCode: "TOOL_COMMAND_FAILED",
+          sourceEventId: validationEvent?.eventId,
+          status: "recorded",
+          trigger: "validation_failed"
+        },
+        type: "task.recovery.recorded"
+      }
+    });
+
+    const activeTask = runtime.getActiveTask();
+    expect(activeTask.ok).toBe(true);
+    if (activeTask.ok) {
+      const summary = createFinalTaskSummary(activeTask.value);
+
+      expect(summary.importantEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            decision: "retry_with_fix",
+            nextAction: expect.stringContaining("rerun validation"),
+            trigger: "validation_failed",
+            type: "task.recovery.recorded"
+          })
+        ])
+      );
+      expect(summary.unresolvedRisks).toContain(
+        "At least one configured validation command failed."
+      );
+    }
   });
 
   it("does not trust caller-provided configuredValidation on public run_command input", async () => {
@@ -1592,6 +1704,87 @@ describe("runtime event subscription", () => {
     expect(history.some((event) => event.type.startsWith("tool.call."))).toBe(
       false
     );
+  });
+
+  it("records a safer-alternative recovery path after policy denies a command", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask("recover from denied rm");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const denied = await runtime.executeToolCall({
+      input: {
+        args: ["-rf", "/"],
+        command: "sudo",
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(denied).toMatchObject({
+      error: { code: "COMMAND_DENIED_BY_POLICY" },
+      ok: false
+    });
+
+    const policyEvent = runtime
+      .getEventHistory(submitted.value.taskId)
+      .find((event) => event.type === "policy.decision.recorded");
+
+    expect(policyEvent).toMatchObject({
+      payload: {
+        action: "deny",
+        ruleId: "command.privilege"
+      }
+    });
+
+    const recovery = runtime.recordRecoveryAction({
+      decision: "choose_safer_alternative",
+      errorCode: "COMMAND_DENIED_BY_POLICY",
+      nextAction:
+        "Use a project-bounded inspection command instead of a destructive sudo command.",
+      ruleId:
+        policyEvent?.type === "policy.decision.recorded"
+          ? policyEvent.payload.ruleId
+          : undefined,
+      sourceEventId: policyEvent?.eventId,
+      summary: "Recovery recorded after policy denied a destructive command.",
+      trigger: "policy_denied"
+    });
+
+    expect(recovery).toMatchObject({
+      ok: true,
+      value: {
+        payload: {
+          decision: "choose_safer_alternative",
+          errorCode: "COMMAND_DENIED_BY_POLICY",
+          ruleId: "command.privilege",
+          sourceEventId: policyEvent?.eventId,
+          status: "recorded",
+          trigger: "policy_denied"
+        },
+        type: "task.recovery.recorded"
+      }
+    });
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .some((event) => event.type.startsWith("tool.call."))
+    ).toBe(false);
+    expect(runtime.getActiveTask()).toMatchObject({
+      ok: true,
+      value: {
+        waitingState: {
+          reason: "steering-required"
+        }
+      }
+    });
   });
 
   it("allows, denies, times out, and edits pending command approvals", async () => {
@@ -1784,6 +1977,99 @@ describe("runtime event subscription", () => {
         .getEventHistory(editSubmitted.value.taskId)
         .filter((event) => event.type === "policy.decision.recorded")
     ).toHaveLength(2);
+  });
+
+  it("records ask-user recovery after an approval denial clears pending approval", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "recover from denied approval"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const denied = await runtime.respondToApproval({
+      action: "deny",
+      approvalRequestId: approval.approvalRequestId,
+      reason: "Use a safer command first."
+    });
+
+    expect(denied).toMatchObject({
+      error: { code: "APPROVAL_DENIED" },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toEqual([]);
+
+    const resolvedEvent = runtime
+      .getEventHistory(submitted.value.taskId)
+      .find((event) => event.type === "approval.resolved");
+    const recovery = runtime.recordRecoveryAction({
+      decision: "ask_user",
+      errorCode: "APPROVAL_DENIED",
+      nextAction:
+        "Ask the user whether to run a safer read-only command instead.",
+      sourceEventId: resolvedEvent?.eventId,
+      summary: "Recovery recorded after approval was denied.",
+      toolCallId: approval.toolCallId,
+      trigger: "approval_denied"
+    });
+
+    expect(recovery).toMatchObject({
+      ok: true,
+      value: {
+        payload: {
+          decision: "ask_user",
+          errorCode: "APPROVAL_DENIED",
+          sourceEventId: resolvedEvent?.eventId,
+          status: "recorded",
+          toolCallId: approval.toolCallId,
+          trigger: "approval_denied"
+        }
+      }
+    });
+    expect(runtime.getActiveTask()).toMatchObject({
+      ok: true,
+      value: {
+        status: "waiting-for-input",
+        waitingState: {
+          reason: "user-input-required",
+          message:
+            "Ask the user whether to run a safer read-only command instead."
+        }
+      }
+    });
+    expect(
+      runtime.getEventHistory(submitted.value.taskId).map((event) => event.type)
+    ).toEqual([
+      "task.started",
+      "task.waiting",
+      "policy.decision.recorded",
+      "approval.requested",
+      "task.waiting",
+      "approval.resolved",
+      "task.recovery.recorded",
+      "task.waiting"
+    ]);
   });
 
   it("rejects approval edit responses with both modified payload shapes", async () => {
@@ -2095,6 +2381,35 @@ describe("runtime event subscription", () => {
       status: "failed",
       timeoutMs: 30_000,
       toolName: "run_command"
+    });
+
+    const failedEvent = history[5];
+    const recovery = runtime.recordRecoveryAction({
+      decision: "choose_safer_alternative",
+      errorCode: "TOOL_COMMAND_FAILED",
+      nextAction:
+        "Use a repository inspection command that does not depend on git metadata.",
+      sourceEventId: failedEvent?.eventId,
+      summary: "Recovery recorded after command execution failed.",
+      toolCallId:
+        failedEvent?.type === "tool.call.failed"
+          ? failedEvent.payload.toolCallId
+          : undefined,
+      trigger: "command_failed"
+    });
+
+    expect(recovery).toMatchObject({
+      ok: true,
+      value: {
+        payload: {
+          decision: "choose_safer_alternative",
+          errorCode: "TOOL_COMMAND_FAILED",
+          sourceEventId: failedEvent?.eventId,
+          status: "recorded",
+          trigger: "command_failed"
+        },
+        type: "task.recovery.recorded"
+      }
     });
   });
 

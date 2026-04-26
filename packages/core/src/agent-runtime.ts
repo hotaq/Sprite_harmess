@@ -172,6 +172,24 @@ export interface RuntimeValidationRunSummary {
   status: RuntimeValidationRunStatus;
 }
 
+export type RuntimeRecoveryTrigger =
+  RuntimeEventPayload<"task.recovery.recorded">["trigger"];
+export type RuntimeRecoveryDecision =
+  RuntimeEventPayload<"task.recovery.recorded">["decision"];
+
+export interface RuntimeRecoveryActionRequest {
+  decision: RuntimeRecoveryDecision;
+  errorCode?: string;
+  message?: string;
+  nextAction: string;
+  ruleId?: string;
+  sourceEventId?: string;
+  summary: string;
+  toolCallId?: string;
+  trigger: RuntimeRecoveryTrigger;
+  validationId?: string;
+}
+
 interface PendingApprovalRecord {
   approvalRequest: ApprovalRequest;
   policyRequest: PolicyRequest;
@@ -525,6 +543,61 @@ export class AgentRuntime {
       results,
       status: "passed"
     });
+  }
+
+  recordRecoveryAction(
+    request: RuntimeRecoveryActionRequest
+  ): Result<RuntimeEventRecord<"task.recovery.recorded">> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const recoveryEvent = this.createRecoveryRecordedEvent(
+      activeTask.value,
+      request
+    );
+    const recoveryEvents: RuntimeEventRecord[] = [recoveryEvent];
+
+    if (request.decision === "ask_user") {
+      recoveryEvents.push(
+        this.createTaskWaitingEvent(
+          activeTask.value,
+          "user-input-required",
+          request.nextAction
+        )
+      );
+    }
+
+    const emitted = this.emitNewEvents(recoveryEvents);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    const events = this.eventBus.getHistory(activeTask.value.taskId);
+    this.activeTask = {
+      ...activeTask.value,
+      status:
+        request.decision === "ask_user"
+          ? "waiting-for-input"
+          : activeTask.value.status,
+      summary:
+        request.decision === "ask_user" ? request.nextAction : request.summary,
+      waitingState:
+        request.decision === "ask_user"
+          ? {
+              reason: "user-input-required",
+              message: request.nextAction
+            }
+          : activeTask.value.waitingState,
+      terminalState:
+        request.decision === "ask_user" ? null : activeTask.value.terminalState,
+      events
+    };
+
+    return ok(recoveryEvent);
   }
 
   private executeToolCallWithId(
@@ -1773,6 +1846,43 @@ export class AgentRuntime {
       {
         reason,
         message
+      }
+    );
+  }
+
+  private createRecoveryRecordedEvent(
+    task: PlannedExecutionFlow,
+    request: RuntimeRecoveryActionRequest
+  ): RuntimeEventRecord<"task.recovery.recorded"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "task.recovery.recorded",
+      {
+        decision: request.decision,
+        ...(request.errorCode === undefined
+          ? {}
+          : { errorCode: request.errorCode }),
+        ...(request.message === undefined ? {} : { message: request.message }),
+        nextAction: request.nextAction,
+        ...(request.ruleId === undefined ? {} : { ruleId: request.ruleId }),
+        ...(request.sourceEventId === undefined
+          ? {}
+          : { sourceEventId: request.sourceEventId }),
+        status: "recorded",
+        summary: request.summary,
+        ...(request.toolCallId === undefined
+          ? {}
+          : { toolCallId: request.toolCallId }),
+        trigger: request.trigger,
+        ...(request.validationId === undefined
+          ? {}
+          : { validationId: request.validationId })
       }
     );
   }

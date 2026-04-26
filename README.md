@@ -284,6 +284,28 @@ tool lifecycle path as `run_command`. Validation emits metadata-only
 is configured, the runtime emits a skipped `validation.completed` event so final
 summaries can state that no relevant validation was available.
 
+## Recovery After Validation or Denial
+
+Runtime callers can record the agent's recovery decision with
+`AgentRuntime.recordRecoveryAction()`. Recovery records are emitted as
+metadata-only `task.recovery.recorded` events and can link back to validation,
+tool, policy, or approval events through source IDs, validation IDs, tool call
+IDs, rule IDs, and error codes.
+
+Recovery decisions are intentionally bounded:
+
+- `retry_with_fix`
+- `choose_safer_alternative`
+- `ask_user`
+- `stop`
+
+When recovery asks the user, the runtime reuses the existing
+`task.waiting`/`user-input-required` state so adapters can render a normal input
+request. Recovery events must not include raw stdout, stderr, command output,
+patch text, environment values, repository instructions, or secret-looking
+values. Follow-up tool calls still have to go through the normal policy,
+approval, sandbox, and tool lifecycle path.
+
 ## Policy Classification
 
 Story 2.4 adds a deterministic policy classifier through `@sprite/sandbox` and
