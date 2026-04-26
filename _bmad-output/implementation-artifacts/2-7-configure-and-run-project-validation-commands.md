@@ -1,6 +1,6 @@
 # Story 2.7: Configure and Run Project Validation Commands
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -212,7 +212,7 @@ Codex
 - Added `AgentRuntime.runConfiguredValidationCommands()` to run configured commands through existing policy, approval, sandbox, and tool lifecycle paths.
 - Updated final summaries so skipped/no-attempted validation is reported truthfully and failed/blocked validation appears as unresolved risk.
 - Documented validation command configuration in README and covered config, policy, event, runtime pass, skip, and failure behavior with tests.
-- Story is ready for code review; recovery from failed validation remains Story 2.8 by design.
+- BMAD review is complete; recovery from failed validation remains Story 2.8 by design.
 
 ### File List
 
@@ -234,9 +234,11 @@ Codex
 
 | Date       | Version | Description                                     | Author |
 | ---------- | ------- | ----------------------------------------------- | ------ |
-| 2026-04-26 | 0.1     | Created Story 2.7 implementation context.       | Codex  |
+| 2026-04-26 | 1.1     | Marked BMAD review complete.                    | Codex  |
 | 2026-04-26 | 1.0     | Implemented configured validation command flow. | Codex  |
+| 2026-04-26 | 0.1     | Created Story 2.7 implementation context.       | Codex  |
 
 ## QA Results
 
-Ready for BMAD code review. Implementation self-check passed build, typecheck, lint, targeted tests, and full test suite.
+- 2026-04-26 BMAD code review complete for configured validation command flow.
+- Verification passed: build, typecheck, lint, targeted tests, and full test suite.

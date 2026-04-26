@@ -59,7 +59,7 @@ development_status:
   2-4-classify-risk-for-commands-and-broad-file-edits: done
   2-5-execute-commands-through-the-sandbox-runner: done
   2-6-approve-deny-or-modify-risky-actions: done
-  2-7-configure-and-run-project-validation-commands: review
+  2-7-configure-and-run-project-validation-commands: done
   2-8-recover-from-failed-validation-or-denied-actions: backlog
   2-9-configure-safety-rules-and-prevent-secret-memory-writes: backlog
   epic-2-retrospective: optional
