@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-04-26T17:46:00+0700
+# last_updated: 2026-04-26T18:37:10+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-04-26T17:46:00+0700
+last_updated: 2026-04-26T18:37:10+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -62,7 +62,7 @@ development_status:
   2-7-configure-and-run-project-validation-commands: done
   2-8-recover-from-failed-validation-or-denied-actions: done
   2-9-configure-safety-rules-and-prevent-secret-memory-writes: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
   epic-3: backlog
   3-1-create-and-persist-local-sessions: backlog
   3-2-inspect-basic-session-state: backlog
