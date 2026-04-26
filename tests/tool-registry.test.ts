@@ -251,6 +251,70 @@ describe("tool registry repository inspection", () => {
     expect(brokenSymlink.error.code).toBe("TOOL_PATH_UNAVAILABLE");
   });
 
+  it("returns structured failures for malformed repository-inspection inputs", async () => {
+    const { projectDir } = createTempProject();
+    const registry = createToolRegistry();
+
+    const malformedReadInput = await registry.execute({
+      cwd: projectDir,
+      toolName: "read_file",
+      input: null as never
+    });
+    const malformedReadPath = await registry.execute({
+      cwd: projectDir,
+      toolName: "read_file",
+      input: { path: 123 } as never
+    });
+    const malformedListInput = await registry.execute({
+      cwd: projectDir,
+      toolName: "list_files",
+      input: null as never
+    });
+    const malformedListPath = await registry.execute({
+      cwd: projectDir,
+      toolName: "list_files",
+      input: { path: 123 } as never
+    });
+    const malformedListRecursive = await registry.execute({
+      cwd: projectDir,
+      toolName: "list_files",
+      input: { recursive: "yes" } as never
+    });
+    const malformedSearchInput = await registry.execute({
+      cwd: projectDir,
+      toolName: "search_files",
+      input: null as never
+    });
+    const malformedSearchQuery = await registry.execute({
+      cwd: projectDir,
+      toolName: "search_files",
+      input: { query: 123 } as never
+    });
+    const malformedSearchPath = await registry.execute({
+      cwd: projectDir,
+      toolName: "search_files",
+      input: { path: 123, query: "needle" } as never
+    });
+
+    for (const result of [
+      malformedReadInput,
+      malformedReadPath,
+      malformedListInput,
+      malformedListPath,
+      malformedListRecursive,
+      malformedSearchInput,
+      malformedSearchQuery,
+      malformedSearchPath
+    ]) {
+      expect(result.ok).toBe(false);
+      if (result.ok) {
+        continue;
+      }
+
+      expect(result.error.code).toBe("TOOL_INVALID_INPUT");
+    }
+  });
+
   it("summarizes outputs over byte or line thresholds without pretending persistence exists", () => {
     const largeByBytes = "x".repeat(32 * 1024 + 1);
     const largeByLines = Array.from(

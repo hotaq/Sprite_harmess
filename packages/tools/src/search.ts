@@ -43,6 +43,12 @@ export async function searchProjectFiles(
   cwd: string,
   input: SearchFilesInput
 ): Promise<Result<SearchFilesResult, SpriteError>> {
+  const inputValidation = validateSearchFilesInput(input);
+
+  if (!inputValidation.ok) {
+    return inputValidation;
+  }
+
   if (input.query.length === 0) {
     return err(
       new SpriteError(
@@ -143,6 +149,38 @@ export async function searchProjectFiles(
       )
     );
   }
+}
+
+function validateSearchFilesInput(
+  input: SearchFilesInput
+): Result<void, SpriteError> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input) ||
+    typeof input.query !== "string"
+  ) {
+    return err(
+      new SpriteError(
+        "TOOL_INVALID_INPUT",
+        "search_files requires a query string."
+      )
+    );
+  }
+
+  if (
+    input.path !== undefined &&
+    (typeof input.path !== "string" || input.path.trim().length === 0)
+  ) {
+    return err(
+      new SpriteError(
+        "TOOL_INVALID_INPUT",
+        "search_files path must be a non-empty string when provided."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
 }
 
 async function collectTextFiles(

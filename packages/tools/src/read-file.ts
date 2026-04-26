@@ -24,6 +24,12 @@ export async function readProjectFile(
   cwd: string,
   input: ReadFileInput
 ): Promise<Result<ReadFileResult, SpriteError>> {
+  const inputValidation = validateReadFileInput(input);
+
+  if (!inputValidation.ok) {
+    return inputValidation;
+  }
+
   const resolved = await resolveProjectPath(cwd, input.path);
 
   if (!resolved.ok) {
@@ -82,6 +88,27 @@ export async function readProjectFile(
       )
     );
   }
+}
+
+function validateReadFileInput(
+  input: ReadFileInput
+): Result<void, SpriteError> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input) ||
+    typeof input.path !== "string" ||
+    input.path.trim().length === 0
+  ) {
+    return err(
+      new SpriteError(
+        "TOOL_INVALID_INPUT",
+        "read_file requires a non-empty path string."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
 }
 
 function isBinaryBuffer(buffer: Buffer): boolean {

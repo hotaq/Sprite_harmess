@@ -40,6 +40,12 @@ export async function listProjectFiles(
   cwd: string,
   input: ListFilesInput = {}
 ): Promise<Result<ListFilesResult, SpriteError>> {
+  const inputValidation = validateListFilesInput(input);
+
+  if (!inputValidation.ok) {
+    return inputValidation;
+  }
+
   const resolved = await resolveProjectPath(cwd, input.path ?? ".");
 
   if (!resolved.ok) {
@@ -110,6 +116,42 @@ export async function listProjectFiles(
       )
     );
   }
+}
+
+function validateListFilesInput(
+  input: ListFilesInput
+): Result<void, SpriteError> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return err(
+      new SpriteError(
+        "TOOL_INVALID_INPUT",
+        "list_files input must be an object when provided."
+      )
+    );
+  }
+
+  if (
+    input.path !== undefined &&
+    (typeof input.path !== "string" || input.path.trim().length === 0)
+  ) {
+    return err(
+      new SpriteError(
+        "TOOL_INVALID_INPUT",
+        "list_files path must be a non-empty string when provided."
+      )
+    );
+  }
+
+  if (input.recursive !== undefined && typeof input.recursive !== "boolean") {
+    return err(
+      new SpriteError(
+        "TOOL_INVALID_INPUT",
+        "list_files recursive must be a boolean when provided."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
 }
 
 async function listDirect(
