@@ -1,4 +1,10 @@
-import { containsSecretLikeValue } from "@sprite/shared";
+import {
+  OPENAI_TOKEN_PATTERN_SOURCE,
+  PRIVATE_KEY_PATTERN_SOURCE,
+  PROVIDER_API_KEY_NAME_PATTERN_SOURCE,
+  SECRET_ASSIGNMENT_PATTERN_SOURCE,
+  containsSecretLikeValue
+} from "@sprite/shared";
 
 const OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
 const SANDBOX_MODES = ["workspace-write", "read-only", "full-access"] as const;
@@ -18,31 +24,28 @@ export const DEFAULT_SAFETY_RULES = [
   {
     action: "block",
     id: "safety.secret.assignment",
-    pattern:
-      "\\b[A-Z0-9_]*(API|TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)[A-Z0-9_]*\\s*=\\s*[^\\s]+",
+    pattern: SECRET_ASSIGNMENT_PATTERN_SOURCE,
     reason: "Secret-like credential assignments must not be saved to memory.",
     targets: SAFETY_RULE_TARGETS
   },
   {
     action: "block",
     id: "safety.private_key.block",
-    pattern:
-      "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+    pattern: PRIVATE_KEY_PATTERN_SOURCE,
     reason: "Private key material must not be saved to memory.",
     targets: SAFETY_RULE_TARGETS
   },
   {
     action: "block",
     id: "safety.openai_token.block",
-    pattern: "\\bsk-[A-Za-z0-9_-]{6,}",
+    pattern: OPENAI_TOKEN_PATTERN_SOURCE,
     reason: "Provider tokens must not be saved to memory.",
     targets: SAFETY_RULE_TARGETS
   },
   {
     action: "block",
     id: "safety.provider_key_name.block",
-    pattern:
-      "\\b(?:OPENAI|ANTHROPIC|GOOGLE|GEMINI|AZURE_OPENAI|OPENROUTER|MISTRAL|COHERE|GROQ|XAI)_(?:API_)?KEY\\b",
+    pattern: PROVIDER_API_KEY_NAME_PATTERN_SOURCE,
     reason: "Provider API key variable names must not become durable memory.",
     targets: SAFETY_RULE_TARGETS
   },

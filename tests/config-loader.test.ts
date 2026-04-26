@@ -59,6 +59,7 @@ describe("resolveStartupConfig", () => {
         "safety.secret.assignment",
         "safety.private_key.block",
         "safety.openai_token.block",
+        "safety.provider_key_name.block",
         "safety.env_path.block",
         "safety.private_key_path.block"
       ])
@@ -301,6 +302,36 @@ describe("resolveStartupConfig", () => {
     );
     expect(result.safetyRules.map((rule) => rule.id)).not.toContain(
       "leaky-rule"
+    );
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("safety.rules[0].pattern");
+  });
+
+  it("rejects safety rule metadata with credential assignments before loading it", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      safety: {
+        rules: [
+          {
+            action: "block",
+            id: "password-rule",
+            pattern: "PASSWORD=hunter2",
+            reason: "This rule metadata leaks a credential assignment.",
+            targets: ["memory_candidate"]
+          }
+        ]
+      }
+    });
+
+    const result = resolveStartupConfig({
+      cwd: projectDir,
+      homeDir
+    });
+
+    expect(result.projectConfigLoaded).toBe(false);
+    expect(result.safetyRules.map((rule) => rule.id)).not.toContain(
+      "password-rule"
     );
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("safety.rules[0].pattern");

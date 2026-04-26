@@ -94,6 +94,47 @@ const RECOVERY_DECISIONS = [
   "stop"
 ] as const;
 const MEMORY_SAFETY_ACTIONS = ["allow", "block", "redact"] as const;
+const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
+  "commandOutput",
+  "content",
+  "diff",
+  "env",
+  "hunk",
+  "matches",
+  "newText",
+  "oldText",
+  "output",
+  "patch",
+  "rawCommandOutput",
+  "rawContent",
+  "rawOutput",
+  "rawSnippet",
+  "snippet",
+  "snippets",
+  "stderr",
+  "stdout"
+]);
+const FORBIDDEN_POLICY_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
+  "commandOutput",
+  "content",
+  "diff",
+  "env",
+  "hunk",
+  "newText",
+  "oldText",
+  "output",
+  "patch",
+  "query",
+  "rawCommandOutput",
+  "rawContent",
+  "rawOutput",
+  "rawSnippet",
+  "repositoryInstruction",
+  "snippet",
+  "snippets",
+  "stderr",
+  "stdout"
+]);
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -2407,29 +2448,8 @@ function expectedFileEditStatus(
 function findForbiddenToolPayloadField(
   payload: Record<string, unknown>
 ): string | null {
-  const forbiddenFields = new Set([
-    "commandOutput",
-    "content",
-    "diff",
-    "env",
-    "hunk",
-    "matches",
-    "newText",
-    "oldText",
-    "output",
-    "patch",
-    "rawCommandOutput",
-    "rawContent",
-    "rawOutput",
-    "rawSnippet",
-    "snippet",
-    "snippets",
-    "stderr",
-    "stdout"
-  ]);
-
   for (const key of Object.keys(payload)) {
-    if (forbiddenFields.has(key)) {
+    if (FORBIDDEN_TOOL_PAYLOAD_FIELDS.has(key)) {
       return key;
     }
   }
@@ -2441,28 +2461,6 @@ function findForbiddenPolicyPayloadField(
   value: unknown,
   seen: WeakSet<object>
 ): string | null {
-  const forbiddenFields = new Set([
-    "commandOutput",
-    "content",
-    "diff",
-    "env",
-    "hunk",
-    "newText",
-    "oldText",
-    "output",
-    "patch",
-    "query",
-    "rawCommandOutput",
-    "rawContent",
-    "rawOutput",
-    "rawSnippet",
-    "repositoryInstruction",
-    "snippet",
-    "snippets",
-    "stderr",
-    "stdout"
-  ]);
-
   if (Array.isArray(value)) {
     if (seen.has(value)) {
       return null;
@@ -2492,7 +2490,7 @@ function findForbiddenPolicyPayloadField(
   seen.add(value);
 
   for (const [key, nestedValue] of Object.entries(value)) {
-    if (forbiddenFields.has(key)) {
+    if (FORBIDDEN_POLICY_PAYLOAD_FIELDS.has(key)) {
       return key;
     }
 

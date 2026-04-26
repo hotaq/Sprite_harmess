@@ -13,9 +13,19 @@ describe("memory safety evaluation", () => {
         expectedRule: "safety.secret.assignment"
       },
       {
+        content: "PASSWORD=hunter2",
+        path: undefined,
+        expectedRule: "safety.secret.assignment"
+      },
+      {
         content: "token sk-test-secret",
         path: undefined,
         expectedRule: "safety.openai_token.block"
+      },
+      {
+        content: "Set OPENAI_API_KEY before running the tool.",
+        path: undefined,
+        expectedRule: "safety.provider_key_name.block"
       },
       {
         content:
@@ -63,6 +73,10 @@ describe("memory safety evaluation", () => {
       expect(JSON.stringify(result.value.decision)).not.toContain(
         "OPENAI_API_KEY="
       );
+      expect(JSON.stringify(result.value.decision)).not.toContain("hunter2");
+      expect(JSON.stringify(result.value.decision)).not.toContain(
+        "OPENAI_API_KEY"
+      );
     }
   });
 
@@ -103,6 +117,46 @@ describe("memory safety evaluation", () => {
       "Remember ticket [REDACTED] for follow-up."
     );
     expect(JSON.stringify(result.value)).not.toContain("TICKET-12345");
+  });
+
+  it("uses the same redacted content for path-only redact decisions and stored candidates", () => {
+    const result = createMemoryCandidate(
+      {
+        confidence: "medium",
+        content: "Customer import notes live in the configured file.",
+        path: "customers/export.json",
+        provenance: "support note",
+        target: "memory_candidate",
+        type: "semantic"
+      },
+      {
+        rules: [
+          {
+            action: "redact",
+            id: "custom.customer-export-path",
+            pathPattern: "customers/export\\.json$",
+            reason: "Customer export files are sensitive.",
+            targets: ["memory_candidate"]
+          }
+        ]
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.decision).toMatchObject({
+      action: "redact",
+      matchedRuleIds: ["custom.customer-export-path"],
+      redactedPreview: "[REDACTED]",
+      target: "memory_candidate"
+    });
+    expect(result.value.candidate?.content).toBe("[REDACTED]");
+    expect(JSON.stringify(result.value)).not.toContain(
+      "Customer import notes"
+    );
   });
 
   it("allows safe candidates with provenance and confidence metadata", () => {

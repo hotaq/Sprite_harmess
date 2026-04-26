@@ -1,15 +1,25 @@
 export const SECRET_REDACTION_MARKER = "[REDACTED]";
 
+export const SECRET_ASSIGNMENT_PATTERN_SOURCE =
+  "\\b[A-Z0-9_]*(API|TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)[A-Z0-9_]*\\s*=\\s*[^\\s]+";
+export const PRIVATE_KEY_PATTERN_SOURCE =
+  "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----";
+export const OPENAI_TOKEN_PATTERN_SOURCE = "\\bsk-[A-Za-z0-9_-]{6,}";
+export const PROVIDER_API_KEY_NAME_PATTERN_SOURCE =
+  "\\b(?:OPENAI|ANTHROPIC|GOOGLE|GEMINI|AZURE_OPENAI|OPENROUTER|MISTRAL|COHERE|GROQ|XAI)_(?:API_)?KEY\\b";
+
 const SECRET_LIKE_PATTERNS = [
-  /\b[A-Z0-9_]*(API|TOKEN|SECRET|KEY)[A-Z0-9_]*\s*=/i,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
-  /\bsk-[A-Za-z0-9_-]{6,}/
+  new RegExp(SECRET_ASSIGNMENT_PATTERN_SOURCE, "i"),
+  new RegExp(PRIVATE_KEY_PATTERN_SOURCE, "i"),
+  new RegExp(OPENAI_TOKEN_PATTERN_SOURCE),
+  new RegExp(PROVIDER_API_KEY_NAME_PATTERN_SOURCE, "i")
 ] as const;
 
 const SECRET_REDACTION_PATTERNS = [
-  /\b[A-Z0-9_]*(API|TOKEN|SECRET|KEY)[A-Z0-9_]*\s*=\s*[^\s"'`]+/gi,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi,
-  /\bsk-[A-Za-z0-9_-]{6,}/g
+  new RegExp(SECRET_ASSIGNMENT_PATTERN_SOURCE, "gi"),
+  new RegExp(PRIVATE_KEY_PATTERN_SOURCE, "gi"),
+  new RegExp(OPENAI_TOKEN_PATTERN_SOURCE, "g"),
+  new RegExp(PROVIDER_API_KEY_NAME_PATTERN_SOURCE, "gi")
 ] as const;
 
 export function containsSecretLikeValue(value: string): boolean {

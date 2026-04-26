@@ -73,9 +73,26 @@ export interface MemorySafetyOptions {
   rules?: readonly SpriteSafetyRule[];
 }
 
+interface SafetyEvaluationOutcome {
+  decision: SafetyEvaluationDecision;
+  redactedContent: string;
+}
+
 export function evaluateSafetySensitiveContent(
   request: SafetySensitiveContentRequest
 ): Result<SafetyEvaluationDecision, SpriteError> {
+  const outcome = evaluateSafetySensitiveContentOutcome(request);
+
+  if (!outcome.ok) {
+    return outcome;
+  }
+
+  return { ok: true, value: outcome.value.decision };
+}
+
+function evaluateSafetySensitiveContentOutcome(
+  request: SafetySensitiveContentRequest
+): Result<SafetyEvaluationOutcome, SpriteError> {
   const requestValidation = validateSafetyRequest(request);
 
   if (!requestValidation.ok) {
@@ -95,14 +112,17 @@ export function evaluateSafetySensitiveContent(
     return {
       ok: true,
       value: {
-        action: "block",
-        matchedRuleIds: blockingRules.map((rule) => rule.id),
-        reason: summarizeMatchedRules(blockingRules),
-        redactedPreview: createSafePreview(
-          request.content,
-          request.previewLimit
-        ),
-        target: request.target
+        decision: {
+          action: "block",
+          matchedRuleIds: blockingRules.map((rule) => rule.id),
+          reason: summarizeMatchedRules(blockingRules),
+          redactedPreview: createSafePreview(
+            request.content,
+            request.previewLimit
+          ),
+          target: request.target
+        },
+        redactedContent: SECRET_REDACTION_MARKER
       }
     };
   }
@@ -117,14 +137,17 @@ export function evaluateSafetySensitiveContent(
     return {
       ok: true,
       value: {
-        action: "redact",
-        matchedRuleIds: redactingRules.map((rule) => rule.id),
-        reason: summarizeMatchedRules(redactingRules),
-        redactedPreview: createSafePreview(
-          redactedContent,
-          request.previewLimit
-        ),
-        target: request.target
+        decision: {
+          action: "redact",
+          matchedRuleIds: redactingRules.map((rule) => rule.id),
+          reason: summarizeMatchedRules(redactingRules),
+          redactedPreview: createSafePreview(
+            redactedContent,
+            request.previewLimit
+          ),
+          target: request.target
+        },
+        redactedContent
       }
     };
   }
@@ -132,11 +155,17 @@ export function evaluateSafetySensitiveContent(
   return {
     ok: true,
     value: {
-      action: "allow",
-      matchedRuleIds: [],
-      reason: "No safety rule matched.",
-      redactedPreview: createSafePreview(request.content, request.previewLimit),
-      target: request.target
+      decision: {
+        action: "allow",
+        matchedRuleIds: [],
+        reason: "No safety rule matched.",
+        redactedPreview: createSafePreview(
+          request.content,
+          request.previewLimit
+        ),
+        target: request.target
+      },
+      redactedContent: request.content
     }
   };
 }
@@ -152,30 +181,30 @@ export function createMemoryCandidate(
   }
 
   const target = request.target ?? "memory_candidate";
-  const decision = evaluateSafetySensitiveContent({
+  const safetyEvaluation = evaluateSafetySensitiveContentOutcome({
     content: request.content,
     ...(request.path === undefined ? {} : { path: request.path }),
     rules: options.rules,
     target
   });
 
-  if (!decision.ok) {
-    return decision;
+  if (!safetyEvaluation.ok) {
+    return safetyEvaluation;
   }
 
-  if (decision.value.action === "block") {
+  if (safetyEvaluation.value.decision.action === "block") {
     return {
       ok: true,
       value: {
         candidate: null,
-        decision: decision.value
+        decision: safetyEvaluation.value.decision
       }
     };
   }
 
   const candidateContent =
-    decision.value.action === "redact"
-      ? redactContentWithMatchingRules(request, options.rules)
+    safetyEvaluation.value.decision.action === "redact"
+      ? safetyEvaluation.value.redactedContent
       : request.content;
 
   return {
@@ -186,13 +215,13 @@ export function createMemoryCandidate(
         content: candidateContent,
         createdAt: request.createdAt ?? new Date().toISOString(),
         provenance: request.provenance,
-        safetyDecision: decision.value,
+        safetyDecision: safetyEvaluation.value.decision,
         ...(request.sourceTaskId === undefined
           ? {}
           : { sourceTaskId: request.sourceTaskId }),
         type: request.type
       },
-      decision: decision.value
+      decision: safetyEvaluation.value.decision
     }
   };
 }
@@ -303,25 +332,6 @@ function matchesPattern(pattern: string | undefined, value: string): boolean {
   }
 
   return new RegExp(pattern, "i").test(value);
-}
-
-function redactContentWithMatchingRules(
-  request: MemoryCandidateRequest,
-  configuredRules: readonly SpriteSafetyRule[] | undefined
-): string {
-  const target = request.target ?? "memory_candidate";
-  const rules = createEffectiveSafetyRules(configuredRules ?? []);
-  const redactingRules = rules.filter(
-    (rule) =>
-      rule.action === "redact" &&
-      ruleMatchesRequest(rule, {
-        content: request.content,
-        ...(request.path === undefined ? {} : { path: request.path }),
-        target
-      })
-  );
-
-  return redactContentWithRules(request.content, redactingRules, request.path);
 }
 
 function redactContentWithRules(
