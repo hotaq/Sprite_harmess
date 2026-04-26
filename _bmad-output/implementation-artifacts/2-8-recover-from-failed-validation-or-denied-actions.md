@@ -46,6 +46,11 @@ so that it remains useful under safety constraints.
 ### Review Findings
 
 - [x] [Review][Patch] Prevent ask-user recovery from bypassing pending approval gates [`packages/core/src/agent-runtime.ts:548`] — fixed by rejecting `ask_user` recovery while the active task still has unresolved approval and covering the gate with a regression test.
+- [x] [Review][Follow-up] Make `stop` recovery terminal [`packages/core/src/agent-runtime.ts`] — fixed by emitting `task.failed`, setting `status: "failed"`, clearing waiting state, and preserving the recovery event before terminal state.
+- [x] [Review][Follow-up] Reject secret-looking recovery metadata [`packages/core/src/runtime-events.ts`] — fixed by checking optional linkage fields (`errorCode`, `ruleId`, `sourceEventId`, `toolCallId`, `validationId`) in addition to user-facing text.
+- [x] [Review][Follow-up] Reject generic raw output field names [`packages/core/src/runtime-events.ts`] — fixed by adding `output`, `rawOutput`, `commandOutput`, and `rawCommandOutput` to raw metadata rejection.
+- [x] [Review][Follow-up] Prevent impossible recovery references [`packages/core/src/agent-runtime.ts`] — fixed with trigger-specific TypeScript request shapes and runtime linkage validation against matching validation, policy, approval, and tool failure events.
+- [x] [Review][Follow-up] Expand integration coverage for modeled triggers [`tests/runtime-events.test.ts`] — added coverage for validation blocked, approval timeout stop, command timeout, sandbox violation, file-edit policy denial, and invalid missing linkage.
 
 ## Dev Notes
 
@@ -220,6 +225,9 @@ Codex
 - 2026-04-26: Full verification passed: `rtk npm run build && rtk npm run typecheck && rtk npm run lint && rtk npm test` (117 tests).
 - 2026-04-26: Formatting/static checks passed: `rtk git diff --check` and targeted Prettier check.
 - 2026-04-26: Code review found and fixed an approval-gate bypass edge case in `recordRecoveryAction()`; targeted regression passed: `rtk npm test -- tests/runtime-events.test.ts` (48 tests).
+- 2026-04-26: Team follow-up review fixed terminal stop behavior, trigger-specific linkage validation, broader recovery metadata secret checks, raw output alias rejection, and modeled-trigger integration coverage.
+- 2026-04-26: Follow-up verification passed: `rtk npm run typecheck`, targeted Prettier check, `rtk npm test -- tests/runtime-events.test.ts` (54 tests), `rtk npm test` (124 tests), and `rtk git diff --check`.
+- 2026-04-26: GitNexus `detect_changes` CLI is unavailable in this install; fallback checks used `rtk gitnexus status`, scoped diffs, and full test/typecheck verification.
 
 ### Completion Notes List
 
@@ -229,6 +237,9 @@ Codex
 - Final summaries include recovery event details while failed or blocked validation remains an unresolved risk until a later validation passes.
 - Added regression coverage for recovery event validation, failed validation recovery, policy-denied command recovery, approval-denied ask-user recovery, and command-failure recovery.
 - Added review follow-up coverage proving pending approvals still block ask-user recovery and follow-up tool calls.
+- Added follow-up coverage proving recovery linkage must point at the matching source event and that `stop` recovery creates a terminal failed task.
+- Added trigger-specific recovery request types so callers provide the required `validationId`, `ruleId`, or `toolCallId` for the selected trigger.
+- Extended recovery event validation so non-message metadata cannot carry secret-looking values or raw output aliases.
 - Documented recovery behavior and limitations in README.
 
 ### File List
@@ -247,8 +258,9 @@ Codex
 | ---------- | ------- | ------------------------------------------- | ------ |
 | 2026-04-26 | 1.0     | Implemented recovery event and runtime API. | Codex  |
 | 2026-04-26 | 1.1     | Fixed approval-gate review finding.         | Codex  |
+| 2026-04-26 | 1.2     | Fixed follow-up recovery safety findings.   | Codex  |
 | 2026-04-26 | 0.1     | Created Story 2.8 implementation context.   | Codex  |
 
 ## QA Results
 
-BMAD code review completed. One patch finding was fixed and covered by regression test; story is done pending normal repository verification/commit hygiene.
+BMAD/team follow-up review completed. Patch and follow-up findings were fixed with regression coverage; full repository tests pass (124 tests).

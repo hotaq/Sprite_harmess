@@ -885,26 +885,8 @@ function validateTaskRecoveryRecordedEvent(
     return err(message.error);
   }
 
-  if (message.value !== undefined && containsSecretLikeValue(message.value)) {
-    return err(
-      new SpriteError(
-        "INVALID_RUNTIME_EVENT",
-        `Runtime event '${type}' payload message must not include secret-looking values.`
-      )
-    );
-  }
-
   if (nextAction.ok === false) {
     return err(nextAction.error);
-  }
-
-  if (containsSecretLikeValue(nextAction.value)) {
-    return err(
-      new SpriteError(
-        "INVALID_RUNTIME_EVENT",
-        `Runtime event '${type}' payload nextAction must not include secret-looking values.`
-      )
-    );
   }
 
   if (ruleId.ok === false) {
@@ -942,6 +924,28 @@ function validateTaskRecoveryRecordedEvent(
 
   if (validationId.ok === false) {
     return err(validationId.error);
+  }
+
+  const secretCheckedFields = [
+    ["errorCode", errorCode.value],
+    ["message", message.value],
+    ["nextAction", nextAction.value],
+    ["ruleId", ruleId.value],
+    ["sourceEventId", sourceEventId.value],
+    ["summary", summary.value],
+    ["toolCallId", toolCallId.value],
+    ["validationId", validationId.value]
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (value !== undefined && containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
   }
 
   return okRuntimeEvent(context, type, {
@@ -2244,6 +2248,7 @@ function findForbiddenToolPayloadField(
   payload: Record<string, unknown>
 ): string | null {
   const forbiddenFields = new Set([
+    "commandOutput",
     "content",
     "diff",
     "env",
@@ -2251,8 +2256,11 @@ function findForbiddenToolPayloadField(
     "matches",
     "newText",
     "oldText",
+    "output",
     "patch",
+    "rawCommandOutput",
     "rawContent",
+    "rawOutput",
     "rawSnippet",
     "snippet",
     "snippets",
@@ -2274,15 +2282,19 @@ function findForbiddenPolicyPayloadField(
   seen: WeakSet<object>
 ): string | null {
   const forbiddenFields = new Set([
+    "commandOutput",
     "content",
     "diff",
     "env",
     "hunk",
     "newText",
     "oldText",
+    "output",
     "patch",
     "query",
+    "rawCommandOutput",
     "rawContent",
+    "rawOutput",
     "rawSnippet",
     "repositoryInstruction",
     "snippet",

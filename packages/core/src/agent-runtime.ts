@@ -177,18 +177,58 @@ export type RuntimeRecoveryTrigger =
 export type RuntimeRecoveryDecision =
   RuntimeEventPayload<"task.recovery.recorded">["decision"];
 
-export interface RuntimeRecoveryActionRequest {
+interface RuntimeRecoveryActionBaseRequest {
   decision: RuntimeRecoveryDecision;
   errorCode?: string;
   message?: string;
   nextAction: string;
-  ruleId?: string;
   sourceEventId?: string;
   summary: string;
-  toolCallId?: string;
-  trigger: RuntimeRecoveryTrigger;
-  validationId?: string;
 }
+
+type RuntimeValidationRecoveryActionRequest =
+  RuntimeRecoveryActionBaseRequest & {
+    ruleId?: never;
+    toolCallId?: string;
+    trigger: Extract<
+      RuntimeRecoveryTrigger,
+      "validation_blocked" | "validation_failed"
+    >;
+    validationId: string;
+  };
+
+type RuntimePolicyRecoveryActionRequest = RuntimeRecoveryActionBaseRequest & {
+  ruleId: string;
+  toolCallId?: string;
+  trigger: Extract<RuntimeRecoveryTrigger, "policy_denied">;
+  validationId?: never;
+};
+
+type RuntimeApprovalRecoveryActionRequest = RuntimeRecoveryActionBaseRequest & {
+  ruleId?: never;
+  toolCallId: string;
+  trigger: Extract<
+    RuntimeRecoveryTrigger,
+    "approval_denied" | "approval_timed_out"
+  >;
+  validationId?: never;
+};
+
+type RuntimeCommandRecoveryActionRequest = RuntimeRecoveryActionBaseRequest & {
+  ruleId?: never;
+  toolCallId: string;
+  trigger: Extract<
+    RuntimeRecoveryTrigger,
+    "command_failed" | "command_timed_out" | "sandbox_violation"
+  >;
+  validationId?: never;
+};
+
+export type RuntimeRecoveryActionRequest =
+  | RuntimeApprovalRecoveryActionRequest
+  | RuntimeCommandRecoveryActionRequest
+  | RuntimePolicyRecoveryActionRequest
+  | RuntimeValidationRecoveryActionRequest;
 
 interface PendingApprovalRecord {
   approvalRequest: ApprovalRequest;
@@ -566,6 +606,15 @@ export class AgentRuntime {
       );
     }
 
+    const recoveryLinkage = this.validateRecoveryActionRequest(
+      activeTask.value,
+      request
+    );
+
+    if (!recoveryLinkage.ok) {
+      return err(recoveryLinkage.error);
+    }
+
     const recoveryEvent = this.createRecoveryRecordedEvent(
       activeTask.value,
       request
@@ -582,19 +631,31 @@ export class AgentRuntime {
       );
     }
 
+    if (request.decision === "stop") {
+      recoveryEvents.push(
+        this.createTaskFailedEvent(activeTask.value, request.nextAction)
+      );
+    }
+
     const emitted = this.emitNewEvents(recoveryEvents);
 
     if (!emitted.ok) {
       return err(emitted.error);
     }
 
+    if (request.decision === "stop") {
+      this.clearPendingApprovalsForTask(activeTask.value.taskId);
+    }
+
     const events = this.eventBus.getHistory(activeTask.value.taskId);
     this.activeTask = {
       ...activeTask.value,
       status:
-        request.decision === "ask_user"
-          ? "waiting-for-input"
-          : activeTask.value.status,
+        request.decision === "stop"
+          ? "failed"
+          : request.decision === "ask_user"
+            ? "waiting-for-input"
+            : activeTask.value.status,
       summary:
         request.decision === "ask_user" ? request.nextAction : request.summary,
       waitingState:
@@ -603,9 +664,18 @@ export class AgentRuntime {
               reason: "user-input-required",
               message: request.nextAction
             }
-          : activeTask.value.waitingState,
+          : request.decision === "stop"
+            ? null
+            : activeTask.value.waitingState,
       terminalState:
-        request.decision === "ask_user" ? null : activeTask.value.terminalState,
+        request.decision === "stop"
+          ? {
+              reason: "unrecoverable-error",
+              message: request.nextAction
+            }
+          : request.decision === "ask_user"
+            ? null
+            : activeTask.value.terminalState,
       events
     };
 
@@ -1862,6 +1932,26 @@ export class AgentRuntime {
     );
   }
 
+  private createTaskFailedEvent(
+    task: PlannedExecutionFlow,
+    message: string
+  ): RuntimeEventRecord<"task.failed"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "task.failed",
+      {
+        reason: "unrecoverable-error",
+        message
+      }
+    );
+  }
+
   private createRecoveryRecordedEvent(
     task: PlannedExecutionFlow,
     request: RuntimeRecoveryActionRequest
@@ -2054,6 +2144,193 @@ export class AgentRuntime {
     return ok(this.activeTask);
   }
 
+  private validateRecoveryActionRequest(
+    task: PlannedExecutionFlow,
+    request: RuntimeRecoveryActionRequest
+  ): Result<void> {
+    const events = this.eventBus.getHistory(task.taskId);
+
+    switch (request.trigger) {
+      case "approval_denied":
+        return this.validateApprovalRecoveryLinkage(
+          events,
+          request.toolCallId,
+          "deny",
+          request.sourceEventId
+        );
+      case "approval_timed_out":
+        return this.validateApprovalRecoveryLinkage(
+          events,
+          request.toolCallId,
+          "timeout",
+          request.sourceEventId
+        );
+      case "command_failed":
+        return this.validateFailedToolRecoveryLinkage(
+          events,
+          request.toolCallId,
+          request.sourceEventId,
+          (event) =>
+            event.payload.toolName === "run_command" &&
+            event.payload.errorCode !== "TOOL_COMMAND_TIMEOUT" &&
+            !event.payload.errorCode.startsWith("SANDBOX_")
+        );
+      case "command_timed_out":
+        return this.validateFailedToolRecoveryLinkage(
+          events,
+          request.toolCallId,
+          request.sourceEventId,
+          (event) =>
+            event.payload.toolName === "run_command" &&
+            event.payload.errorCode === "TOOL_COMMAND_TIMEOUT"
+        );
+      case "policy_denied":
+        return this.validatePolicyRecoveryLinkage(
+          events,
+          request.ruleId,
+          request.sourceEventId
+        );
+      case "sandbox_violation":
+        return this.validateFailedToolRecoveryLinkage(
+          events,
+          request.toolCallId,
+          request.sourceEventId,
+          (event) =>
+            event.payload.errorCode.startsWith("SANDBOX_") ||
+            event.payload.errorCode === "TOOL_PATH_OUTSIDE_PROJECT"
+        );
+      case "validation_blocked":
+        return this.validateValidationRecoveryLinkage(
+          events,
+          request.validationId,
+          "blocked",
+          request.sourceEventId
+        );
+      case "validation_failed":
+        return this.validateValidationRecoveryLinkage(
+          events,
+          request.validationId,
+          "failed",
+          request.sourceEventId
+        );
+    }
+  }
+
+  private validateApprovalRecoveryLinkage(
+    events: RuntimeEventRecord[],
+    toolCallId: string,
+    decision: "deny" | "timeout",
+    sourceEventId?: string
+  ): Result<void> {
+    if (!isNonEmptyString(toolCallId)) {
+      return invalidRecoveryAction(
+        `Recovery trigger '${decision === "deny" ? "approval_denied" : "approval_timed_out"}' requires a toolCallId.`
+      );
+    }
+
+    const matched = events.some(
+      (event) =>
+        event.type === "approval.resolved" &&
+        event.payload.toolCallId === toolCallId &&
+        event.payload.decision === decision &&
+        matchesSourceEvent(event, sourceEventId)
+    );
+
+    if (!matched) {
+      return invalidRecoveryAction(
+        `Recovery trigger '${decision === "deny" ? "approval_denied" : "approval_timed_out"}' must reference the matching approval.resolved event.`
+      );
+    }
+
+    return ok(undefined);
+  }
+
+  private validateFailedToolRecoveryLinkage(
+    events: RuntimeEventRecord[],
+    toolCallId: string,
+    sourceEventId: string | undefined,
+    matchesFailure: (event: RuntimeEventRecord<"tool.call.failed">) => boolean
+  ): Result<void> {
+    if (!isNonEmptyString(toolCallId)) {
+      return invalidRecoveryAction(
+        "Recovery trigger requires a failed toolCallId."
+      );
+    }
+
+    const matched = events.some(
+      (event) =>
+        event.type === "tool.call.failed" &&
+        event.payload.toolCallId === toolCallId &&
+        matchesFailure(event) &&
+        matchesSourceEvent(event, sourceEventId)
+    );
+
+    if (!matched) {
+      return invalidRecoveryAction(
+        "Recovery trigger must reference the matching tool.call.failed event."
+      );
+    }
+
+    return ok(undefined);
+  }
+
+  private validatePolicyRecoveryLinkage(
+    events: RuntimeEventRecord[],
+    ruleId: string,
+    sourceEventId?: string
+  ): Result<void> {
+    if (!isNonEmptyString(ruleId)) {
+      return invalidRecoveryAction(
+        "Recovery trigger 'policy_denied' requires a ruleId."
+      );
+    }
+
+    const matched = events.some(
+      (event) =>
+        event.type === "policy.decision.recorded" &&
+        event.payload.ruleId === ruleId &&
+        event.payload.action === "deny" &&
+        matchesSourceEvent(event, sourceEventId)
+    );
+
+    if (!matched) {
+      return invalidRecoveryAction(
+        "Recovery trigger 'policy_denied' must reference the matching policy.decision.recorded denial."
+      );
+    }
+
+    return ok(undefined);
+  }
+
+  private validateValidationRecoveryLinkage(
+    events: RuntimeEventRecord[],
+    validationId: string,
+    status: "blocked" | "failed",
+    sourceEventId?: string
+  ): Result<void> {
+    if (!isNonEmptyString(validationId)) {
+      return invalidRecoveryAction(
+        `Recovery trigger 'validation_${status}' requires a validationId.`
+      );
+    }
+
+    const matched = events.some(
+      (event) =>
+        event.type === "validation.completed" &&
+        event.payload.validationId === validationId &&
+        event.payload.status === status &&
+        matchesSourceEvent(event, sourceEventId)
+    );
+
+    if (!matched) {
+      return invalidRecoveryAction(
+        `Recovery trigger 'validation_${status}' must reference the matching validation.completed event.`
+      );
+    }
+
+    return ok(undefined);
+  }
+
   private clearPendingApprovalsForTask(taskId: string): void {
     for (const [approvalRequestId, record] of this.pendingApprovals) {
       if (record.approvalRequest.taskId === taskId) {
@@ -2120,6 +2397,21 @@ export class AgentRuntime {
       task.status === "failed"
     );
   }
+}
+
+function invalidRecoveryAction(message: string): Result<never> {
+  return err(new SpriteError("INVALID_RECOVERY_ACTION", message));
+}
+
+function matchesSourceEvent(
+  event: RuntimeEventRecord,
+  sourceEventId?: string
+): boolean {
+  return sourceEventId === undefined || event.eventId === sourceEventId;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isSafeProjectRelativePath(value: string): boolean {
