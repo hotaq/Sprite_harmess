@@ -685,6 +685,55 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(secretNextAction).ok).toBe(false);
     expect(validateRuntimeEvent(secretMetadata).ok).toBe(false);
   });
+
+  it("validates memory safety audit events without raw content or secret values", () => {
+    const valid = createRuntimeEventRecord(
+      {
+        eventId: "evt_memory_safety",
+        sessionId: "session_test",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-04-23T12:40:04.000Z"
+      },
+      "memory.safety.evaluated",
+      {
+        action: "block",
+        matchedRuleIds: ["safety.secret.assignment"],
+        reason:
+          "Secret-like credential assignments must not be saved to memory.",
+        redactedPreview: "[REDACTED]",
+        status: "recorded",
+        summary: "Memory safety block decision recorded.",
+        target: "memory_candidate"
+      }
+    );
+    const rawContent = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        content: "OPENAI_API_KEY=sk-test-secret"
+      }
+    };
+    const secretPreview = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        redactedPreview: "OPENAI_API_KEY=sk-test-secret"
+      }
+    };
+    const invalidTarget = {
+      ...valid,
+      payload: {
+        ...valid.payload,
+        target: "unknown"
+      }
+    };
+
+    expect(validateRuntimeEvent(valid).ok).toBe(true);
+    expect(validateRuntimeEvent(rawContent).ok).toBe(false);
+    expect(validateRuntimeEvent(secretPreview).ok).toBe(false);
+    expect(validateRuntimeEvent(invalidTarget).ok).toBe(false);
+  });
 });
 
 describe("runtime event subscription", () => {
@@ -1097,6 +1146,60 @@ describe("runtime event subscription", () => {
       kind: "changed",
       path: "src/index.ts"
     });
+  });
+
+  it("emits memory safety audit decisions without persisting blocked candidates", () => {
+    const { projectDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "evaluate unsafe memory candidate"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const evaluation = runtime.evaluateMemoryCandidateSafety({
+      confidence: "high",
+      content: "OPENAI_API_KEY=sk-test-secret",
+      provenance: "tool output summary",
+      type: "working"
+    });
+
+    expect(evaluation).toMatchObject({
+      ok: true,
+      value: {
+        candidate: null,
+        decision: {
+          action: "block",
+          target: "memory_candidate"
+        }
+      }
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "memory.safety.evaluated"
+    ]);
+    expect(history[2]).toMatchObject({
+      payload: {
+        action: "block",
+        matchedRuleIds: expect.arrayContaining(["safety.secret.assignment"]),
+        redactedPreview: "[REDACTED]",
+        status: "recorded",
+        target: "memory_candidate"
+      },
+      type: "memory.safety.evaluated"
+    });
+    expect(JSON.stringify(history)).not.toContain("OPENAI_API_KEY=");
+    expect(JSON.stringify(history)).not.toContain("sk-test-secret");
   });
 
   it("emits file edit events and changed activity for successful patches", async () => {

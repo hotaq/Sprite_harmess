@@ -2,5 +2,13 @@
   "name": "@sprite/memory",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@sprite/config": "0.1.0",
+    "@sprite/shared": "0.1.0"
+  }
 }

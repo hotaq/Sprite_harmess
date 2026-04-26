@@ -7,6 +7,12 @@ import {
   type SpriteValidationCommand
 } from "@sprite/config";
 import {
+  createMemoryCandidate,
+  type MemoryCandidateEvaluation,
+  type MemoryCandidateRequest,
+  type SafetyEvaluationDecision
+} from "@sprite/memory";
+import {
   initializeProviderAdapter,
   type ProviderRuntimeOverride,
   type ResolvedProviderState
@@ -116,6 +122,8 @@ export interface RuntimeFileActivityRequest {
   summary?: string;
   toolCallId?: string;
 }
+
+export type RuntimeMemoryCandidateRequest = MemoryCandidateRequest;
 
 interface RuntimeFileEditMetadata {
   affectedFiles: string[];
@@ -1091,6 +1099,43 @@ export class AgentRuntime {
     return ok(records);
   }
 
+  evaluateMemoryCandidateSafety(
+    request: RuntimeMemoryCandidateRequest
+  ): Result<MemoryCandidateEvaluation> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const evaluation = createMemoryCandidate(
+      {
+        ...request,
+        sourceTaskId: request.sourceTaskId ?? activeTask.value.taskId
+      },
+      {
+        rules: activeTask.value.request.startup.safetyRules
+      }
+    );
+
+    if (!evaluation.ok) {
+      return evaluation;
+    }
+
+    const event = this.createMemorySafetyEvaluatedEvent(
+      activeTask.value,
+      evaluation.value.decision
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return evaluation;
+  }
+
   private executeRegisteredTool(
     cwd: string,
     request: RuntimeToolCallRequest
@@ -1985,6 +2030,31 @@ export class AgentRuntime {
         ...(request.validationId === undefined
           ? {}
           : { validationId: request.validationId })
+      }
+    );
+  }
+
+  private createMemorySafetyEvaluatedEvent(
+    task: PlannedExecutionFlow,
+    decision: SafetyEvaluationDecision
+  ): RuntimeEventRecord<"memory.safety.evaluated"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "memory.safety.evaluated",
+      {
+        action: decision.action,
+        matchedRuleIds: decision.matchedRuleIds,
+        reason: decision.reason,
+        redactedPreview: decision.redactedPreview,
+        status: "recorded",
+        summary: `Memory safety ${decision.action} decision recorded.`,
+        target: decision.target
       }
     );
   }

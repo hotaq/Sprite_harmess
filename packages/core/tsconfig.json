@@ -8,6 +8,7 @@
   "references": [
     { "path": "../shared" },
     { "path": "../config" },
+    { "path": "../memory" },
     { "path": "../providers" },
     { "path": "../sandbox" },
     { "path": "../tools" }

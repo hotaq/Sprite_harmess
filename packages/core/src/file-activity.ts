@@ -3,8 +3,15 @@ import type {
   ToolExecutionResult,
   ToolName
 } from "@sprite/tools";
-import { SpriteError, err, type Result } from "@sprite/shared";
+import {
+  SpriteError,
+  containsSecretLikeValue,
+  err,
+  type Result
+} from "@sprite/shared";
 import path from "node:path";
+
+export { containsSecretLikeValue } from "@sprite/shared";
 
 export const FILE_ACTIVITY_KINDS = [
   "changed",
@@ -215,14 +222,6 @@ function findForbiddenField(
   }
 
   return null;
-}
-
-export function containsSecretLikeValue(value: string): boolean {
-  return (
-    /\b[A-Z0-9_]*(API|TOKEN|SECRET|KEY)[A-Z0-9_]*=/i.test(value) ||
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) ||
-    /\bsk-[A-Za-z0-9_-]{6,}/.test(value)
-  );
 }
 
 export function isFileActivityKind(value: string): value is FileActivityKind {

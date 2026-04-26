@@ -1,4 +1,4 @@
-import type { SpriteConfig } from "./config-schema.js";
+import { mergeSafetyRuleLists, type SpriteConfig } from "./config-schema.js";
 
 function mergeDefined<T extends Record<string, unknown>>(
   base: T | undefined,
@@ -53,6 +53,19 @@ function mergeValidation(
   return mergeDefined(base, override);
 }
 
+function mergeSafety(
+  base: SpriteConfig["safety"],
+  override: SpriteConfig["safety"]
+): SpriteConfig["safety"] {
+  if (base === undefined && override === undefined) {
+    return undefined;
+  }
+
+  return {
+    rules: mergeSafetyRuleLists(base?.rules, override?.rules)
+  };
+}
+
 export function mergeSpriteConfigs(
   globalConfig?: SpriteConfig | null,
   projectConfig?: SpriteConfig | null
@@ -64,6 +77,7 @@ export function mergeSpriteConfigs(
     validation: mergeValidation(
       globalConfig?.validation,
       projectConfig?.validation
-    )
+    ),
+    safety: mergeSafety(globalConfig?.safety, projectConfig?.safety)
   };
 }

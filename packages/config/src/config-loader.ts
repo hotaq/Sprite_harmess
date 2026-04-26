@@ -3,8 +3,11 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   parseSpriteConfig,
+  createEffectiveSafetyRules,
+  cloneSafetyRules,
   type SpriteConfig,
   type SpriteOutputFormat,
+  type SpriteSafetyRule,
   type SpriteSandboxMode,
   type SpriteValidationCommand
 } from "./config-schema.js";
@@ -29,6 +32,7 @@ export interface ResolvedStartupConfig {
   model: string | null;
   outputFormat: SpriteOutputFormat;
   sandboxMode: SpriteSandboxMode;
+  safetyRules: SpriteSafetyRule[];
   validationCommands: SpriteValidationCommand[];
   globalConfigPath: string;
   projectConfigPath: string;
@@ -40,6 +44,7 @@ export interface ResolvedStartupConfig {
 export interface ResolvedSpriteRuntimeConfig {
   cwd: string;
   config: SpriteConfig;
+  safetyRules: SpriteSafetyRule[];
   globalConfigPath: string;
   projectConfigPath: string;
   globalConfigLoaded: boolean;
@@ -110,6 +115,7 @@ export function resolveSpriteRuntimeConfig(
   const globalConfig = loadSpriteConfigFile(paths.globalConfigPath);
   const projectConfig = loadSpriteConfigFile(paths.projectConfigPath);
   const config = mergeSpriteConfigs(globalConfig.config, projectConfig.config);
+  const safetyRules = createEffectiveSafetyRules(config.safety?.rules ?? []);
   const warnings = [globalConfig.warning, projectConfig.warning].filter(
     (warning): warning is string => warning !== null
   );
@@ -117,6 +123,7 @@ export function resolveSpriteRuntimeConfig(
   return {
     cwd,
     config,
+    safetyRules,
     globalConfigPath: paths.globalConfigPath,
     projectConfigPath: paths.projectConfigPath,
     globalConfigLoaded: globalConfig.loaded,
@@ -136,6 +143,7 @@ export function toStartupConfig(
     model: config.provider?.model ?? null,
     outputFormat: config.output?.format ?? DEFAULT_OUTPUT_FORMAT,
     sandboxMode: config.sandbox?.mode ?? DEFAULT_SANDBOX_MODE,
+    safetyRules: cloneSafetyRules(runtimeConfig.safetyRules),
     validationCommands: cloneValidationCommands(
       config.validation?.commands ?? []
     ),

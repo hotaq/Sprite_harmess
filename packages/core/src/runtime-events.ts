@@ -1,3 +1,7 @@
+import {
+  SAFETY_RULE_TARGETS,
+  type SpriteSafetyRuleTarget
+} from "@sprite/config";
 import { SpriteError, err, type Result } from "@sprite/shared";
 import {
   FILE_ACTIVITY_KINDS,
@@ -89,6 +93,7 @@ const RECOVERY_DECISIONS = [
   "retry_with_fix",
   "stop"
 ] as const;
+const MEMORY_SAFETY_ACTIONS = ["allow", "block", "redact"] as const;
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -98,6 +103,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.cancelled",
   "task.steering.received",
   "task.recovery.recorded",
+  "memory.safety.evaluated",
   "policy.decision.recorded",
   "approval.requested",
   "approval.resolved",
@@ -161,6 +167,15 @@ export interface RuntimeEventPayloadMap {
     toolCallId?: string;
     trigger: (typeof RECOVERY_TRIGGERS)[number];
     validationId?: string;
+  };
+  "memory.safety.evaluated": {
+    action: (typeof MEMORY_SAFETY_ACTIONS)[number];
+    matchedRuleIds: string[];
+    reason: string;
+    redactedPreview: string;
+    status: "recorded";
+    summary: string;
+    target: SpriteSafetyRuleTarget;
   };
   "policy.decision.recorded": {
     action: (typeof POLICY_ACTIONS)[number];
@@ -626,6 +641,13 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "memory.safety.evaluated": {
+      return validateMemorySafetyEvaluatedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "policy.decision.recorded": {
       return validatePolicyDecisionEvent(
         context,
@@ -827,6 +849,110 @@ function validateFileActivityEvent(
     ...(totalItemCount.value === undefined
       ? {}
       : { totalItemCount: totalItemCount.value })
+  });
+}
+
+function validateMemorySafetyEvaluatedEvent(
+  context: RuntimeEventContext,
+  type: "memory.safety.evaluated",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"memory.safety.evaluated">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const action = requirePayloadLiteral(
+    type,
+    payload,
+    "action",
+    MEMORY_SAFETY_ACTIONS
+  );
+  const matchedRuleIds = requirePayloadStringArray(
+    type,
+    payload,
+    "matchedRuleIds"
+  );
+  const reason = requirePayloadString(type, payload, "reason");
+  const redactedPreview = requirePayloadString(
+    type,
+    payload,
+    "redactedPreview"
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const target = requirePayloadLiteral(
+    type,
+    payload,
+    "target",
+    SAFETY_RULE_TARGETS
+  );
+
+  if (action.ok === false) {
+    return err(action.error);
+  }
+
+  if (matchedRuleIds.ok === false) {
+    return err(matchedRuleIds.error);
+  }
+
+  if (reason.ok === false) {
+    return err(reason.error);
+  }
+
+  if (redactedPreview.ok === false) {
+    return err(redactedPreview.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  if (target.ok === false) {
+    return err(target.error);
+  }
+
+  const secretCheckedFields = [
+    ["reason", reason.value],
+    ["redactedPreview", redactedPreview.value],
+    ["summary", summary.value],
+    ...matchedRuleIds.value.map((ruleId) => ["matchedRuleIds", ruleId] as const)
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    action: action.value,
+    matchedRuleIds: matchedRuleIds.value,
+    reason: reason.value,
+    redactedPreview: redactedPreview.value,
+    status: status.value,
+    summary: summary.value,
+    target: target.value
   });
 }
 
@@ -2152,6 +2278,40 @@ function requirePayloadLiteralArray<T extends string>(
   }
 
   return { ok: true, value: literals };
+}
+
+function requirePayloadStringArray(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<string[], SpriteError> {
+  const value = payload[key];
+
+  if (!Array.isArray(value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field '${key}' must be an array.`
+      )
+    );
+  }
+
+  const strings: string[] = [];
+
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${key}' must contain non-empty strings.`
+        )
+      );
+    }
+
+    strings.push(item);
+  }
+
+  return { ok: true, value: strings };
 }
 
 function optionalOutputReference(

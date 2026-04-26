@@ -64,6 +64,7 @@ Current bootstrap-visible fields:
 - `output.format` (`text`, `json`, `ndjson`)
 - `sandbox.mode` (`workspace-write`, `read-only`, `full-access`)
 - `validation.commands`
+- `safety.rules`
 
 Example:
 
@@ -86,6 +87,17 @@ Example:
         "command": "npm",
         "args": ["run", "typecheck"],
         "timeoutMs": 60000
+      }
+    ]
+  },
+  "safety": {
+    "rules": [
+      {
+        "id": "project.ticket-redaction",
+        "action": "redact",
+        "targets": ["learning_material", "memory_candidate"],
+        "pattern": "TICKET-[0-9]+",
+        "reason": "Ticket identifiers are customer metadata."
       }
     ]
   }
@@ -284,6 +296,45 @@ tool lifecycle path as `run_command`. Validation emits metadata-only
 is configured, the runtime emits a skipped `validation.completed` event so final
 summaries can state that no relevant validation was available.
 
+## Safety Rules and Memory Exclusions
+
+Story 2.9 adds inspectable safety rules that run before safety-sensitive content
+can become a memory candidate. Effective startup config includes default safety
+rules plus any global/project rules from `.sprite/config.json`. Project rules
+with the same `id` override global rules deterministically.
+
+Safety rules use metadata-only match definitions:
+
+- `id`: stable rule identifier
+- `action`: `block` or `redact`
+- `targets`: one or more of `tool_output`, `file_content`, `command_output`,
+  `learning_material`, `memory_candidate`
+- `pattern`: regular expression for content matches
+- `pathPattern`: regular expression for path matches
+- `reason`: audit-safe reason text
+
+Default exclusions block credential assignments, private keys, OpenAI-style
+`sk-` tokens, provider API-key variable names, `.env`-style paths, and common
+private-key/certificate paths. Rule metadata itself is validated so configured
+patterns and reasons do not contain secret-looking values.
+
+Runtime/package callers can use:
+
+- `resolveStartupConfig().safetyRules` to inspect the effective rules
+- `createMemoryCandidate()` from `@sprite/memory` to allow, block, or redact a
+  candidate before persistence
+- `AgentRuntime.evaluateMemoryCandidateSafety()` to emit a metadata-only
+  `memory.safety.evaluated` audit event
+
+Audit payloads include action, matched rule IDs, target, reason, and redacted
+preview only. They never include raw candidate content, matched secret text,
+stdout/stderr bodies, environment values, patch bodies, or repository
+instructions.
+
+Current scope remains runtime-local: durable `.sprite/memory` persistence,
+candidate review UI, semantic/vector memory, and provider-driven learning are
+future stories.
+
 ## Recovery After Validation or Denial
 
 Runtime callers can record the agent's recovery decision with
@@ -338,4 +389,4 @@ Not implemented yet:
 - Full multi-iteration agent loop progression
 - TUI
 - RPC server
-- Sessions, memory, and skills
+- Durable sessions/memory persistence and skills
