@@ -1,6 +1,6 @@
 # Story 2.9: Configure Safety Rules and Prevent Secret Memory Writes
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
