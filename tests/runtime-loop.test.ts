@@ -4,6 +4,18 @@ import {
   createFinalTaskSummary,
   runOneShotPrintTask
 } from "@sprite/core";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function createTempProject(): { projectDir: string; rootDir: string } {
+  const rootDir = mkdtempSync(join(tmpdir(), "sprite-runtime-loop-"));
+  const projectDir = join(rootDir, "project");
+
+  mkdirSync(projectDir, { recursive: true });
+
+  return { projectDir, rootDir };
+}
 
 describe("AgentRuntime interactive task flow", () => {
   it("creates a typed task request from runtime state and moves into a waiting state", () => {
@@ -373,82 +385,100 @@ describe("AgentRuntime interactive task flow", () => {
   });
 
   it("includes grouped file activity in final summaries", async () => {
-    const runtime = new AgentRuntime({
-      cwd: process.cwd(),
-      homeDir: "/tmp/sprite-home"
-    });
-    const submitted = runtime.submitInteractiveTask("summarize file activity");
+    const { projectDir, rootDir } = createTempProject();
 
-    expect(submitted.ok).toBe(true);
-    if (!submitted.ok) {
-      return;
+    try {
+      writeFileSync(join(projectDir, "package.json"), "{}\n");
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: "/tmp/sprite-home"
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "summarize file activity"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const readResult = await runtime.executeToolCall({
+        input: { path: "package.json" },
+        toolName: "read_file"
+      });
+      const proposed = runtime.recordFileActivity({
+        kind: "proposed_change",
+        paths: ["README.md"]
+      });
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(readResult.ok).toBe(true);
+      expect(proposed.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+
+      const activeTask = runtime.getActiveTask();
+
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+
+      const summary = createFinalTaskSummary(activeTask.value);
+
+      expect(summary.filesRead).toEqual(["package.json"]);
+      expect(summary.filesProposedForChange).toEqual(["README.md"]);
+      expect(summary.filesChanged).toEqual(["README.md"]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
     }
-
-    const readResult = await runtime.executeToolCall({
-      input: { path: "package.json" },
-      toolName: "read_file"
-    });
-    const proposed = runtime.recordFileActivity({
-      kind: "proposed_change",
-      paths: ["README.md"]
-    });
-    const changed = runtime.recordFileActivity({
-      kind: "changed",
-      paths: ["README.md"]
-    });
-
-    expect(readResult.ok).toBe(true);
-    expect(proposed.ok).toBe(true);
-    expect(changed.ok).toBe(true);
-
-    const activeTask = runtime.getActiveTask();
-
-    expect(activeTask.ok).toBe(true);
-    if (!activeTask.ok) {
-      return;
-    }
-
-    const summary = createFinalTaskSummary(activeTask.value);
-
-    expect(summary.filesRead).toEqual(["package.json"]);
-    expect(summary.filesProposedForChange).toEqual(["README.md"]);
-    expect(summary.filesChanged).toEqual(["README.md"]);
   });
 
   it("includes apply_patch changed files in final summaries", async () => {
-    const runtime = new AgentRuntime({
-      cwd: process.cwd(),
-      homeDir: "/tmp/sprite-home"
-    });
-    const submitted = runtime.submitInteractiveTask("summarize patch activity");
+    const { projectDir, rootDir } = createTempProject();
 
-    expect(submitted.ok).toBe(true);
-    if (!submitted.ok) {
-      return;
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: "/tmp/sprite-home"
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "summarize patch activity"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const proposed = runtime.recordFileActivity({
+        kind: "proposed_change",
+        paths: ["README.md"]
+      });
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(proposed.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+
+      const activeTask = runtime.getActiveTask();
+
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+
+      const summary = createFinalTaskSummary(activeTask.value);
+
+      expect(summary.filesProposedForChange).toEqual(["README.md"]);
+      expect(summary.filesChanged).toEqual(["README.md"]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
     }
-
-    const proposed = runtime.recordFileActivity({
-      kind: "proposed_change",
-      paths: ["README.md"]
-    });
-    const changed = runtime.recordFileActivity({
-      kind: "changed",
-      paths: ["README.md"]
-    });
-
-    expect(proposed.ok).toBe(true);
-    expect(changed.ok).toBe(true);
-
-    const activeTask = runtime.getActiveTask();
-
-    expect(activeTask.ok).toBe(true);
-    if (!activeTask.ok) {
-      return;
-    }
-
-    const summary = createFinalTaskSummary(activeTask.value);
-
-    expect(summary.filesProposedForChange).toEqual(["README.md"]);
-    expect(summary.filesChanged).toEqual(["README.md"]);
   });
 });

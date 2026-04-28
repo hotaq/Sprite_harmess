@@ -68,6 +68,8 @@ Current runtime/package API capabilities include:
 - configured validation commands through the runtime approval/sandbox path
 - metadata-only recovery decision records
 - inspectable safety rules before content becomes a memory candidate
+- project-local session artifacts with `ses_...` IDs, append-only
+  `events.ndjson`, and bounded `state.json` snapshots
 
 ## Current Limitations
 
@@ -77,6 +79,6 @@ Not implemented yet:
 - full multi-iteration agent loop progression
 - TUI
 - RPC server
-- durable sessions/memory persistence and skills
+- session inspection, resume, context loading, and compaction
+- durable memory persistence and skills
 - CLI/TUI/RPC approval prompts
-

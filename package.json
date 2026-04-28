@@ -59,7 +59,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false && tsc --noEmit --pretty false --project tests/tsconfig.json",
     "test": "npm run build --silent && vitest run",
     "lint": "npm run typecheck",
     "format": "prettier --write .",

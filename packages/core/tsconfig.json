@@ -6,12 +6,27 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "references": [
-    { "path": "../shared" },
-    { "path": "../config" },
-    { "path": "../memory" },
-    { "path": "../providers" },
-    { "path": "../sandbox" },
-    { "path": "../tools" }
+    {
+      "path": "../shared"
+    },
+    {
+      "path": "../config"
+    },
+    {
+      "path": "../memory"
+    },
+    {
+      "path": "../providers"
+    },
+    {
+      "path": "../sandbox"
+    },
+    {
+      "path": "../tools"
+    },
+    {
+      "path": "../storage"
+    }
   ],
   "include": ["src/**/*.ts"]
 }

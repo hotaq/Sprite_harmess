@@ -16,10 +16,15 @@ import {
 } from "@sprite/core";
 import type {
   RuntimeApprovalResponse,
+  RuntimeEventRecord,
   RuntimeToolCallRequest
 } from "@sprite/core";
 
 const tempRoots: string[] = [];
+type RuntimeEventOfType<T extends RuntimeEventRecord["type"]> = Extract<
+  RuntimeEventRecord,
+  { type: T }
+>;
 
 function createTempRuntimeProject(): {
   outsideSecretPath: string;
@@ -45,6 +50,13 @@ function writeProjectFile(
   const targetPath = join(projectDir, relativePath);
   mkdirSync(dirname(targetPath), { recursive: true });
   writeFileSync(targetPath, value);
+}
+
+function isRuntimeEventOfType<T extends RuntimeEventRecord["type"]>(
+  ...types: readonly T[]
+): (event: RuntimeEventRecord) => event is RuntimeEventOfType<T> {
+  return (event): event is RuntimeEventOfType<T> =>
+    types.includes(event.type as T);
 }
 
 afterEach(() => {
@@ -801,7 +813,7 @@ describe("runtime event subscription", () => {
 
     runtime.subscribeToEvents((event) => {
       if (event.type === "task.waiting") {
-        event.payload.reason = "mutated-by-subscriber";
+        (event.payload as { reason: string }).reason = "mutated-by-subscriber";
       }
     });
     runtime.subscribeToEvents((event) => {
@@ -832,7 +844,8 @@ describe("runtime event subscription", () => {
     expect(historyWaitingEvent?.payload.reason).toBe("steering-required");
 
     if (historyWaitingEvent !== undefined) {
-      historyWaitingEvent.payload.reason = "mutated-by-history-reader";
+      (historyWaitingEvent.payload as { reason: string }).reason =
+        "mutated-by-history-reader";
     }
 
     expect(
@@ -874,8 +887,11 @@ describe("runtime event subscription", () => {
   });
 
   it("emits tool lifecycle and file activity events through AgentRuntime without adapter-owned state", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(projectDir, "package.json", "{}\n");
+
     const runtime = new AgentRuntime({
-      cwd: process.cwd(),
+      cwd: projectDir,
       homeDir: "/tmp/sprite-home"
     });
     const observedTypes: string[] = [];
@@ -907,11 +923,16 @@ describe("runtime event subscription", () => {
       "file.activity.recorded"
     ]);
     const history = runtime.getEventHistory(submitted.value.taskId);
-    const toolEvents = history.filter((event) =>
-      event.type.startsWith("tool.call.")
+    const toolEvents = history.filter(
+      isRuntimeEventOfType(
+        "tool.call.requested",
+        "tool.call.started",
+        "tool.call.completed",
+        "tool.call.failed"
+      )
     );
     const activityEvents = history.filter(
-      (event) => event.type === "file.activity.recorded"
+      isRuntimeEventOfType("file.activity.recorded")
     );
 
     expect(toolEvents.map((event) => event.type)).toEqual([
@@ -1006,7 +1027,7 @@ describe("runtime event subscription", () => {
 
     const activityEvents = runtime
       .getEventHistory(submitted.value.taskId)
-      .filter((event) => event.type === "file.activity.recorded");
+      .filter(isRuntimeEventOfType("file.activity.recorded"));
     const serializedActivity = JSON.stringify(activityEvents);
 
     expect(activityEvents.map((event) => event.payload.path)).toEqual([
@@ -1042,7 +1063,7 @@ describe("runtime event subscription", () => {
 
     const activityEvents = runtime
       .getEventHistory(submitted.value.taskId)
-      .filter((event) => event.type === "file.activity.recorded");
+      .filter(isRuntimeEventOfType("file.activity.recorded"));
 
     expect(activityEvents).toHaveLength(1);
     expect(activityEvents[0]?.payload).toMatchObject({
@@ -1082,17 +1103,21 @@ describe("runtime event subscription", () => {
     if (!result.ok) {
       return;
     }
+    expect(result.value.toolName).toBe("list_files");
+    if (result.value.toolName !== "list_files") {
+      return;
+    }
 
     const activityEvents = runtime
       .getEventHistory(submitted.value.taskId)
-      .filter((event) => event.type === "file.activity.recorded");
+      .filter(isRuntimeEventOfType("file.activity.recorded"));
 
     expect(activityEvents.length).toBeLessThanOrEqual(81);
     expect(activityEvents[0]?.payload).toMatchObject({
       kind: "listed",
       path: ".",
       returnedItemCount: 80,
-      totalItemCount: 601
+      totalItemCount: result.value.totalEntryCount
     });
   });
 
@@ -1247,11 +1272,15 @@ describe("runtime event subscription", () => {
       "file.activity.recorded"
     ]);
 
-    const editEvents = history.filter((event) =>
-      event.type.startsWith("file.edit.")
+    const editEvents = history.filter(
+      isRuntimeEventOfType(
+        "file.edit.requested",
+        "file.edit.applied",
+        "file.edit.failed"
+      )
     );
     const activityEvents = history.filter(
-      (event) => event.type === "file.activity.recorded"
+      isRuntimeEventOfType("file.activity.recorded")
     );
 
     expect(editEvents.map((event) => event.payload.status)).toEqual([
@@ -1623,6 +1652,10 @@ describe("runtime event subscription", () => {
         status: "failed"
       }
     });
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) {
+      return;
+    }
     const validationEvent = runtime
       .getEventHistory(submitted.value.taskId)
       .find((event) => event.type === "validation.completed");
@@ -2640,7 +2673,7 @@ describe("runtime event subscription", () => {
 
     runtime.subscribeToEvents((event) => {
       if (event.type === "approval.requested") {
-        event.payload.status = "mutated-by-subscriber";
+        (event.payload as { status: string }).status = "mutated-by-subscriber";
       }
     });
     runtime.subscribeToEvents((event) => {
@@ -2674,7 +2707,8 @@ describe("runtime event subscription", () => {
     expect(approvalEvent?.payload.status).toBe("pending");
 
     if (approvalEvent !== undefined) {
-      approvalEvent.payload.status = "mutated-by-history-reader";
+      (approvalEvent.payload as { status: string }).status =
+        "mutated-by-history-reader";
     }
 
     expect(

@@ -29,7 +29,18 @@ import {
   type PolicyEventMetadata,
   type PolicyRequest
 } from "@sprite/sandbox";
-import { SpriteError, err, ok, type Result } from "@sprite/shared";
+import {
+  SpriteError,
+  createRedactedPreview,
+  err,
+  ok,
+  type Result
+} from "@sprite/shared";
+import {
+  SESSION_STATE_SCHEMA_VERSION,
+  createLocalSessionStore,
+  createSessionId
+} from "@sprite/storage";
 import {
   createToolRegistry,
   getRunCommandErrorMetadata,
@@ -55,6 +66,7 @@ import {
 import {
   createRuntimeEventRecord,
   RuntimeEventBus,
+  validateRuntimeEvent,
   type RuntimeEventListener,
   type RuntimeEventPayload,
   type RuntimeEventRecord
@@ -248,11 +260,13 @@ interface PendingApprovalRecord {
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
 
 export class AgentRuntime {
-  private readonly sessionId = `session_${randomUUID()}`;
+  private readonly sessionId = createSessionId();
   private readonly eventBus = new RuntimeEventBus();
   private readonly emittedEventIds = new Set<string>();
   private readonly pendingApprovals = new Map<string, PendingApprovalRecord>();
+  private readonly sessionStore = createLocalSessionStore();
   private readonly toolRegistry = createToolRegistry();
+  private sessionCreatedAt: string | null = null;
   private activeTask: PlannedExecutionFlow | null = null;
 
   constructor(private readonly options: RuntimeStartupOptions = {}) {}
@@ -779,6 +793,11 @@ export class AgentRuntime {
       waitingState: null,
       events: this.eventBus.getHistory(activeTask.value.taskId)
     };
+    const approvalSnapshot = this.persistCurrentActiveTaskSnapshot();
+
+    if (!approvalSnapshot.ok) {
+      return err(approvalSnapshot.error);
+    }
 
     if (response.action === "deny") {
       return err(
@@ -926,7 +945,12 @@ export class AgentRuntime {
         return err(emitted.error);
       }
 
-      this.appendActiveTaskFileActivity(fileActivity);
+      const activityPersisted = this.appendActiveTaskFileActivity(fileActivity);
+
+      if (!activityPersisted.ok) {
+        return err(activityPersisted.error);
+      }
+
       this.refreshActiveTaskEvents(task.taskId);
       return result;
     }
@@ -1094,7 +1118,12 @@ export class AgentRuntime {
       return err(emitted.error);
     }
 
-    this.appendActiveTaskFileActivity(records);
+    const activityPersisted = this.appendActiveTaskFileActivity(records);
+
+    if (!activityPersisted.ok) {
+      return err(activityPersisted.error);
+    }
+
     this.refreshActiveTaskEvents(activeTask.value.taskId);
     return ok(records);
   }
@@ -1751,13 +1780,7 @@ export class AgentRuntime {
       return err(emitted.error);
     }
 
-    this.pendingApprovals.set(approvalRequest.approvalRequestId, {
-      approvalRequest,
-      policyRequest,
-      toolCallId,
-      toolCallRequest
-    });
-    this.activeTask = {
+    const nextActiveTask: PlannedExecutionFlow = {
       ...task,
       status: "waiting-for-input",
       summary: waitingMessage,
@@ -1768,6 +1791,19 @@ export class AgentRuntime {
       terminalState: null,
       events: this.eventBus.getHistory(task.taskId)
     };
+    const approvalSnapshot = this.persistSessionSnapshot(nextActiveTask);
+
+    if (!approvalSnapshot.ok) {
+      return err(approvalSnapshot.error);
+    }
+
+    this.pendingApprovals.set(approvalRequest.approvalRequestId, {
+      approvalRequest,
+      policyRequest,
+      toolCallId,
+      toolCallRequest
+    });
+    this.activeTask = nextActiveTask;
 
     return ok(approvalRequest);
   }
@@ -2193,9 +2229,89 @@ export class AgentRuntime {
     return new Date().toISOString();
   }
 
+  private ensureSessionForTask(task: PlannedExecutionFlow): Result<void> {
+    const createdAt =
+      this.sessionCreatedAt ?? task.events[0]?.createdAt ?? this.now();
+    const ensured = this.sessionStore.ensureSession(
+      task.sessionId,
+      task.request.cwd,
+      createdAt
+    );
+
+    if (!ensured.ok) {
+      return err(ensured.error);
+    }
+
+    this.sessionCreatedAt = createdAt;
+
+    return ok(undefined);
+  }
+
+  private persistSessionSnapshot(task: PlannedExecutionFlow): Result<void> {
+    const taskEvents = this.eventBus.getHistory(task.taskId);
+    const sessionEvents = this.eventBus
+      .getHistory()
+      .filter((event) => event.sessionId === task.sessionId);
+    const lastEvent = sessionEvents.at(-1) ?? taskEvents.at(-1);
+    const createdAt =
+      this.sessionCreatedAt ?? task.events[0]?.createdAt ?? this.now();
+    const snapshotTask = {
+      ...task,
+      events: taskEvents
+    };
+    const finalSummary = createFinalTaskSummary(snapshotTask);
+    const written = this.sessionStore.writeStateSnapshot({
+      schemaVersion: SESSION_STATE_SCHEMA_VERSION,
+      sessionId: task.sessionId,
+      cwd: task.request.cwd,
+      createdAt,
+      updatedAt: this.now(),
+      eventCount: sessionEvents.length,
+      filesChanged: finalSummary.filesChanged,
+      filesProposedForChange: finalSummary.filesProposedForChange,
+      filesRead: finalSummary.filesRead,
+      ...summarizeSnapshotLastError(lastEvent),
+      ...(lastEvent === undefined
+        ? {}
+        : {
+            lastEventId: lastEvent.eventId,
+            lastEventType: lastEvent.type
+          }),
+      latestTask: {
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        status: task.status,
+        currentPhase: task.currentPhase,
+        goal: createRedactedPreview(task.request.task, 240)
+      },
+      ...summarizeSnapshotNextStep(task),
+      pendingApprovalCount: this.countPendingApprovalsForTask(task.taskId)
+    });
+
+    if (!written.ok) {
+      return err(written.error);
+    }
+
+    return ok(undefined);
+  }
+
+  private persistCurrentActiveTaskSnapshot(): Result<void> {
+    if (this.activeTask === null) {
+      return ok(undefined);
+    }
+
+    return this.persistSessionSnapshot(this.activeTask);
+  }
+
   private setActiveTask(
     task: PlannedExecutionFlow
   ): Result<PlannedExecutionFlow> {
+    const ensured = this.ensureSessionForTask(task);
+
+    if (!ensured.ok) {
+      return err(ensured.error);
+    }
+
     const emitted = this.emitNewEvents(task.events);
 
     if (!emitted.ok) {
@@ -2206,10 +2322,17 @@ export class AgentRuntime {
       this.clearPendingApprovalsForTask(task.taskId);
     }
 
-    this.activeTask = {
+    const nextTask = {
       ...task,
       events: this.eventBus.getHistory(task.taskId)
     };
+    const persisted = this.persistSessionSnapshot(nextTask);
+
+    if (!persisted.ok) {
+      return err(persisted.error);
+    }
+
+    this.activeTask = nextTask;
 
     return ok(this.activeTask);
   }
@@ -2409,14 +2532,20 @@ export class AgentRuntime {
     }
   }
 
-  private hasPendingApprovalForTask(taskId: string): boolean {
+  private countPendingApprovalsForTask(taskId: string): number {
+    let count = 0;
+
     for (const record of this.pendingApprovals.values()) {
       if (record.approvalRequest.taskId === taskId) {
-        return true;
+        count += 1;
       }
     }
 
-    return false;
+    return count;
+  }
+
+  private hasPendingApprovalForTask(taskId: string): boolean {
+    return this.countPendingApprovalsForTask(taskId) > 0;
   }
 
   private refreshActiveTaskEvents(taskId: string): void {
@@ -2430,23 +2559,52 @@ export class AgentRuntime {
     };
   }
 
-  private appendActiveTaskFileActivity(records: FileActivityRecord[]): void {
+  private appendActiveTaskFileActivity(
+    records: FileActivityRecord[]
+  ): Result<void> {
     if (this.activeTask === null || records.length === 0) {
-      return;
+      return ok(undefined);
     }
 
     this.activeTask = {
       ...this.activeTask,
       fileActivity: [...this.activeTask.fileActivity, ...records]
     };
+
+    return this.persistSessionSnapshot(this.activeTask);
   }
 
   private emitNewEvents(events: RuntimeEventRecord[]): Result<void> {
+    const pendingEvents: RuntimeEventRecord[] = [];
+
     for (const event of events) {
       if (this.emittedEventIds.has(event.eventId)) {
         continue;
       }
 
+      const validation = validateRuntimeEvent(event);
+
+      if (!validation.ok) {
+        return err(validation.error);
+      }
+
+      pendingEvents.push(validation.value);
+    }
+
+    if (pendingEvents.length === 0) {
+      return ok(undefined);
+    }
+
+    const persisted = this.sessionStore.appendEvents(
+      pendingEvents[0].sessionId,
+      pendingEvents
+    );
+
+    if (!persisted.ok) {
+      return err(persisted.error);
+    }
+
+    for (const event of pendingEvents) {
       const emitted = this.eventBus.emit(event);
 
       if (!emitted.ok) {
@@ -2454,6 +2612,14 @@ export class AgentRuntime {
       }
 
       this.emittedEventIds.add(event.eventId);
+    }
+
+    if (this.activeTask !== null) {
+      const persisted = this.persistSessionSnapshot(this.activeTask);
+
+      if (!persisted.ok) {
+        return err(persisted.error);
+      }
     }
 
     return ok(undefined);
@@ -2471,6 +2637,63 @@ export class AgentRuntime {
 
 function invalidRecoveryAction(message: string): Result<never> {
   return err(new SpriteError("INVALID_RECOVERY_ACTION", message));
+}
+
+function summarizeSnapshotNextStep(task: PlannedExecutionFlow): {
+  nextStep?: string;
+} {
+  if (task.waitingState !== null) {
+    return {
+      nextStep: createRedactedPreview(
+        `${task.waitingState.reason}: ${task.waitingState.message}`,
+        240
+      )
+    };
+  }
+
+  return {};
+}
+
+function summarizeSnapshotLastError(event: RuntimeEventRecord | undefined): {
+  lastError?: string;
+} {
+  if (event === undefined) {
+    return {};
+  }
+
+  switch (event.type) {
+    case "task.failed":
+      return {
+        lastError: createRedactedPreview(
+          `${event.payload.reason}: ${event.payload.message}`,
+          240
+        )
+      };
+    case "tool.call.failed":
+    case "file.edit.failed":
+      return {
+        lastError: createRedactedPreview(
+          `${event.payload.errorCode}: ${event.payload.summary}`,
+          240
+        )
+      };
+    case "validation.completed":
+      if (
+        event.payload.status === "blocked" ||
+        event.payload.status === "failed"
+      ) {
+        return {
+          lastError: createRedactedPreview(
+            `${event.payload.status}: ${event.payload.summary}`,
+            240
+          )
+        };
+      }
+
+      return {};
+    default:
+      return {};
+  }
 }
 
 function matchesSourceEvent(

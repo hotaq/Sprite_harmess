@@ -376,7 +376,7 @@ describe("sprite cli smoke tests", () => {
         expect.stringContaining("Validation")
       ])
     });
-    expect(output.sessionId).toEqual(expect.stringMatching(/^session_/));
+    expect(output.sessionId).toEqual(expect.stringMatching(/^ses_/));
     expect(output.taskId).toEqual(expect.stringMatching(/^task_/));
     expect(output.correlationId).toEqual(expect.stringMatching(/^corr_/));
     expect(output.events).toEqual(
@@ -429,7 +429,7 @@ describe("sprite cli smoke tests", () => {
       expect(event).toMatchObject({
         schemaVersion: 1,
         eventId: expect.stringMatching(/^evt_/),
-        sessionId: expect.stringMatching(/^session_/),
+        sessionId: expect.stringMatching(/^ses_/),
         taskId: expect.stringMatching(/^task_/),
         correlationId: expect.stringMatching(/^corr_/),
         createdAt: expect.any(String),

@@ -10,6 +10,7 @@ dist/
 .claude/
 .cursor/
 .opencode/
+.sprite/
 AGENTS.md
 CLAUDE.md
 skills-lock.json

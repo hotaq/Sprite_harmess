@@ -12,7 +12,8 @@
       "@sprite/memory": ["packages/memory/src/index.ts"],
       "@sprite/providers": ["packages/providers/src/index.ts"],
       "@sprite/sandbox": ["packages/sandbox/src/index.ts"],
-      "@sprite/tools": ["packages/tools/src/index.ts"]
+      "@sprite/tools": ["packages/tools/src/index.ts"],
+      "@sprite/storage": ["packages/storage/src/index.ts"]
     },
     "strict": true,
     "declaration": true,

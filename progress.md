@@ -143,7 +143,7 @@ At this stage the default interactive CLI task does not yet:
 
 - execute tools or commands
 - apply edits
-- persist the runtime event stream to session storage
+- resume, inspect, or compact durable session state
 
 The goal of this slice is to prove that interactive task submission goes through `AgentRuntime`, not to fake full tool execution early.
 
@@ -196,7 +196,29 @@ Runtime task state and final summaries now group file activity into:
 
 The current implementation records activity for `read_file`, `list_files`, `search_files`, and successful `apply_patch` calls, plus a narrow runtime API for proposal-only `proposed_change` records. File activity records intentionally exclude raw file contents, search snippets, search query text, patch hunks, diff bodies, and secret-looking values.
 
-Durable audit persistence under `.sprite/sessions/...` is not implemented yet; current audit state is runtime-local.
+Durable audit persistence for runtime events now starts in Story 3.1 under
+project-local `.sprite/sessions/<session-id>/events.ndjson`.
+
+## Local Session Persistence
+
+Story 3.1 adds the first durable local session slice. A new `AgentRuntime`
+instance generates a stable `ses_...` session ID and creates project-local
+artifacts under:
+
+- `.sprite/sessions/<session-id>/events.ndjson`
+- `.sprite/sessions/<session-id>/state.json`
+
+Runtime events are validated and appended to `events.ndjson` as ordered
+NDJSON before runtime subscribers are notified, one validated runtime event per
+line. The bounded `state.json` snapshot is replaced atomically and records
+schema version, session identity, cwd, creation/update timestamps, latest task
+identity/status, event count, last event ID/type, file activity summaries,
+pending approval count, last error, and next-step hints.
+
+The event log remains the durable audit source of truth; `state.json` is only a
+recoverable snapshot for future inspection/resume stories. This slice does not
+implement session listing, resume, project context loading, context assembly,
+or compaction.
 
 ## Sandboxed Command Execution
 
@@ -353,4 +375,5 @@ Not implemented yet:
 - Full multi-iteration agent loop progression
 - TUI
 - RPC server
-- Durable sessions/memory persistence and skills
+- Session inspection/resume/context/compaction flows
+- Durable memory persistence and skills
