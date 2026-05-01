@@ -246,6 +246,8 @@ Codex
 - 2026-04-26: Session event contract validation passed: `rtk npm run typecheck`, `rtk vitest run tests/session-store.test.ts tests/session-persistence.test.ts`, `rtk npm run lint`, `rtk npm test` (143 tests), `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`.
 - 2026-04-26: Team review issue #4 fixed after GitNexus LOW impact for `writeStateSnapshot`/`SessionStateSnapshot`; `LocalSessionStore.writeStateSnapshot()` now normalizes snapshot `cwd` to the absolute project path before atomic replacement.
 - 2026-04-26: Snapshot cwd validation passed: `rtk npm run typecheck`, `rtk vitest run tests/session-store.test.ts tests/session-persistence.test.ts`, `rtk npm run lint`, `rtk npm test` (145 tests), `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`.
+- 2026-05-01: Team review issue #5 fixed after GitNexus LOW impact for `SessionStateSnapshot`/`writeStateSnapshot`; `latestTask.status` and `latestTask.currentPhase` now use storage-owned literal unions aligned with core runtime states without creating a storage-to-core dependency.
+- 2026-05-01: Snapshot latest-task contract validation passed: `rtk npm run typecheck`, `rtk vitest run tests/session-store.test.ts tests/session-persistence.test.ts`, `rtk npm run lint`, `rtk npm test` (150 tests), `rtk git diff --check`, targeted Prettier check, `rtk gitnexus analyze`, and `rtk gitnexus status`.
 
 ### Completion Notes List
 
@@ -260,6 +262,7 @@ Codex
 - Added test-suite typechecking so future test fixtures must satisfy exported TypeScript contracts instead of relying only on Vitest transpilation.
 - Tightened the storage append API from `unknown[]` to dependency-safe `SessionEventRecord[]`, preserving package boundaries while rejecting malformed or cross-session event records before writing NDJSON.
 - Canonicalized persisted snapshot `cwd` values to absolute project paths, including regression coverage for relative runtime startup cwd and direct storage snapshot writes.
+- Narrowed persisted latest-task snapshot metadata with explicit storage-owned task status/runtime phase unions and runtime validation for unsupported values.
 
 ### File List
 
@@ -295,8 +298,10 @@ Codex
 | 2026-04-26 | 1.3     | Tightened session event append contract validation.  | Codex  |
 | 2026-04-26 | 1.4     | Canonicalized persisted snapshot cwd values.         | Codex  |
 | 2026-04-28 | 1.5     | Addressed BMAD code review persistence findings.     | Codex  |
+| 2026-05-01 | 1.6     | Narrowed latest-task snapshot status and phase.      | Codex  |
 
 ## QA Results
 
 - 2026-04-28 BMAD code review complete. Findings were fixed for batched event persistence before publish, stale session init cache cleanup, approval waiting state mutation ordering, non-plain event payload rejection, stale QA text, and `.gitignore` scope cleanup.
 - Review-fix validation passed: targeted session tests (15 tests), `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test` (11 files, 149 tests), `rtk git diff --check`, targeted Prettier check, and `rtk npx gitnexus status` (`b09ffb1`, up to date).
+- 2026-05-01 latest-task snapshot contract hardening passed: targeted session tests (16 tests), `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test` (11 files, 150 tests), `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status` after `rtk gitnexus analyze`.

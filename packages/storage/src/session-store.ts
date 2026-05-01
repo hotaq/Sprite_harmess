@@ -5,6 +5,30 @@ import { SpriteError, err, type Result } from "@sprite/shared";
 
 export const SESSION_STATE_SCHEMA_VERSION = 1 as const;
 const SESSION_ID_PATTERN = /^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/;
+export const SESSION_SNAPSHOT_TASK_STATUSES = [
+  "planned",
+  "waiting-for-input",
+  "completed",
+  "cancelled",
+  "max-iterations",
+  "failed"
+] as const;
+export const SESSION_SNAPSHOT_RUNTIME_PHASES = [
+  "plan",
+  "act",
+  "observe"
+] as const;
+const SESSION_SNAPSHOT_TASK_STATUS_SET: ReadonlySet<string> = new Set(
+  SESSION_SNAPSHOT_TASK_STATUSES
+);
+const SESSION_SNAPSHOT_RUNTIME_PHASE_SET: ReadonlySet<string> = new Set(
+  SESSION_SNAPSHOT_RUNTIME_PHASES
+);
+
+export type SessionSnapshotTaskStatus =
+  (typeof SESSION_SNAPSHOT_TASK_STATUSES)[number];
+export type SessionSnapshotRuntimePhase =
+  (typeof SESSION_SNAPSHOT_RUNTIME_PHASES)[number];
 
 export interface SessionArtifactPaths {
   rootDir: string;
@@ -39,8 +63,8 @@ export interface SessionStateSnapshot {
   latestTask?: {
     taskId: string;
     correlationId: string;
-    status: string;
-    currentPhase: string;
+    status: SessionSnapshotTaskStatus;
+    currentPhase: SessionSnapshotRuntimePhase;
     goal: string;
   };
   nextStep?: string;
@@ -165,6 +189,12 @@ export class LocalSessionStore implements SessionStore {
     }
 
     try {
+      const validation = validateSessionStateSnapshot(snapshot);
+
+      if (!validation.ok) {
+        return err(validation.error);
+      }
+
       const normalizedSnapshot = normalizeSessionStateSnapshot(snapshot);
       const tempPath = path.join(
         paths.value.rootDir,
@@ -266,6 +296,36 @@ function normalizeSessionStateSnapshot(
     ...snapshot,
     cwd: path.resolve(snapshot.cwd)
   };
+}
+
+function validateSessionStateSnapshot(
+  snapshot: SessionStateSnapshot
+): Result<void, SpriteError> {
+  if (snapshot.latestTask === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (!SESSION_SNAPSHOT_TASK_STATUS_SET.has(snapshot.latestTask.status)) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session snapshot latestTask.status is not supported."
+      )
+    );
+  }
+
+  if (
+    !SESSION_SNAPSHOT_RUNTIME_PHASE_SET.has(snapshot.latestTask.currentPhase)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session snapshot latestTask.currentPhase is not supported."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
 }
 
 function validateSessionEventRecord(

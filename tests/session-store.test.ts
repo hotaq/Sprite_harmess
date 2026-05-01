@@ -270,6 +270,86 @@ describe("local session store", () => {
     }
   });
 
+  it("rejects unsupported latest task snapshot status and phase", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-04-26T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const baseSnapshot = {
+        schemaVersion: 1,
+        sessionId,
+        cwd: projectDir,
+        createdAt: "2026-04-26T12:00:00.000Z",
+        updatedAt: "2026-04-26T12:00:02.000Z",
+        eventCount: 1,
+        filesChanged: [],
+        filesProposedForChange: [],
+        filesRead: [],
+        latestTask: {
+          taskId: "task_test",
+          correlationId: "corr_test",
+          status: "planned",
+          currentPhase: "plan",
+          goal: "persist session"
+        },
+        pendingApprovalCount: 0
+      } satisfies SessionStateSnapshot;
+      const unsupportedStatus = {
+        ...baseSnapshot,
+        latestTask: {
+          ...baseSnapshot.latestTask,
+          status: "paused"
+        }
+      } as unknown as SessionStateSnapshot;
+      const statusResult = store.writeStateSnapshot(unsupportedStatus);
+
+      expect(statusResult.ok).toBe(false);
+      if (statusResult.ok) {
+        return;
+      }
+
+      expect(statusResult.error).toMatchObject({
+        code: "SESSION_STATE_INVALID"
+      });
+
+      const unsupportedPhase = {
+        ...baseSnapshot,
+        latestTask: {
+          ...baseSnapshot.latestTask,
+          currentPhase: "review"
+        }
+      } as unknown as SessionStateSnapshot;
+      const phaseResult = store.writeStateSnapshot(unsupportedPhase);
+
+      expect(phaseResult.ok).toBe(false);
+      if (phaseResult.ok) {
+        return;
+      }
+
+      expect(phaseResult.error).toMatchObject({
+        code: "SESSION_STATE_INVALID"
+      });
+      expect(readJson(ensured.value.statePath)).toMatchObject({
+        eventCount: 0,
+        sessionId
+      });
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects malformed session events before appending", () => {
     const projectDir = createTempProject();
 
