@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createLocalSessionStore,
   createSessionId,
+  readSessionArtifacts,
   resolveSessionArtifactPaths,
   type SessionEventRecord,
   type SessionStateSnapshot
@@ -12,7 +13,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  unlinkSync
+  unlinkSync,
+  writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -33,6 +35,24 @@ function readNdjson(path: string): Record<string, unknown>[] {
     : content
         .split("\n")
         .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function createSessionEvent(
+  sessionId: string,
+  index: number,
+  overrides: Partial<SessionEventRecord> = {}
+): SessionEventRecord {
+  return {
+    schemaVersion: 1,
+    eventId: `evt_${String(index).padStart(3, "0")}`,
+    sessionId,
+    taskId: "task_test",
+    correlationId: "corr_test",
+    type: "task.waiting",
+    createdAt: `2026-04-26T12:00:${String(index).padStart(2, "0")}.000Z`,
+    payload: { reason: "steering-required", message: `waiting ${index}` },
+    ...overrides
+  };
 }
 
 describe("local session store", () => {
@@ -427,6 +447,213 @@ describe("local session store", () => {
 
       expect(result.error).toMatchObject({ code: "SESSION_EVENT_INVALID" });
       expect(readNdjson(ensured.value.eventsPath)).toEqual([]);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads existing session artifacts without mutating state or event files", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-04-26T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const events = [1, 2, 3].map((index) =>
+        createSessionEvent(sessionId, index)
+      );
+      const snapshot = {
+        schemaVersion: 1,
+        sessionId,
+        cwd: projectDir,
+        createdAt: "2026-04-26T12:00:00.000Z",
+        updatedAt: "2026-04-26T12:00:03.000Z",
+        eventCount: events.length,
+        filesChanged: ["src/changed.ts"],
+        filesProposedForChange: ["src/proposed.ts"],
+        filesRead: ["src/read.ts"],
+        latestTask: {
+          taskId: "task_test",
+          correlationId: "corr_test",
+          status: "waiting-for-input",
+          currentPhase: "act",
+          goal: "inspect session"
+        },
+        pendingApprovalCount: 1
+      } satisfies SessionStateSnapshot;
+
+      expect(store.appendEvents(sessionId, events).ok).toBe(true);
+      expect(store.writeStateSnapshot(snapshot).ok).toBe(true);
+
+      const stateBefore = readFileSync(ensured.value.statePath, "utf8");
+      const eventsBefore = readFileSync(ensured.value.eventsPath, "utf8");
+      const inspected = readSessionArtifacts(projectDir, sessionId, {
+        recentEventLimit: 2
+      });
+
+      expect(inspected.ok).toBe(true);
+      if (!inspected.ok) {
+        return;
+      }
+
+      expect(inspected.value.persistedEventCount).toBe(3);
+      expect(
+        inspected.value.recentEvents.map((event) => event.eventId)
+      ).toEqual(["evt_002", "evt_003"]);
+      expect(inspected.value.state).toMatchObject({
+        sessionId,
+        eventCount: 3,
+        filesChanged: ["src/changed.ts"],
+        pendingApprovalCount: 1
+      });
+      expect(readFileSync(ensured.value.statePath, "utf8")).toBe(stateBefore);
+      expect(readFileSync(ensured.value.eventsPath, "utf8")).toBe(eventsBefore);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured errors for missing, invalid, and malformed artifacts", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const missing = readSessionArtifacts(projectDir, "ses_missing");
+
+      expect(missing.ok).toBe(false);
+      if (!missing.ok) {
+        expect(missing.error).toMatchObject({ code: "SESSION_NOT_FOUND" });
+      }
+
+      const invalidId = readSessionArtifacts(projectDir, "ses_../escape");
+
+      expect(invalidId.ok).toBe(false);
+      if (!invalidId.ok) {
+        expect(invalidId.error).toMatchObject({ code: "SESSION_ID_INVALID" });
+      }
+
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-04-26T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      writeFileSync(ensured.value.statePath, "{invalid-json");
+      const invalidState = readSessionArtifacts(projectDir, sessionId);
+
+      expect(invalidState.ok).toBe(false);
+      if (!invalidState.ok) {
+        expect(invalidState.error).toMatchObject({
+          code: "SESSION_STATE_INVALID_JSON"
+        });
+      }
+
+      writeFileSync(
+        ensured.value.statePath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          sessionId,
+          cwd: projectDir,
+          createdAt: "2026-04-26T12:00:00.000Z",
+          updatedAt: "2026-04-26T12:00:00.000Z",
+          eventCount: 0,
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          pendingApprovalCount: 0
+        })}\n`
+      );
+      writeFileSync(ensured.value.eventsPath, "{invalid-json\n");
+      const invalidEventLog = readSessionArtifacts(projectDir, sessionId);
+
+      expect(invalidEventLog.ok).toBe(false);
+      if (!invalidEventLog.ok) {
+        expect(invalidEventLog.error).toMatchObject({
+          code: "SESSION_EVENT_LOG_INVALID_JSON"
+        });
+      }
+
+      const invalidLimit = readSessionArtifacts(projectDir, sessionId, {
+        recentEventLimit: -1
+      });
+
+      expect(invalidLimit.ok).toBe(false);
+      if (!invalidLimit.ok) {
+        expect(invalidLimit.error).toMatchObject({
+          code: "SESSION_RECENT_EVENT_LIMIT_INVALID"
+        });
+      }
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("caps recent event reads to a safe maximum", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-04-26T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const events = Array.from({ length: 105 }, (_, index) =>
+        createSessionEvent(sessionId, index + 1)
+      );
+
+      expect(store.appendEvents(sessionId, events).ok).toBe(true);
+      expect(
+        store.writeStateSnapshot({
+          schemaVersion: 1,
+          sessionId,
+          cwd: projectDir,
+          createdAt: "2026-04-26T12:00:00.000Z",
+          updatedAt: "2026-04-26T12:02:00.000Z",
+          eventCount: events.length,
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          pendingApprovalCount: 0
+        }).ok
+      ).toBe(true);
+
+      const inspected = readSessionArtifacts(projectDir, sessionId, {
+        recentEventLimit: 1_000
+      });
+
+      expect(inspected.ok).toBe(true);
+      if (!inspected.ok) {
+        return;
+      }
+
+      expect(inspected.value.persistedEventCount).toBe(105);
+      expect(inspected.value.recentEvents).toHaveLength(100);
+      expect(inspected.value.recentEvents[0]?.eventId).toBe("evt_006");
+      expect(inspected.value.recentEvents.at(-1)?.eventId).toBe("evt_105");
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }

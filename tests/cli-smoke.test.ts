@@ -438,6 +438,172 @@ describe("sprite cli smoke tests", () => {
     }
   });
 
+  it("inspects a session created by a previous one-shot task as JSON", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      writeJson(join(projectDir, ".sprite/config.json"), {
+        provider: {
+          name: "openai-compatible",
+          model: "gpt-5.4"
+        },
+        output: { format: "text" }
+      });
+
+      const created = spawnSync(
+        "node",
+        [
+          cliPath,
+          "--print",
+          "inspect this persisted session",
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            OPENAI_API_KEY: "sk-test-secret"
+          },
+          encoding: "utf8"
+        }
+      );
+
+      expect(created.status).toBe(0);
+      const createdOutput = parseJsonOutput(created.stdout);
+      const sessionId = String(createdOutput.sessionId);
+      const inspected = spawnSync(
+        "node",
+        [
+          cliPath,
+          "session",
+          "inspect",
+          sessionId,
+          "--output",
+          "json",
+          "--recent-events",
+          "2"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(inspected.status).toBe(0);
+      expect(inspected.stdout).not.toContain("sk-test-secret");
+
+      const output = parseJsonOutput(inspected.stdout);
+
+      expect(output).toMatchObject({
+        sessionId,
+        cwd: realpathSync(projectDir),
+        schemaVersion: 1,
+        eventCount: 3,
+        persistedEventCount: 3,
+        latestTask: {
+          status: "max-iterations",
+          currentPhase: "act",
+          goal: "inspect this persisted session"
+        },
+        executionState: {
+          kind: "terminal"
+        },
+        pendingApprovalCount: 0
+      });
+      expect(output.recentEvents).toHaveLength(2);
+      expect(output.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining(".sprite/sessions")])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders session inspection text with required fields", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const created = spawnSync(
+        "node",
+        [cliPath, "--print", "inspect text output", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(created.status).toBe(0);
+      const sessionId = String(parseJsonOutput(created.stdout).sessionId);
+      const inspected = spawnSync(
+        "node",
+        [cliPath, "session", "inspect", sessionId, "--recent-events", "2"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(inspected.status).toBe(0);
+      expect(inspected.stdout).toContain("Session state:");
+      expect(inspected.stdout).toContain(`- session id: ${sessionId}`);
+      expect(inspected.stdout).toContain(`- cwd: ${realpathSync(projectDir)}`);
+      expect(inspected.stdout).toContain("- goal: inspect text output");
+      expect(inspected.stdout).toContain("- status: max-iterations");
+      expect(inspected.stdout).toContain("- execution state: terminal");
+      expect(inspected.stdout).toContain("Latest plan:");
+      expect(inspected.stdout).toContain("Recent events:");
+      expect(inspected.stdout).toContain("Files read:");
+      expect(inspected.stdout).toContain("Files changed:");
+      expect(inspected.stdout).toContain("Files proposed for change:");
+      expect(inspected.stdout).toContain("Commands run:");
+      expect(inspected.stdout).toContain("- pending approvals: 0");
+      expect(inspected.stdout).toContain("Last error:");
+      expect(inspected.stdout).toContain("Next step:");
+      expect(inspected.stdout).toContain("Warnings:");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails session inspection for invalid or missing sessions without creating artifacts", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const invalid = spawnSync(
+        "node",
+        [cliPath, "session", "inspect", "not-a-session"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain("Session ID must use the ses_ prefix");
+
+      const missing = spawnSync(
+        "node",
+        [cliPath, "session", "inspect", "ses_missing"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain("does not exist");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("survives malformed config files and reports a warning", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync
+} from "node:fs";
 import path from "node:path";
 import { SpriteError, err, type Result } from "@sprite/shared";
 
@@ -18,17 +24,28 @@ export const SESSION_SNAPSHOT_RUNTIME_PHASES = [
   "act",
   "observe"
 ] as const;
+export const SESSION_SNAPSHOT_PLAN_STEP_STATUSES = [
+  "completed",
+  "pending"
+] as const;
+export const DEFAULT_SESSION_RECENT_EVENT_LIMIT = 20;
+export const MAX_SESSION_RECENT_EVENT_LIMIT = 100;
 const SESSION_SNAPSHOT_TASK_STATUS_SET: ReadonlySet<string> = new Set(
   SESSION_SNAPSHOT_TASK_STATUSES
 );
 const SESSION_SNAPSHOT_RUNTIME_PHASE_SET: ReadonlySet<string> = new Set(
   SESSION_SNAPSHOT_RUNTIME_PHASES
 );
+const SESSION_SNAPSHOT_PLAN_STEP_STATUS_SET: ReadonlySet<string> = new Set(
+  SESSION_SNAPSHOT_PLAN_STEP_STATUSES
+);
 
 export type SessionSnapshotTaskStatus =
   (typeof SESSION_SNAPSHOT_TASK_STATUSES)[number];
 export type SessionSnapshotRuntimePhase =
   (typeof SESSION_SNAPSHOT_RUNTIME_PHASES)[number];
+export type SessionSnapshotPlanStepStatus =
+  (typeof SESSION_SNAPSHOT_PLAN_STEP_STATUSES)[number];
 
 export interface SessionArtifactPaths {
   rootDir: string;
@@ -45,6 +62,12 @@ export interface SessionEventRecord {
   type: string;
   createdAt: string;
   payload: object;
+}
+
+export interface SessionSnapshotPlanStep {
+  phase: SessionSnapshotRuntimePhase;
+  status: SessionSnapshotPlanStepStatus;
+  summary: string;
 }
 
 export interface SessionStateSnapshot {
@@ -66,9 +89,21 @@ export interface SessionStateSnapshot {
     status: SessionSnapshotTaskStatus;
     currentPhase: SessionSnapshotRuntimePhase;
     goal: string;
+    latestPlan?: SessionSnapshotPlanStep[];
   };
   nextStep?: string;
   pendingApprovalCount: number;
+}
+
+export interface ReadSessionArtifactsOptions {
+  recentEventLimit?: number;
+}
+
+export interface ReadSessionArtifactsResult {
+  paths: SessionArtifactPaths;
+  persistedEventCount: number;
+  recentEvents: SessionEventRecord[];
+  state: SessionStateSnapshot;
 }
 
 export interface SessionStore {
@@ -279,6 +314,80 @@ export function resolveSessionArtifactPaths(
   };
 }
 
+export function readSessionArtifacts(
+  cwd: string,
+  sessionId: string,
+  options: ReadSessionArtifactsOptions = {}
+): Result<ReadSessionArtifactsResult, SpriteError> {
+  const eventLimit = normalizeRecentEventLimit(options.recentEventLimit);
+
+  if (!eventLimit.ok) {
+    return err(eventLimit.error);
+  }
+
+  const paths = resolveSessionArtifactPaths(cwd, sessionId);
+
+  if (!paths.ok) {
+    return paths;
+  }
+
+  if (!existsSync(paths.value.rootDir)) {
+    return err(
+      new SpriteError(
+        "SESSION_NOT_FOUND",
+        `Session ${sessionId} does not exist under the project-local session root.`
+      )
+    );
+  }
+
+  if (!existsSync(paths.value.statePath)) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_MISSING",
+        `Session ${sessionId} is missing state.json.`
+      )
+    );
+  }
+
+  if (!existsSync(paths.value.eventsPath)) {
+    return err(
+      new SpriteError(
+        "SESSION_EVENTS_MISSING",
+        `Session ${sessionId} is missing events.ndjson.`
+      )
+    );
+  }
+
+  const state = readSessionStateSnapshot(paths.value.statePath);
+
+  if (!state.ok) {
+    return err(state.error);
+  }
+
+  if (state.value.sessionId !== sessionId) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_SCOPE_MISMATCH",
+        "Session state sessionId must match the requested session."
+      )
+    );
+  }
+
+  const events = readSessionEventLog(paths.value.eventsPath, sessionId);
+
+  if (!events.ok) {
+    return err(events.error);
+  }
+
+  return okSession({
+    paths: { ...paths.value },
+    persistedEventCount: events.value.length,
+    recentEvents:
+      eventLimit.value === 0 ? [] : events.value.slice(-eventLimit.value),
+    state: state.value
+  });
+}
+
 function toSessionStorageError(code: string, error: unknown): SpriteError {
   if (error instanceof SpriteError) {
     return error;
@@ -298,14 +407,236 @@ function normalizeSessionStateSnapshot(
   };
 }
 
-function validateSessionStateSnapshot(
-  snapshot: SessionStateSnapshot
-): Result<void, SpriteError> {
-  if (snapshot.latestTask === undefined) {
-    return { ok: true, value: undefined };
+function readSessionStateSnapshot(
+  statePath: string
+): Result<SessionStateSnapshot, SpriteError> {
+  let raw: string;
+
+  try {
+    raw = readFileSync(statePath, "utf8");
+  } catch (error: unknown) {
+    return err(toSessionStorageError("SESSION_STATE_READ_FAILED", error));
   }
 
-  if (!SESSION_SNAPSHOT_TASK_STATUS_SET.has(snapshot.latestTask.status)) {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error: unknown) {
+    return err(toSessionStorageError("SESSION_STATE_INVALID_JSON", error));
+  }
+
+  const validation = validateSessionStateSnapshot(parsed);
+
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  return okSession(validation.value);
+}
+
+function readSessionEventLog(
+  eventsPath: string,
+  sessionId: string
+): Result<SessionEventRecord[], SpriteError> {
+  let raw: string;
+
+  try {
+    raw = readFileSync(eventsPath, "utf8");
+  } catch (error: unknown) {
+    return err(toSessionStorageError("SESSION_EVENTS_READ_FAILED", error));
+  }
+
+  const trimmed = raw.trimEnd();
+
+  if (trimmed.length === 0) {
+    return okSession([]);
+  }
+
+  const events: SessionEventRecord[] = [];
+  const lines = trimmed.split(/\r?\n/u);
+
+  for (const [index, line] of lines.entries()) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+
+    let parsed: unknown;
+
+    try {
+      parsed = JSON.parse(line) as unknown;
+    } catch {
+      return err(
+        new SpriteError(
+          "SESSION_EVENT_LOG_INVALID_JSON",
+          `Session event log line ${index + 1} is not valid JSON.`
+        )
+      );
+    }
+
+    const validation = validateSessionEventRecord(sessionId, parsed);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+
+    events.push(validation.value);
+  }
+
+  return okSession(events);
+}
+
+function normalizeRecentEventLimit(
+  recentEventLimit: number | undefined
+): Result<number, SpriteError> {
+  if (recentEventLimit === undefined) {
+    return okSession(DEFAULT_SESSION_RECENT_EVENT_LIMIT);
+  }
+
+  if (
+    !Number.isInteger(recentEventLimit) ||
+    !Number.isFinite(recentEventLimit) ||
+    recentEventLimit < 0
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_RECENT_EVENT_LIMIT_INVALID",
+        "Session recent event limit must be a non-negative integer."
+      )
+    );
+  }
+
+  return okSession(Math.min(recentEventLimit, MAX_SESSION_RECENT_EVENT_LIMIT));
+}
+
+function validateSessionStateSnapshot(
+  snapshot: unknown
+): Result<SessionStateSnapshot, SpriteError> {
+  if (!isPlainRecord(snapshot)) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session state snapshot must be a plain object."
+      )
+    );
+  }
+
+  if (snapshot.schemaVersion !== SESSION_STATE_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session state snapshot schemaVersion is not supported."
+      )
+    );
+  }
+
+  for (const field of ["sessionId", "cwd", "createdAt", "updatedAt"] as const) {
+    if (typeof snapshot[field] !== "string" || snapshot[field].length === 0) {
+      return err(
+        new SpriteError(
+          "SESSION_STATE_INVALID",
+          `Session state snapshot ${field} must be a non-empty string.`
+        )
+      );
+    }
+  }
+
+  const snapshotSessionId = snapshot.sessionId;
+
+  if (
+    typeof snapshotSessionId !== "string" ||
+    !isValidSessionId(snapshotSessionId)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session state snapshot sessionId is not supported."
+      )
+    );
+  }
+
+  if (!isNonNegativeInteger(snapshot.eventCount)) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session state snapshot eventCount must be a non-negative integer."
+      )
+    );
+  }
+
+  if (!isNonNegativeInteger(snapshot.pendingApprovalCount)) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session state snapshot pendingApprovalCount must be a non-negative integer."
+      )
+    );
+  }
+
+  for (const field of [
+    "filesChanged",
+    "filesProposedForChange",
+    "filesRead"
+  ] as const) {
+    if (!isStringArray(snapshot[field])) {
+      return err(
+        new SpriteError(
+          "SESSION_STATE_INVALID",
+          `Session state snapshot ${field} must be an array of strings.`
+        )
+      );
+    }
+  }
+
+  for (const field of [
+    "lastError",
+    "lastEventId",
+    "lastEventType",
+    "nextStep"
+  ] as const) {
+    if (snapshot[field] !== undefined && typeof snapshot[field] !== "string") {
+      return err(
+        new SpriteError(
+          "SESSION_STATE_INVALID",
+          `Session state snapshot ${field} must be a string when provided.`
+        )
+      );
+    }
+  }
+
+  if (snapshot.latestTask === undefined) {
+    return okSession(snapshot as unknown as SessionStateSnapshot);
+  }
+
+  if (!isPlainRecord(snapshot.latestTask)) {
+    return err(
+      new SpriteError(
+        "SESSION_STATE_INVALID",
+        "Session snapshot latestTask must be a plain object."
+      )
+    );
+  }
+
+  for (const field of ["taskId", "correlationId", "goal"] as const) {
+    if (
+      typeof snapshot.latestTask[field] !== "string" ||
+      snapshot.latestTask[field].length === 0
+    ) {
+      return err(
+        new SpriteError(
+          "SESSION_STATE_INVALID",
+          `Session snapshot latestTask.${field} must be a non-empty string.`
+        )
+      );
+    }
+  }
+
+  const latestTask = snapshot.latestTask;
+
+  if (
+    typeof latestTask.status !== "string" ||
+    !SESSION_SNAPSHOT_TASK_STATUS_SET.has(latestTask.status)
+  ) {
     return err(
       new SpriteError(
         "SESSION_STATE_INVALID",
@@ -315,7 +646,8 @@ function validateSessionStateSnapshot(
   }
 
   if (
-    !SESSION_SNAPSHOT_RUNTIME_PHASE_SET.has(snapshot.latestTask.currentPhase)
+    typeof latestTask.currentPhase !== "string" ||
+    !SESSION_SNAPSHOT_RUNTIME_PHASE_SET.has(latestTask.currentPhase)
   ) {
     return err(
       new SpriteError(
@@ -325,13 +657,77 @@ function validateSessionStateSnapshot(
     );
   }
 
-  return { ok: true, value: undefined };
+  if (latestTask.latestPlan !== undefined) {
+    if (!Array.isArray(latestTask.latestPlan)) {
+      return err(
+        new SpriteError(
+          "SESSION_STATE_INVALID",
+          "Session snapshot latestTask.latestPlan must be an array when provided."
+        )
+      );
+    }
+
+    for (const step of latestTask.latestPlan) {
+      if (!isPlainRecord(step)) {
+        return err(
+          new SpriteError(
+            "SESSION_STATE_INVALID",
+            "Session snapshot latestPlan entries must be plain objects."
+          )
+        );
+      }
+
+      if (
+        typeof step.phase !== "string" ||
+        !SESSION_SNAPSHOT_RUNTIME_PHASE_SET.has(step.phase)
+      ) {
+        return err(
+          new SpriteError(
+            "SESSION_STATE_INVALID",
+            "Session snapshot latestPlan phase is not supported."
+          )
+        );
+      }
+
+      if (
+        typeof step.status !== "string" ||
+        !SESSION_SNAPSHOT_PLAN_STEP_STATUS_SET.has(step.status)
+      ) {
+        return err(
+          new SpriteError(
+            "SESSION_STATE_INVALID",
+            "Session snapshot latestPlan status is not supported."
+          )
+        );
+      }
+
+      if (typeof step.summary !== "string" || step.summary.length === 0) {
+        return err(
+          new SpriteError(
+            "SESSION_STATE_INVALID",
+            "Session snapshot latestPlan summary must be a non-empty string."
+          )
+        );
+      }
+    }
+  }
+
+  return okSession(snapshot as unknown as SessionStateSnapshot);
 }
 
 function validateSessionEventRecord(
   sessionId: string,
-  event: SessionEventRecord
-): Result<void, SpriteError> {
+  event: unknown
+): Result<SessionEventRecord, SpriteError> {
+  if (!isPlainRecord(event)) {
+    return err(
+      new SpriteError(
+        "SESSION_EVENT_INVALID",
+        "Session event records must be plain objects."
+      )
+    );
+  }
+
   if (event.schemaVersion !== SESSION_STATE_SCHEMA_VERSION) {
     return err(
       new SpriteError(
@@ -376,7 +772,7 @@ function validateSessionEventRecord(
     );
   }
 
-  return { ok: true, value: undefined };
+  return okSession(event as unknown as SessionEventRecord);
 }
 
 function isPlainPayloadObject(value: unknown): value is object {
@@ -384,7 +780,30 @@ function isPlainPayloadObject(value: unknown): value is object {
     return false;
   }
 
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = Object.getPrototypeOf(value as object);
 
   return prototype === Object.prototype || prototype === null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return isPlainPayloadObject(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    Number.isFinite(value) &&
+    value >= 0
+  );
+}
+
+function okSession<T>(value: T): Result<T, SpriteError> {
+  return { ok: true, value };
 }

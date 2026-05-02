@@ -2282,7 +2282,12 @@ export class AgentRuntime {
         correlationId: task.correlationId,
         status: task.status,
         currentPhase: task.currentPhase,
-        goal: createRedactedPreview(task.request.task, 240)
+        goal: createRedactedPreview(task.request.task, 240),
+        latestPlan: task.steps.map((step) => ({
+          phase: step.phase,
+          status: step.status,
+          summary: createRedactedPreview(step.summary, 240)
+        }))
       },
       ...summarizeSnapshotNextStep(task),
       pendingApprovalCount: this.countPendingApprovalsForTask(task.taskId)

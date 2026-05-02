@@ -3,11 +3,13 @@
 import {
   createBootstrapMessage,
   createInteractiveTaskMessage,
+  inspectSessionState,
   resolveOneShotPrintOutputFormat,
   runOneShotPrintTask,
   type FinalTaskSummary,
   type OneShotPrintOutputFormat,
-  type OneShotPrintTaskResult
+  type OneShotPrintTaskResult,
+  type SessionInspectionView
 } from "@sprite/core";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
@@ -26,6 +28,9 @@ function writeMessage(io: CliIO, message: string): void {
 }
 
 const OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
+const SESSION_INSPECT_OUTPUT_FORMATS = ["text", "json"] as const;
+type SessionInspectOutputFormat =
+  (typeof SESSION_INSPECT_OUTPUT_FORMATS)[number];
 
 function parseOutputFormat(
   value: string | undefined
@@ -41,6 +46,40 @@ function parseOutputFormat(
   }
 
   return value as OneShotPrintOutputFormat;
+}
+
+function parseSessionInspectOutputFormat(
+  value: string | undefined
+): SessionInspectOutputFormat {
+  if (value === undefined) {
+    return "text";
+  }
+
+  if (
+    !SESSION_INSPECT_OUTPUT_FORMATS.includes(
+      value as SessionInspectOutputFormat
+    )
+  ) {
+    throw new Error(
+      `Session inspect output format must be one of: ${SESSION_INSPECT_OUTPUT_FORMATS.join(", ")}.`
+    );
+  }
+
+  return value as SessionInspectOutputFormat;
+}
+
+function parseRecentEventLimit(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || !Number.isFinite(parsed)) {
+    throw new Error("Recent events must be a non-negative integer.");
+  }
+
+  return parsed;
 }
 
 function renderOneShotText(result: OneShotPrintTaskResult): string {
@@ -87,6 +126,82 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
 
 function renderOneShotJson(result: OneShotPrintTaskResult): string {
   return JSON.stringify(result, null, 2);
+}
+
+function renderSessionInspectionJson(view: SessionInspectionView): string {
+  return JSON.stringify(view, null, 2);
+}
+
+function renderSessionInspectionText(view: SessionInspectionView): string {
+  const latestTask = view.latestTask;
+  const latestTaskLines =
+    latestTask === undefined
+      ? [
+          "- task id: none",
+          "- correlation id: none",
+          "- goal: none",
+          "- status: unknown",
+          "- current phase: unknown"
+        ]
+      : [
+          `- task id: ${latestTask.taskId}`,
+          `- correlation id: ${latestTask.correlationId}`,
+          `- goal: ${latestTask.goal}`,
+          `- status: ${latestTask.status}`,
+          `- current phase: ${latestTask.currentPhase}`
+        ];
+  const latestPlanLines =
+    latestTask?.latestPlan === undefined || latestTask.latestPlan.length === 0
+      ? ["- none"]
+      : latestTask.latestPlan.map(
+          (step, index) =>
+            `${index + 1}. [${step.phase}] ${step.status} - ${step.summary}`
+        );
+  const eventLines =
+    view.recentEvents.length === 0
+      ? ["- none"]
+      : view.recentEvents.map(
+          (event, index) =>
+            `${index + 1}. ${event.type} (${event.eventId}) - ${event.summary}`
+        );
+  const commandLines =
+    view.commandsRun.length === 0
+      ? ["- none"]
+      : view.commandsRun.map((command) => `- ${command}`);
+  const warningLines =
+    view.warnings.length === 0
+      ? ["- none"]
+      : view.warnings.map((warning) => `- ${warning}`);
+
+  return [
+    "Session state:",
+    `- session id: ${view.sessionId}`,
+    `- cwd: ${view.cwd}`,
+    `- schema version: ${view.schemaVersion}`,
+    `- event count: ${view.eventCount}`,
+    `- persisted event count: ${view.persistedEventCount}`,
+    ...latestTaskLines,
+    `- execution state: ${view.executionState.kind} - ${view.executionState.detail}`,
+    "Latest plan:",
+    ...latestPlanLines,
+    "Recent events:",
+    ...eventLines,
+    "Files read:",
+    ...formatPathList(view.filesRead),
+    "Files changed:",
+    ...formatPathList(view.filesChanged),
+    "Files proposed for change:",
+    ...formatPathList(view.filesProposedForChange),
+    "Commands run:",
+    ...commandLines,
+    `- pending approvals: ${view.pendingApprovalCount}`,
+    "Last error:",
+    view.lastError === undefined ? "- none" : `- ${view.lastError}`,
+    "Next step:",
+    view.nextStep === undefined ? "- none" : `- ${view.nextStep}`,
+    "Warnings:",
+    ...warningLines
+  ].join("\n");
 }
 
 function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
@@ -207,6 +322,47 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         })
       );
     });
+
+  program
+    .command("session")
+    .description("inspect local session state")
+    .command("inspect <sessionId>")
+    .description("inspect a project-local session without resuming it")
+    .option("--output <format>", "print output format: text or json")
+    .option("--recent-events <n>", "number of recent events to include")
+    .action(
+      (
+        sessionId: string,
+        options: {
+          output?: string;
+          recentEvents?: string;
+        },
+        command: Command
+      ) => {
+        const optionValues = command.optsWithGlobals<{
+          output?: string;
+          recentEvents?: string;
+        }>();
+        const outputFormat = parseSessionInspectOutputFormat(
+          options.output ?? optionValues.output
+        );
+        const recentEventLimit = parseRecentEventLimit(options.recentEvents);
+        const inspected = inspectSessionState(process.cwd(), sessionId, {
+          recentEventLimit
+        });
+
+        if (!inspected.ok) {
+          throw inspected.error;
+        }
+
+        writeMessage(
+          io,
+          outputFormat === "json"
+            ? renderSessionInspectionJson(inspected.value)
+            : renderSessionInspectionText(inspected.value)
+        );
+      }
+    );
 
   program.configureOutput({
     writeOut: (value) => io.stdout.write(value),

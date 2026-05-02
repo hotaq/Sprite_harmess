@@ -220,6 +220,33 @@ recoverable snapshot for future inspection/resume stories. This slice does not
 implement session listing, resume, project context loading, context assembly,
 or compaction.
 
+## Local Session Inspection
+
+Story 3.2 adds a read-only inspection slice for existing project-local sessions.
+`sprite session inspect <session-id>` reads the current cwd's
+`.sprite/sessions/<session-id>/state.json` and `events.ndjson` without creating,
+resuming, or mutating session artifacts.
+
+Inspection output supports text and JSON formats:
+
+```bash
+sprite session inspect ses_example --output text --recent-events 20
+sprite session inspect ses_example --output json --recent-events 20
+```
+
+The adapter-facing view includes session ID, cwd, task goal, latest bounded plan
+summary, waiting or terminal state, recent event summaries, files read/changed
+or proposed for change, command metadata summaries, pending approval count, last
+error, next-step hint, parsed event count, and warnings. Displayed strings are
+redacted through the shared secret-like value helpers, and the CLI preserves the
+warning that `.sprite/sessions` artifacts are local private state that should
+not be committed or treated as portable across machines.
+
+The event log remains the audit evidence and `state.json` remains a bounded
+recoverable snapshot. This slice does not implement resume, session listing,
+project context loading, context assembly, TUI/RPC inspection screens, or
+compaction.
+
 ## Sandboxed Command Execution
 
 Story 2.5 adds sandboxed command execution for runtime/package API use through
@@ -375,5 +402,5 @@ Not implemented yet:
 - Full multi-iteration agent loop progression
 - TUI
 - RPC server
-- Session inspection/resume/context/compaction flows
+- Session resume/context/compaction flows
 - Durable memory persistence and skills

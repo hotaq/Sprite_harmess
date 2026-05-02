@@ -70,6 +70,9 @@ Current runtime/package API capabilities include:
 - inspectable safety rules before content becomes a memory candidate
 - project-local session artifacts with `ses_...` IDs, append-only
   `events.ndjson`, and bounded `state.json` snapshots
+- read-only `sprite session inspect <session-id>` output with bounded recent
+  events, file activity, command summaries, pending approvals, last error,
+  next-step hints, local-state warnings, and secret redaction
 
 ## Current Limitations
 
@@ -79,6 +82,6 @@ Not implemented yet:
 - full multi-iteration agent loop progression
 - TUI
 - RPC server
-- session inspection, resume, context loading, and compaction
+- session resume, context loading, and compaction
 - durable memory persistence and skills
 - CLI/TUI/RPC approval prompts

@@ -1,6 +1,6 @@
 # Story 3.2: Inspect Basic Session State
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,41 +17,41 @@ so that I know what task is active, what happened, and what can be resumed.
 
 ## Tasks / Subtasks
 
-- [ ] Add read-only session inspection primitives to `@sprite/storage` (AC: 1, 2)
-  - [ ] Add APIs that read existing `.sprite/sessions/<session-id>/state.json` and `events.ndjson` without creating or mutating session artifacts.
-  - [ ] Reuse `resolveSessionArtifactPaths()` and `isValidSessionId()` so inspection cannot escape the project-local `.sprite/sessions` root.
-  - [ ] Return structured `SpriteError` values for missing sessions, unreadable `state.json`, unreadable `events.ndjson`, invalid JSON, malformed NDJSON lines, and unsupported snapshot schema.
-  - [ ] Keep `SessionStateSnapshot` as a persisted schema contract; do not deserialize into `PlannedExecutionFlow` or imply resume support.
-  - [ ] Add bounded recent-event reading options: default to the latest 20 events, reject negative limits, and cap user-provided limits to a safe maximum such as 100.
-- [ ] Extend bounded session snapshots only as needed for inspection (AC: 1)
-  - [ ] Add a safe latest-plan snapshot field if needed to satisfy “latest plan”; use bounded summaries from `PlannedExecutionFlow.steps` instead of serializing the full flow.
-  - [ ] Preserve current snapshot fields: `sessionId`, `cwd`, `latestTask`, `eventCount`, `lastEventId`, `lastEventType`, `filesRead`, `filesChanged`, `filesProposedForChange`, `pendingApprovalCount`, `lastError`, and `nextStep`.
-  - [ ] Keep `state.json` recoverable but not authoritative: inspection should include enough event-log evidence to show when `state.eventCount` and `events.ndjson` line count disagree.
-  - [ ] Maintain the storage-owned snapshot status/phase literal contracts introduced in Story 3.1; do not import core task-state types into storage.
-- [ ] Build a core-level session inspection view for adapters (AC: 1, 2)
-  - [ ] Add an adapter-friendly inspection result shape in `packages/core` that combines snapshot metadata with recent safe event summaries.
-  - [ ] Derive commands run from safe runtime event metadata only (`tool.call.*`, `validation.*`, policy/approval summaries where applicable); never read or expose raw command output, patch bodies, env values, or full tool results.
-  - [ ] Derive terminal/waiting state from `latestTask.status`, `lastEventType`, and safe event payload summaries; do not restore active runtime state.
-  - [ ] Include project-local portability warnings: session artifacts are local private state under the current cwd and are not safe to commit/share.
-  - [ ] Redact all user-facing strings with existing shared redaction helpers before rendering or returning adapter-facing display strings.
-- [ ] Add CLI session inspection command while keeping the adapter thin (AC: 1, 2)
-  - [ ] Add a minimal command such as `sprite session inspect <session-id>` that calls the core inspection API.
-  - [ ] Support `--output text|json` for the inspect command; keep NDJSON streaming scoped to task execution unless explicitly needed.
-  - [ ] Support `--recent-events <n>` for bounded recent event display.
-  - [ ] Text output must be scannable and include session ID, cwd, goal, status, current phase/latest plan, waiting/terminal information, recent events, files read/changed/proposed, commands run, pending approvals, last error, next step, and warnings when available.
-  - [ ] JSON output must expose the same bounded/redacted view with camelCase fields and no raw event payload dumps.
-  - [ ] Missing or invalid sessions should exit non-zero with a structured, human-readable error; do not create a new session while inspecting.
-- [ ] Preserve safety and privacy boundaries (AC: 2)
-  - [ ] Apply `redactSecretLikeValues()` / `createRedactedPreview()` to displayed strings such as task goal, plan summaries, event summaries, command summaries, last error, next step, and warning text.
-  - [ ] Add tests with secret-looking task goals or event summaries (`OPENAI_API_KEY=...`, `sk-...`, private-key-looking text) proving inspect output redacts them.
-  - [ ] Do not display raw `events.ndjson` lines or full payload objects; render only an allowlisted summary per event type.
-  - [ ] Do not add persistence dependencies or a database.
-- [ ] Update tests and documentation (AC: 1, 2)
-  - [ ] Add storage tests for read-only inspection from temp directories, missing sessions, invalid state JSON, invalid NDJSON, event ordering, recent-event limits, and state/event-count drift warnings.
-  - [ ] Add core/CLI tests proving `sprite session inspect <session-id>` can inspect a session created by a previous CLI one-shot run in a temp cwd.
-  - [ ] Add text and JSON output tests for redaction and for all required display fields.
-  - [ ] Update README/progress only for implemented inspection behavior; do not claim resume, compaction, TUI, JSON-RPC, or project-context loading.
-  - [ ] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`/`rtk gitnexus analyze` fallback before marking review-ready.
+- [x] Add read-only session inspection primitives to `@sprite/storage` (AC: 1, 2)
+  - [x] Add APIs that read existing `.sprite/sessions/<session-id>/state.json` and `events.ndjson` without creating or mutating session artifacts.
+  - [x] Reuse `resolveSessionArtifactPaths()` and `isValidSessionId()` so inspection cannot escape the project-local `.sprite/sessions` root.
+  - [x] Return structured `SpriteError` values for missing sessions, unreadable `state.json`, unreadable `events.ndjson`, invalid JSON, malformed NDJSON lines, and unsupported snapshot schema.
+  - [x] Keep `SessionStateSnapshot` as a persisted schema contract; do not deserialize into `PlannedExecutionFlow` or imply resume support.
+  - [x] Add bounded recent-event reading options: default to the latest 20 events, reject negative limits, and cap user-provided limits to a safe maximum such as 100.
+- [x] Extend bounded session snapshots only as needed for inspection (AC: 1)
+  - [x] Add a safe latest-plan snapshot field if needed to satisfy “latest plan”; use bounded summaries from `PlannedExecutionFlow.steps` instead of serializing the full flow.
+  - [x] Preserve current snapshot fields: `sessionId`, `cwd`, `latestTask`, `eventCount`, `lastEventId`, `lastEventType`, `filesRead`, `filesChanged`, `filesProposedForChange`, `pendingApprovalCount`, `lastError`, and `nextStep`.
+  - [x] Keep `state.json` recoverable but not authoritative: inspection should include enough event-log evidence to show when `state.eventCount` and `events.ndjson` line count disagree.
+  - [x] Maintain the storage-owned snapshot status/phase literal contracts introduced in Story 3.1; do not import core task-state types into storage.
+- [x] Build a core-level session inspection view for adapters (AC: 1, 2)
+  - [x] Add an adapter-friendly inspection result shape in `packages/core` that combines snapshot metadata with recent safe event summaries.
+  - [x] Derive commands run from safe runtime event metadata only (`tool.call.*`, `validation.*`, policy/approval summaries where applicable); never read or expose raw command output, patch bodies, env values, or full tool results.
+  - [x] Derive terminal/waiting state from `latestTask.status`, `lastEventType`, and safe event payload summaries; do not restore active runtime state.
+  - [x] Include project-local portability warnings: session artifacts are local private state under the current cwd and are not safe to commit/share.
+  - [x] Redact all user-facing strings with existing shared redaction helpers before rendering or returning adapter-facing display strings.
+- [x] Add CLI session inspection command while keeping the adapter thin (AC: 1, 2)
+  - [x] Add a minimal command such as `sprite session inspect <session-id>` that calls the core inspection API.
+  - [x] Support `--output text|json` for the inspect command; keep NDJSON streaming scoped to task execution unless explicitly needed.
+  - [x] Support `--recent-events <n>` for bounded recent event display.
+  - [x] Text output must be scannable and include session ID, cwd, goal, status, current phase/latest plan, waiting/terminal information, recent events, files read/changed/proposed, commands run, pending approvals, last error, next step, and warnings when available.
+  - [x] JSON output must expose the same bounded/redacted view with camelCase fields and no raw event payload dumps.
+  - [x] Missing or invalid sessions should exit non-zero with a structured, human-readable error; do not create a new session while inspecting.
+- [x] Preserve safety and privacy boundaries (AC: 2)
+  - [x] Apply `redactSecretLikeValues()` / `createRedactedPreview()` to displayed strings such as task goal, plan summaries, event summaries, command summaries, last error, next step, and warning text.
+  - [x] Add tests with secret-looking task goals or event summaries (`OPENAI_API_KEY=...`, `sk-...`, private-key-looking text) proving inspect output redacts them.
+  - [x] Do not display raw `events.ndjson` lines or full payload objects; render only an allowlisted summary per event type.
+  - [x] Do not add persistence dependencies or a database.
+- [x] Update tests and documentation (AC: 1, 2)
+  - [x] Add storage tests for read-only inspection from temp directories, missing sessions, invalid state JSON, invalid NDJSON, event ordering, recent-event limits, and state/event-count drift warnings.
+  - [x] Add core/CLI tests proving `sprite session inspect <session-id>` can inspect a session created by a previous CLI one-shot run in a temp cwd.
+  - [x] Add text and JSON output tests for redaction and for all required display fields.
+  - [x] Update README/progress only for implemented inspection behavior; do not claim resume, compaction, TUI, JSON-RPC, or project-context loading.
+  - [x] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`/`rtk gitnexus analyze` fallback before marking review-ready.
 
 ## Dev Notes
 
@@ -243,22 +243,41 @@ Codex
 - 2026-05-03: Created Story 3.2 context after Story 3.1 was marked done and pushed.
 - 2026-05-03: Loaded BMAD create-story workflow, sprint status, Epic 3 requirements, PRD FR/NFR session requirements, architecture storage/event/structure sections, Epic 2 retrospective safety notes, Story 3.1 implementation learnings, and recent commits.
 - 2026-05-03: Live temp-workspace validation before story creation passed for one-shot JSON and NDJSON session persistence (`task.started`, `task.waiting`, `task.failed`) with canonical `ses_` ID and persisted `state.json`.
+- 2026-05-03: Ran GitNexus impact before code edits: `SessionStateSnapshot` LOW, `LocalSessionStore` LOW, `createProgram` LOW, `AgentRuntime` CRITICAL. Runtime edits were limited to backward-compatible `latestPlan` snapshot summaries.
+- 2026-05-03: RED phase added storage/core/CLI inspection tests; failures confirmed missing `readSessionArtifacts`, `inspectSessionState`, and `sprite session inspect` behavior.
+- 2026-05-03: GREEN/REFACTOR implemented read-only session artifact inspection, redacted adapter-facing core view, CLI text/JSON rendering, latest-plan snapshot persistence, and progress documentation updates.
+- 2026-05-03: GitNexus `detect_changes`/`detect-changes` remains unavailable in this local CLI; used `rtk gitnexus analyze`, `rtk gitnexus status`, scoped diffs, and full validation as fallback evidence.
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created.
-- Story 3.2 is ready for dev-story implementation and should be treated as read-only inspection work, not resume.
+- Added read-only storage inspection via `readSessionArtifacts()` with safe session ID/path resolution, missing/invalid artifact errors, bounded recent-event reads, and event-count evidence.
+- Added `latestTask.latestPlan` snapshot summaries from runtime plan steps without serializing the full `PlannedExecutionFlow`.
+- Added `inspectSessionState()` in core to compose redacted adapter-facing session views from `state.json` plus validated recent runtime events.
+- Added `sprite session inspect <session-id>` with `--output text|json` and `--recent-events <n>` while keeping CLI rendering thin.
+- Added storage, core, and CLI tests for read-only inspection, error handling, redaction, JSON/text output, one-shot-created sessions, and non-mutating behavior.
+- Updated README/progress documentation only for implemented inspection behavior; resume, context loading, TUI/RPC, and compaction remain out of scope.
 
 ### File List
 
+- `README.md`
+- `progress.md`
 - `_bmad-output/implementation-artifacts/3-2-inspect-basic-session-state.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/cli/src/index.ts`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/index.ts`
+- `packages/core/src/session-inspection.ts`
+- `packages/storage/src/session-store.ts`
+- `tests/cli-smoke.test.ts`
+- `tests/session-inspection.test.ts`
+- `tests/session-store.test.ts`
 
 ## Change Log
 
-| Date       | Version | Description                               | Author |
-| ---------- | ------- | ----------------------------------------- | ------ |
-| 2026-05-03 | 0.1     | Created Story 3.2 implementation context. | Codex  |
+| Date       | Version | Description                                                 | Author |
+| ---------- | ------- | ----------------------------------------------------------- | ------ |
+| 2026-05-03 | 0.2     | Implemented read-only session inspection and CLI rendering. | Codex  |
+| 2026-05-03 | 0.1     | Created Story 3.2 implementation context.                   | Codex  |
 
 ## QA Results
 
