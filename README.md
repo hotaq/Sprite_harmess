@@ -73,6 +73,10 @@ Current runtime/package API capabilities include:
 - read-only `sprite session inspect <session-id>` output with bounded recent
   events, file activity, command summaries, pending approvals, last error,
   next-step hints, local-state warnings, and secret redaction
+- conservative `sprite resume <session-id>` output that restores persisted task
+  state, validates event history, emits a metadata-only `session.resumed`
+  event, and does not replay tools, commands, approvals, validations, or
+  provider calls
 
 ## Current Limitations
 
@@ -82,6 +86,6 @@ Not implemented yet:
 - full multi-iteration agent loop progression
 - TUI
 - RPC server
-- session resume, context loading, and compaction
+- context loading and compaction
 - durable memory persistence and skills
 - CLI/TUI/RPC approval prompts

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { validateRuntimeEvent } from "@sprite/core";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -599,6 +600,138 @@ describe("sprite cli smoke tests", () => {
 
       expect(missing.status).toBe(1);
       expect(missing.stderr).toContain("does not exist");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes a previous session as JSON without leaking provider secrets", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const created = spawnSync(
+        "node",
+        [cliPath, "--print", "resume me later", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            OPENAI_API_KEY: "sk-test-secret"
+          },
+          encoding: "utf8"
+        }
+      );
+
+      expect(created.status).toBe(0);
+      const sessionId = String(parseJsonOutput(created.stdout).sessionId);
+      const resumed = spawnSync(
+        "node",
+        [cliPath, "resume", sessionId, "--output", "json"],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            OPENAI_API_KEY: "sk-test-secret"
+          },
+          encoding: "utf8"
+        }
+      );
+
+      expect(resumed.status).toBe(0);
+      expect(resumed.stdout).not.toContain("sk-test-secret");
+
+      const output = parseJsonOutput(resumed.stdout);
+
+      expect(output).toMatchObject({
+        inspection: {
+          latestTask: {
+            goal: "resume me later"
+          },
+          pendingApprovalCount: 0
+        },
+        restoredEventCount: 3,
+        sessionId,
+        status: "max-iterations"
+      });
+      expect(output.resumeEventId).toEqual(expect.stringMatching(/^evt_/));
+      expect(output.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining(".sprite/sessions")])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders resumed session text with required fields", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const created = spawnSync(
+        "node",
+        [cliPath, "--print", "resume text output", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(created.status).toBe(0);
+      const sessionId = String(parseJsonOutput(created.stdout).sessionId);
+      const resumed = spawnSync("node", [cliPath, "resume", sessionId], {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir },
+        encoding: "utf8"
+      });
+
+      expect(resumed.status).toBe(0);
+      expect(resumed.stdout).toContain("Session resumed:");
+      expect(resumed.stdout).toContain(`- session id: ${sessionId}`);
+      expect(resumed.stdout).toContain("- goal: resume text output");
+      expect(resumed.stdout).toContain("- status: max-iterations");
+      expect(resumed.stdout).toContain("- current phase: act");
+      expect(resumed.stdout).toContain("- restored event count: 3");
+      expect(resumed.stdout).toContain("- resume event id: evt_");
+      expect(resumed.stdout).toContain("Latest plan:");
+      expect(resumed.stdout).toContain("Files read:");
+      expect(resumed.stdout).toContain("Files changed:");
+      expect(resumed.stdout).toContain("Files proposed for change:");
+      expect(resumed.stdout).toContain("Commands run:");
+      expect(resumed.stdout).toContain("- pending approvals: 0");
+      expect(resumed.stdout).toContain("Last error:");
+      expect(resumed.stdout).toContain("Next step:");
+      expect(resumed.stdout).toContain("Warnings:");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails resume for invalid or missing sessions without creating artifacts", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const invalid = spawnSync("node", [cliPath, "resume", "not-a-session"], {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir },
+        encoding: "utf8"
+      });
+
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain("Session ID must use the ses_ prefix");
+
+      const missing = spawnSync("node", [cliPath, "resume", "ses_missing"], {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir },
+        encoding: "utf8"
+      });
+
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain("does not exist");
+      expect(
+        existsSync(join(projectDir, ".sprite", "sessions", "ses_missing"))
+      ).toBe(false);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

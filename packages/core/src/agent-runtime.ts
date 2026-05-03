@@ -39,7 +39,10 @@ import {
 import {
   SESSION_STATE_SCHEMA_VERSION,
   createLocalSessionStore,
-  createSessionId
+  createSessionId,
+  readSessionForResume,
+  type SessionSnapshotPlanStep,
+  type SessionStateSnapshot
 } from "@sprite/storage";
 import {
   createToolRegistry,
@@ -81,6 +84,10 @@ import {
   stopTaskForMaxIterations,
   waitForTaskInput
 } from "./runtime-loop.js";
+import {
+  inspectSessionState,
+  type SessionInspectionView
+} from "./session-inspection.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
 
 export interface BootstrapState {
@@ -119,6 +126,20 @@ export interface OneShotPrintTaskResult {
   finalSummary: FinalTaskSummary;
   warnings: string[];
   events: RuntimeEventRecord[];
+}
+
+export interface SessionResumeResult {
+  sessionId: string;
+  taskId: string;
+  correlationId: string;
+  status: PlannedExecutionFlow["status"];
+  currentPhase: PlannedExecutionFlow["currentPhase"];
+  goal: string;
+  latestPlan: SessionSnapshotPlanStep[];
+  restoredEventCount: number;
+  resumeEventId: string;
+  inspection: SessionInspectionView;
+  warnings: string[];
 }
 
 export type RuntimeToolCallRequest = {
@@ -264,6 +285,7 @@ export class AgentRuntime {
   private readonly eventBus = new RuntimeEventBus();
   private readonly emittedEventIds = new Set<string>();
   private readonly pendingApprovals = new Map<string, PendingApprovalRecord>();
+  private readonly restoredPendingApprovalCounts = new Map<string, number>();
   private readonly sessionStore = createLocalSessionStore();
   private readonly toolRegistry = createToolRegistry();
   private sessionCreatedAt: string | null = null;
@@ -337,6 +359,159 @@ export class AgentRuntime {
 
   getEventHistory(taskId?: string): RuntimeEventRecord[] {
     return this.eventBus.getHistory(taskId);
+  }
+
+  resumeSession(sessionId: string): Result<SessionResumeResult> {
+    const bootstrapState = this.getBootstrapState();
+
+    if (!bootstrapState.ok) {
+      return bootstrapState;
+    }
+
+    const sessionRead = readSessionForResume(
+      bootstrapState.value.startup.cwd,
+      sessionId
+    );
+
+    if (!sessionRead.ok) {
+      return err(sessionRead.error);
+    }
+
+    const { events, persistedEventCount, state } = sessionRead.value;
+    const latestTask = state.latestTask;
+
+    if (latestTask === undefined) {
+      return err(
+        new SpriteError(
+          "SESSION_RESUME_UNAVAILABLE",
+          "Session cannot be resumed because state.json does not contain a latest task snapshot."
+        )
+      );
+    }
+
+    const runtimeEvents: RuntimeEventRecord[] = [];
+
+    for (const event of events) {
+      const validation = validateRuntimeEvent(event);
+
+      if (!validation.ok) {
+        return err(
+          new SpriteError(
+            "SESSION_EVENT_RUNTIME_INVALID",
+            `Stored session event ${event.eventId} is not a valid runtime event: ${validation.error.message}`
+          )
+        );
+      }
+
+      runtimeEvents.push(validation.value);
+    }
+
+    const ensured = this.sessionStore.ensureSession(
+      state.sessionId,
+      state.cwd,
+      state.createdAt
+    );
+
+    if (!ensured.ok) {
+      return err(ensured.error);
+    }
+
+    this.pendingApprovals.clear();
+    this.sessionCreatedAt = state.createdAt;
+
+    for (const event of runtimeEvents) {
+      const emitted = this.eventBus.emit(event);
+
+      if (!emitted.ok) {
+        return err(emitted.error);
+      }
+
+      this.emittedEventIds.add(event.eventId);
+    }
+
+    const resumeEvent = createRuntimeEventRecord(
+      {
+        sessionId: state.sessionId,
+        taskId: latestTask.taskId,
+        correlationId: latestTask.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "session.resumed",
+      {
+        currentPhase: latestTask.currentPhase,
+        ...(state.nextStep === undefined
+          ? {}
+          : { nextStep: createRedactedPreview(state.nextStep, 240) }),
+        restoredEventCount: persistedEventCount,
+        restoredTaskStatus: latestTask.status,
+        status: "recorded",
+        summary: "Session resumed from local persisted state."
+      }
+    );
+    const validatedResumeEvent = validateRuntimeEvent(resumeEvent);
+
+    if (!validatedResumeEvent.ok) {
+      return err(validatedResumeEvent.error);
+    }
+
+    const persistedResumeEvent = this.sessionStore.appendEvents(
+      state.sessionId,
+      [validatedResumeEvent.value]
+    );
+
+    if (!persistedResumeEvent.ok) {
+      return err(persistedResumeEvent.error);
+    }
+
+    const emittedResumeEvent = this.eventBus.emit(validatedResumeEvent.value);
+
+    if (!emittedResumeEvent.ok) {
+      return err(emittedResumeEvent.error);
+    }
+
+    this.emittedEventIds.add(validatedResumeEvent.value.eventId);
+    this.restoredPendingApprovalCounts.set(
+      latestTask.taskId,
+      state.pendingApprovalCount
+    );
+
+    const resumedTask = this.createResumedTask(
+      state,
+      latestTask,
+      bootstrapState.value,
+      this.eventBus.getHistory(latestTask.taskId)
+    );
+    this.activeTask = resumedTask;
+
+    const persistedSnapshot = this.persistSessionSnapshot(resumedTask);
+
+    if (!persistedSnapshot.ok) {
+      return err(persistedSnapshot.error);
+    }
+
+    const inspection = inspectSessionState(
+      bootstrapState.value.startup.cwd,
+      state.sessionId
+    );
+
+    if (!inspection.ok) {
+      return err(inspection.error);
+    }
+
+    return ok({
+      sessionId: state.sessionId,
+      taskId: latestTask.taskId,
+      correlationId: latestTask.correlationId,
+      status: latestTask.status,
+      currentPhase: latestTask.currentPhase,
+      goal: createRedactedPreview(latestTask.goal, 240),
+      latestPlan: latestTask.latestPlan ?? [],
+      restoredEventCount: persistedEventCount,
+      resumeEventId: validatedResumeEvent.value.eventId,
+      inspection: inspection.value,
+      warnings: inspection.value.warnings
+    });
   }
 
   getPendingApprovals(taskId?: string): ApprovalRequest[] {
@@ -2229,6 +2404,139 @@ export class AgentRuntime {
     return new Date().toISOString();
   }
 
+  private createResumedTask(
+    state: SessionStateSnapshot,
+    latestTask: NonNullable<SessionStateSnapshot["latestTask"]>,
+    bootstrapState: BootstrapState,
+    events: RuntimeEventRecord[]
+  ): PlannedExecutionFlow {
+    const request = {
+      ...createTaskRequest(latestTask.goal, bootstrapState),
+      cwd: state.cwd
+    };
+    const terminalState = this.createResumedTerminalState(
+      latestTask.status,
+      state
+    );
+    const waitingState =
+      latestTask.status === "waiting-for-input"
+        ? {
+            reason: "steering-required" as const,
+            message:
+              "Session was resumed from local persisted state and is waiting for explicit steering before any further work."
+          }
+        : null;
+    const pendingApprovalWarnings =
+      state.pendingApprovalCount === 0
+        ? []
+        : [
+            "Session snapshot reports pending approvals, but original approval payloads are not replayed during resume; request a fresh decision before continuing risky work."
+          ];
+
+    return {
+      status: latestTask.status,
+      sessionId: state.sessionId,
+      taskId: latestTask.taskId,
+      correlationId: latestTask.correlationId,
+      request,
+      currentPhase: latestTask.currentPhase,
+      steps:
+        latestTask.latestPlan === undefined ||
+        latestTask.latestPlan.length === 0
+          ? [
+              {
+                phase: latestTask.currentPhase,
+                status: "pending",
+                summary:
+                  "Continue from the conservatively resumed persisted session state."
+              }
+            ]
+          : latestTask.latestPlan,
+      summary:
+        state.nextStep ??
+        "Session resumed from local persisted state without replaying tools, commands, approvals, provider calls, or validations.",
+      warnings: pendingApprovalWarnings,
+      waitingState,
+      terminalState,
+      intents: [],
+      events,
+      fileActivity: this.createResumedFileActivityRecords(state, latestTask)
+    };
+  }
+
+  private createResumedTerminalState(
+    status: PlannedExecutionFlow["status"],
+    state: SessionStateSnapshot
+  ): PlannedExecutionFlow["terminalState"] {
+    switch (status) {
+      case "cancelled":
+        return {
+          reason: "cancelled",
+          message: state.lastError ?? "Session snapshot was cancelled."
+        };
+      case "completed":
+        return {
+          reason: "completed",
+          message: state.nextStep ?? "Session snapshot was completed."
+        };
+      case "failed":
+        return {
+          reason: "unrecoverable-error",
+          message: state.lastError ?? "Session snapshot failed."
+        };
+      case "max-iterations":
+        return {
+          reason: "max-iterations",
+          message:
+            state.lastError ??
+            "Session snapshot stopped because the task reached max iterations."
+        };
+      case "planned":
+      case "waiting-for-input":
+        return null;
+    }
+  }
+
+  private createResumedFileActivityRecords(
+    state: SessionStateSnapshot,
+    latestTask: NonNullable<SessionStateSnapshot["latestTask"]>
+  ): FileActivityRecord[] {
+    const createdAt = state.updatedAt;
+    const base = {
+      correlationId: latestTask.correlationId,
+      createdAt,
+      sessionId: state.sessionId,
+      status: "recorded" as const,
+      taskId: latestTask.taskId
+    };
+
+    return [
+      ...state.filesRead.map((pathValue) => ({
+        ...base,
+        activityId: this.nextId("activity"),
+        kind: "read" as const,
+        path: pathValue,
+        summary: "Restored read file activity from persisted session snapshot."
+      })),
+      ...state.filesChanged.map((pathValue) => ({
+        ...base,
+        activityId: this.nextId("activity"),
+        kind: "changed" as const,
+        path: pathValue,
+        summary:
+          "Restored changed file activity from persisted session snapshot."
+      })),
+      ...state.filesProposedForChange.map((pathValue) => ({
+        ...base,
+        activityId: this.nextId("activity"),
+        kind: "proposed_change" as const,
+        path: pathValue,
+        summary:
+          "Restored proposed file activity from persisted session snapshot."
+      }))
+    ];
+  }
+
   private ensureSessionForTask(task: PlannedExecutionFlow): Result<void> {
     const createdAt =
       this.sessionCreatedAt ?? task.events[0]?.createdAt ?? this.now();
@@ -2290,7 +2598,10 @@ export class AgentRuntime {
         }))
       },
       ...summarizeSnapshotNextStep(task),
-      pendingApprovalCount: this.countPendingApprovalsForTask(task.taskId)
+      pendingApprovalCount: Math.max(
+        this.countPendingApprovalsForTask(task.taskId),
+        this.restoredPendingApprovalCounts.get(task.taskId) ?? 0
+      )
     });
 
     if (!written.ok) {

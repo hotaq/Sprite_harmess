@@ -3,6 +3,7 @@ import { AgentRuntime, validateRuntimeEvent } from "@sprite/core";
 import { SpriteError, err } from "@sprite/shared";
 import type { SessionStore } from "@sprite/storage";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -42,6 +43,43 @@ function readJson(path: string): Record<string, unknown> {
 
 function getRuntimeSessionStore(runtime: AgentRuntime): SessionStore {
   return (runtime as unknown as { sessionStore: SessionStore }).sessionStore;
+}
+
+type ResumeSessionResult = {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    inspection: {
+      latestTask?: {
+        goal: string;
+        latestPlan?: Array<{ status: string; summary: string }>;
+        status: string;
+      };
+      pendingApprovalCount: number;
+    };
+    restoredEventCount: number;
+    resumeEventId: string;
+    sessionId: string;
+    status: string;
+    taskId: string;
+  };
+};
+
+type ResumableRuntime = AgentRuntime & {
+  resumeSession?: (sessionId: string) => ResumeSessionResult;
+};
+
+function resumeSession(
+  runtime: AgentRuntime,
+  sessionId: string
+): ResumeSessionResult {
+  const resume = (runtime as ResumableRuntime).resumeSession;
+
+  if (resume === undefined) {
+    throw new Error("Expected AgentRuntime.resumeSession(sessionId) to exist.");
+  }
+
+  return resume.call(runtime, sessionId);
 }
 
 describe("AgentRuntime session persistence", () => {
@@ -396,6 +434,154 @@ describe("AgentRuntime session persistence", () => {
         lastEventType: "file.activity.recorded",
         pendingApprovalCount: 0
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes a persisted session conservatively and records a resume event", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume this persisted task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, submitted.value.sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+
+      const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+      const state = readJson(join(sessionDir, "state.json"));
+      const resumeEvent = persistedEvents.at(-1);
+
+      expect(persistedEvents.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting",
+        "session.resumed"
+      ]);
+      expect(validateRuntimeEvent(resumeEvent).ok).toBe(true);
+      expect(resumeEvent).toMatchObject({
+        eventId: resumed.value?.resumeEventId,
+        payload: {
+          restoredEventCount: 2,
+          restoredTaskStatus: "waiting-for-input",
+          status: "recorded"
+        },
+        sessionId: submitted.value.sessionId,
+        taskId: submitted.value.taskId,
+        type: "session.resumed"
+      });
+      expect(state).toMatchObject({
+        eventCount: persistedEvents.length,
+        lastEventId: resumed.value?.resumeEventId,
+        lastEventType: "session.resumed",
+        latestTask: {
+          goal: "resume this persisted task",
+          status: "waiting-for-input",
+          taskId: submitted.value.taskId
+        }
+      });
+      expect(resumed.value).toMatchObject({
+        restoredEventCount: 2,
+        sessionId: submitted.value.sessionId,
+        status: "waiting-for-input",
+        taskId: submitted.value.taskId
+      });
+      expect(resumed.value?.inspection.pendingApprovalCount).toBe(0);
+      expect(
+        resumedRuntime
+          .getEventHistory(submitted.value.taskId)
+          .map((event) => event.type)
+      ).toEqual(["task.started", "task.waiting", "session.resumed"]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a structured error when resuming a missing session", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const result = resumeSession(runtime, "ses_missing");
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toMatchObject({
+          code: "SESSION_NOT_FOUND"
+        });
+      }
+      expect(
+        existsSync(join(projectDir, ".sprite", "sessions", "ses_missing"))
+      ).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a structured error when resumed event history violates runtime contracts", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume invalid event"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const eventsPath = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId,
+        "events.ndjson"
+      );
+      const events = readNdjson(eventsPath);
+      writeFileSync(
+        eventsPath,
+        `${events
+          .map((event, index) =>
+            JSON.stringify(
+              index === 0 ? { ...event, type: "task.started.raw" } : event
+            )
+          )
+          .join("\n")}\n`
+      );
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const result = resumeSession(resumedRuntime, submitted.value.sessionId);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toMatchObject({
+          code: "SESSION_EVENT_RUNTIME_INVALID"
+        });
+      }
+      expect(readNdjson(eventsPath).map((event) => event.type)).toEqual([
+        "task.started.raw",
+        "task.waiting"
+      ]);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

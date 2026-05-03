@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as storage from "@sprite/storage";
 import {
   createLocalSessionStore,
   createSessionId,
@@ -18,6 +19,34 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+
+type ReadSessionForResume = (
+  cwd: string,
+  sessionId: string
+) => {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    events: SessionEventRecord[];
+    paths: { eventsPath: string; rootDir: string; statePath: string };
+    persistedEventCount: number;
+    state: SessionStateSnapshot;
+  };
+};
+
+function getReadSessionForResume(): ReadSessionForResume {
+  const readSessionForResume = (
+    storage as typeof storage & {
+      readSessionForResume?: ReadSessionForResume;
+    }
+  ).readSessionForResume;
+
+  if (readSessionForResume === undefined) {
+    throw new Error("Expected @sprite/storage to export readSessionForResume.");
+  }
+
+  return readSessionForResume;
+}
 
 function createTempProject(): string {
   return mkdtempSync(join(tmpdir(), "sprite-session-store-"));
@@ -654,6 +683,118 @@ describe("local session store", () => {
       expect(inspected.value.recentEvents).toHaveLength(100);
       expect(inspected.value.recentEvents[0]?.eventId).toBe("evt_006");
       expect(inspected.value.recentEvents.at(-1)?.eventId).toBe("evt_105");
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the full event history for resume without changing display limits", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-04-26T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const events = Array.from({ length: 105 }, (_, index) =>
+        createSessionEvent(sessionId, index + 1)
+      );
+
+      expect(store.appendEvents(sessionId, events).ok).toBe(true);
+      expect(
+        store.writeStateSnapshot({
+          schemaVersion: 1,
+          sessionId,
+          cwd: projectDir,
+          createdAt: "2026-04-26T12:00:00.000Z",
+          updatedAt: "2026-04-26T12:02:00.000Z",
+          eventCount: events.length,
+          filesChanged: ["src/changed.ts"],
+          filesProposedForChange: ["src/proposed.ts"],
+          filesRead: ["src/read.ts"],
+          latestTask: {
+            correlationId: "corr_test",
+            currentPhase: "act",
+            goal: "resume session",
+            latestPlan: [
+              {
+                phase: "act",
+                status: "pending",
+                summary: "Continue from persisted waiting state."
+              }
+            ],
+            status: "waiting-for-input",
+            taskId: "task_test"
+          },
+          pendingApprovalCount: 1
+        }).ok
+      ).toBe(true);
+
+      const stateBefore = readFileSync(ensured.value.statePath, "utf8");
+      const eventsBefore = readFileSync(ensured.value.eventsPath, "utf8");
+      const resumeRead = getReadSessionForResume()(projectDir, sessionId);
+      const inspectRead = readSessionArtifacts(projectDir, sessionId, {
+        recentEventLimit: 2
+      });
+
+      expect(resumeRead.ok).toBe(true);
+      expect(inspectRead.ok).toBe(true);
+      if (!resumeRead.ok || !inspectRead.ok) {
+        return;
+      }
+
+      expect(resumeRead.value?.persistedEventCount).toBe(105);
+      expect(resumeRead.value?.events).toHaveLength(105);
+      expect(resumeRead.value?.events[0]?.eventId).toBe("evt_001");
+      expect(resumeRead.value?.events.at(-1)?.eventId).toBe("evt_105");
+      expect(resumeRead.value?.state.latestTask).toMatchObject({
+        goal: "resume session",
+        status: "waiting-for-input"
+      });
+      expect(
+        inspectRead.value.recentEvents.map((event) => event.eventId)
+      ).toEqual(["evt_104", "evt_105"]);
+      expect(readFileSync(ensured.value.statePath, "utf8")).toBe(stateBefore);
+      expect(readFileSync(ensured.value.eventsPath, "utf8")).toBe(eventsBefore);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured resume-read errors without creating missing session artifacts", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const readSessionForResume = getReadSessionForResume();
+      const invalid = readSessionForResume(projectDir, "not-a-session");
+
+      expect(invalid.ok).toBe(false);
+      if (!invalid.ok) {
+        expect(invalid.error).toMatchObject({
+          code: "SESSION_ID_INVALID"
+        });
+      }
+
+      const missing = readSessionForResume(projectDir, "ses_missing");
+
+      expect(missing.ok).toBe(false);
+      if (!missing.ok) {
+        expect(missing.error).toMatchObject({
+          code: "SESSION_NOT_FOUND"
+        });
+      }
+      expect(
+        existsSync(join(projectDir, ".sprite", "sessions", "ses_missing"))
+      ).toBe(false);
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }

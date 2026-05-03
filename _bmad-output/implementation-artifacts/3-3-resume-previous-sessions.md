@@ -1,6 +1,6 @@
 # Story 3.3: Resume Previous Sessions
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,42 +17,42 @@ so that I can continue work without manually reconstructing the task.
 
 ## Tasks / Subtasks
 
-- [ ] Add a safe storage-level resume read contract (AC: 1, 2)
-  - [ ] Reuse `readSessionArtifacts()` so resume reads existing `.sprite/sessions/<session-id>/state.json` and `events.ndjson` without creating or mutating artifacts during validation.
-  - [ ] Add or reuse a result shape that exposes the full parsed event history needed for runtime rehydration while keeping recent-event limits for display-only APIs separate.
-  - [ ] Return structured `SpriteError` values for invalid session IDs, missing sessions, missing/unreadable state or event files, invalid JSON, malformed NDJSON, unsupported schema, state/event session ID mismatch, and invalid runtime events.
-  - [ ] Do not deserialize persisted state into a full `PlannedExecutionFlow` inside `@sprite/storage`; storage must remain core-agnostic.
-  - [ ] Keep `.sprite/sessions` project-local path escape protection intact.
-- [ ] Add a runtime session resume API in `packages/core` (AC: 1, 2)
-  - [ ] Add a method/function such as `AgentRuntime.resumeSession(sessionId)` or `resumeSessionState(cwd, sessionId, options)` that reads the session and constructs a minimal runtime-owned active task from persisted safe state.
-  - [ ] Restore task goal, latest plan, recent event history, files read/changed/proposed, command summaries, pending approval count, last error, and next step from `state.json` plus `events.ndjson` evidence.
-  - [ ] Keep restored runtime state explicit and conservative: resume should continue from a waiting state by default and must not automatically execute tools, provider calls, validations, or approvals.
-  - [ ] Preserve pending approval visibility without silently re-executing the original tool call; if approval payloads are not safely reconstructable, surface a warning and require a fresh user decision.
-  - [ ] Preserve compacted summary fields only if a prior story or fixture already stored them; do not implement compaction in this story.
-- [ ] Emit and validate a session resume runtime event (AC: 1)
-  - [ ] Add a metadata-only runtime event type such as `session.resumed` with schema version, session/task/correlation IDs, status, restored event count, restored current phase/status, and summary/next step.
-  - [ ] Validate the event through `validateRuntimeEvent()` and reject raw output/content fields or secret-looking values just like tool, policy, approval, and validation events.
-  - [ ] Append the resume event to `events.ndjson` before notifying subscribers, preserving Story 3.1 disk-before-bus ordering.
-  - [ ] Update `state.json` after the resume event so `eventCount`, `lastEventId`, and `lastEventType` reflect the resumed state.
-- [ ] Add CLI resume command while keeping adapters thin (AC: 1, 2)
-  - [ ] Add `sprite resume <session-id>` or equivalent that calls the core resume API.
-  - [ ] Support `--output text|json` for resume results; do not add NDJSON resume streaming unless it is a shared runtime event stream and explicitly needed.
-  - [ ] Text output should clearly show resumed session ID, task goal, current status/phase, latest plan, restored event count, files touched, commands run, pending approvals, last error, next step, warnings, and the emitted resume event ID.
-  - [ ] JSON output should expose the same bounded/redacted view with camelCase fields and no raw event payload dumps.
-  - [ ] Missing/unreadable sessions should exit non-zero with a structured, recoverable error message and should not create a new session.
-- [ ] Preserve privacy and local-first safety (AC: 1, 2)
-  - [ ] Apply existing shared redaction helpers to task goal, plan summaries, event summaries, command summaries, errors, next steps, warnings, and resume result strings.
-  - [ ] Never expose raw command output, raw file content, patch bodies, repository instructions, custom env values, provider credentials, or full event payload dumps in CLI/core adapter-facing output.
-  - [ ] Preserve project-local portability warnings for `.sprite/sessions` artifacts.
-  - [ ] Do not add a database, cloud sync, vector search, memory persistence, project-context loading, or compaction implementation.
-- [ ] Update tests and documentation (AC: 1, 2)
-  - [ ] Add storage/core tests proving resume reads existing temp sessions, validates runtime events, and does not create artifacts for missing sessions.
-  - [ ] Add runtime tests proving resume emits a `session.resumed` event, appends it to `events.ndjson`, updates `state.json`, and restores active task state conservatively.
-  - [ ] Add CLI tests proving `sprite resume <session-id>` can resume a session created by a previous one-shot or interactive CLI run in the same temp cwd.
-  - [ ] Add error-path tests for invalid IDs, missing sessions, invalid `state.json`, malformed `events.ndjson`, and invalid runtime events.
-  - [ ] Add redaction tests with secret-looking task goals, latest plan summaries, last errors, next steps, and event summaries.
-  - [ ] Update README/progress only for implemented resume behavior; do not claim project context loading, context assembly, compaction, TUI/RPC resume, or continued provider-driven automatic execution.
-  - [ ] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`/`rtk gitnexus analyze` fallback before marking review-ready.
+- [x] Add a safe storage-level resume read contract (AC: 1, 2)
+  - [x] Reuse `readSessionArtifacts()` so resume reads existing `.sprite/sessions/<session-id>/state.json` and `events.ndjson` without creating or mutating artifacts during validation.
+  - [x] Add or reuse a result shape that exposes the full parsed event history needed for runtime rehydration while keeping recent-event limits for display-only APIs separate.
+  - [x] Return structured `SpriteError` values for invalid session IDs, missing sessions, missing/unreadable state or event files, invalid JSON, malformed NDJSON, unsupported schema, state/event session ID mismatch, and invalid runtime events.
+  - [x] Do not deserialize persisted state into a full `PlannedExecutionFlow` inside `@sprite/storage`; storage must remain core-agnostic.
+  - [x] Keep `.sprite/sessions` project-local path escape protection intact.
+- [x] Add a runtime session resume API in `packages/core` (AC: 1, 2)
+  - [x] Add a method/function such as `AgentRuntime.resumeSession(sessionId)` or `resumeSessionState(cwd, sessionId, options)` that reads the session and constructs a minimal runtime-owned active task from persisted safe state.
+  - [x] Restore task goal, latest plan, recent event history, files read/changed/proposed, command summaries, pending approval count, last error, and next step from `state.json` plus `events.ndjson` evidence.
+  - [x] Keep restored runtime state explicit and conservative: resume should continue from a waiting state by default and must not automatically execute tools, provider calls, validations, or approvals.
+  - [x] Preserve pending approval visibility without silently re-executing the original tool call; if approval payloads are not safely reconstructable, surface a warning and require a fresh user decision.
+  - [x] Preserve compacted summary fields only if a prior story or fixture already stored them; do not implement compaction in this story.
+- [x] Emit and validate a session resume runtime event (AC: 1)
+  - [x] Add a metadata-only runtime event type such as `session.resumed` with schema version, session/task/correlation IDs, status, restored event count, restored current phase/status, and summary/next step.
+  - [x] Validate the event through `validateRuntimeEvent()` and reject raw output/content fields or secret-looking values just like tool, policy, approval, and validation events.
+  - [x] Append the resume event to `events.ndjson` before notifying subscribers, preserving Story 3.1 disk-before-bus ordering.
+  - [x] Update `state.json` after the resume event so `eventCount`, `lastEventId`, and `lastEventType` reflect the resumed state.
+- [x] Add CLI resume command while keeping adapters thin (AC: 1, 2)
+  - [x] Add `sprite resume <session-id>` or equivalent that calls the core resume API.
+  - [x] Support `--output text|json` for resume results; do not add NDJSON resume streaming unless it is a shared runtime event stream and explicitly needed.
+  - [x] Text output should clearly show resumed session ID, task goal, current status/phase, latest plan, restored event count, files touched, commands run, pending approvals, last error, next step, warnings, and the emitted resume event ID.
+  - [x] JSON output should expose the same bounded/redacted view with camelCase fields and no raw event payload dumps.
+  - [x] Missing/unreadable sessions should exit non-zero with a structured, recoverable error message and should not create a new session.
+- [x] Preserve privacy and local-first safety (AC: 1, 2)
+  - [x] Apply existing shared redaction helpers to task goal, plan summaries, event summaries, command summaries, errors, next steps, warnings, and resume result strings.
+  - [x] Never expose raw command output, raw file content, patch bodies, repository instructions, custom env values, provider credentials, or full event payload dumps in CLI/core adapter-facing output.
+  - [x] Preserve project-local portability warnings for `.sprite/sessions` artifacts.
+  - [x] Do not add a database, cloud sync, vector search, memory persistence, project-context loading, or compaction implementation.
+- [x] Update tests and documentation (AC: 1, 2)
+  - [x] Add storage/core tests proving resume reads existing temp sessions, validates runtime events, and does not create artifacts for missing sessions.
+  - [x] Add runtime tests proving resume emits a `session.resumed` event, appends it to `events.ndjson`, updates `state.json`, and restores active task state conservatively.
+  - [x] Add CLI tests proving `sprite resume <session-id>` can resume a session created by a previous one-shot or interactive CLI run in the same temp cwd.
+  - [x] Add error-path tests for invalid IDs, missing sessions, invalid `state.json`, malformed `events.ndjson`, and invalid runtime events.
+  - [x] Add redaction tests with secret-looking task goals, latest plan summaries, last errors, next steps, and event summaries.
+  - [x] Update README/progress only for implemented resume behavior; do not claim project context loading, context assembly, compaction, TUI/RPC resume, or continued provider-driven automatic execution.
+  - [x] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`/`rtk gitnexus analyze` fallback before marking review-ready.
 
 ## Dev Notes
 
@@ -236,23 +236,52 @@ Codex
 - 2026-05-03: Created Story 3.3 context after Story 3.2 implementation was committed locally and left in `review` for later review pass.
 - 2026-05-03: Loaded BMAD create-story workflow, sprint status, Epic 3 Story 3.3 requirements, PRD FR31/NFR19/NFR23/NFR35 requirements, architecture resume/session storage guidance, Story 3.1 persistence learnings, and Story 3.2 inspection implementation notes.
 - 2026-05-03: Story 3.2 commit available locally as `2fee2a6 Make persisted sessions inspectable before resume work`; branch was ahead of `origin/main` by one commit at story context creation time.
+- 2026-05-03: Implemented Story 3.3 conservative resume across runtime event validation, storage resume reads, core runtime resume, CLI rendering, docs, and tests.
+- 2026-05-03: Verified targeted Story 3.3 suites: runtime events, session store, session persistence, and CLI resume smoke tests.
 
 ### Completion Notes List
 
-- Story 3.3 is ready for dev-story implementation and should be treated as conservative resume work, not automatic replay or context assembly.
-- Story 3.2 remains in review and should be revisited after the next story per user direction.
+- Implemented metadata-only `session.resumed` runtime events with secret/raw-output rejection.
+- Added full-history `readSessionForResume()` storage read path while keeping inspection recent-event limits separate.
+- Added `AgentRuntime.resumeSession()` to restore a conservative active task, append the resume event, update `state.json`, and avoid replaying tools, commands, validations, approvals, or provider calls.
+- Added `sprite resume <session-id>` text/JSON output plus structured missing/invalid session failures.
+- Updated README/progress to document implemented resume behavior and remaining context/compaction limitations.
 
 ### File List
 
+- `README.md`
+- `progress.md`
 - `_bmad-output/implementation-artifacts/3-3-resume-previous-sessions.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `_bmad-output/test-artifacts/atdd-checklist-3-3-resume-previous-sessions.md`
+- `packages/cli/src/index.ts`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/core/src/session-inspection.ts`
+- `packages/storage/src/session-store.ts`
+- `tests/cli-smoke.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/session-inspection.test.ts`
+- `tests/session-persistence.test.ts`
+- `tests/session-store.test.ts`
 
 ## Change Log
 
 | Date       | Version | Description                               | Author |
 | ---------- | ------- | ----------------------------------------- | ------ |
 | 2026-05-03 | 0.1     | Created Story 3.3 implementation context. | Codex  |
+| 2026-05-03 | 0.2     | Implemented conservative session resume.  | Codex  |
 
 ## QA Results
 
-Story context created and ready for dev-story implementation.
+Story 3.3 implementation is complete and ready for review.
+
+Validation evidence:
+
+- `rtk npm run build`
+- `rtk npm run typecheck -- --pretty false`
+- `rtk npm run lint`
+- `rtk npm test` — 12 files, 167 tests passed
+- `rtk git diff --check`
+- `rtk run "npx prettier --check ..."`
+- `rtk run "gitnexus status"` — up-to-date

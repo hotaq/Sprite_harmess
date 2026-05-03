@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+  AgentRuntime,
   createBootstrapMessage,
   createInteractiveTaskMessage,
   inspectSessionState,
@@ -9,7 +10,8 @@ import {
   type FinalTaskSummary,
   type OneShotPrintOutputFormat,
   type OneShotPrintTaskResult,
-  type SessionInspectionView
+  type SessionInspectionView,
+  type SessionResumeResult
 } from "@sprite/core";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
@@ -132,6 +134,10 @@ function renderSessionInspectionJson(view: SessionInspectionView): string {
   return JSON.stringify(view, null, 2);
 }
 
+function renderSessionResumeJson(result: SessionResumeResult): string {
+  return JSON.stringify(result, null, 2);
+}
+
 function renderSessionInspectionText(view: SessionInspectionView): string {
   const latestTask = view.latestTask;
   const latestTaskLines =
@@ -199,6 +205,58 @@ function renderSessionInspectionText(view: SessionInspectionView): string {
     view.lastError === undefined ? "- none" : `- ${view.lastError}`,
     "Next step:",
     view.nextStep === undefined ? "- none" : `- ${view.nextStep}`,
+    "Warnings:",
+    ...warningLines
+  ].join("\n");
+}
+
+function renderSessionResumeText(result: SessionResumeResult): string {
+  const latestPlanLines =
+    result.latestPlan.length === 0
+      ? ["- none"]
+      : result.latestPlan.map(
+          (step, index) =>
+            `${index + 1}. [${step.phase}] ${step.status} - ${step.summary}`
+        );
+  const commandLines =
+    result.inspection.commandsRun.length === 0
+      ? ["- none"]
+      : result.inspection.commandsRun.map((command) => `- ${command}`);
+  const warningLines =
+    result.warnings.length === 0
+      ? ["- none"]
+      : result.warnings.map((warning) => `- ${warning}`);
+
+  return [
+    "Session resumed:",
+    `- session id: ${result.sessionId}`,
+    `- task id: ${result.taskId}`,
+    `- correlation id: ${result.correlationId}`,
+    `- goal: ${result.goal}`,
+    `- status: ${result.status}`,
+    `- current phase: ${result.currentPhase}`,
+    `- restored event count: ${result.restoredEventCount}`,
+    `- resume event id: ${result.resumeEventId}`,
+    `- execution state: ${result.inspection.executionState.kind} - ${result.inspection.executionState.detail}`,
+    "Latest plan:",
+    ...latestPlanLines,
+    "Files read:",
+    ...formatPathList(result.inspection.filesRead),
+    "Files changed:",
+    ...formatPathList(result.inspection.filesChanged),
+    "Files proposed for change:",
+    ...formatPathList(result.inspection.filesProposedForChange),
+    "Commands run:",
+    ...commandLines,
+    `- pending approvals: ${result.inspection.pendingApprovalCount}`,
+    "Last error:",
+    result.inspection.lastError === undefined
+      ? "- none"
+      : `- ${result.inspection.lastError}`,
+    "Next step:",
+    result.inspection.nextStep === undefined
+      ? "- none"
+      : `- ${result.inspection.nextStep}`,
     "Warnings:",
     ...warningLines
   ].join("\n");
@@ -368,6 +426,33 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     writeOut: (value) => io.stdout.write(value),
     writeErr: (value) => io.stderr.write(value)
   });
+
+  program
+    .command("resume <sessionId>")
+    .description("resume a project-local session")
+    .option("--output <format>", "print output format: text or json")
+    .action(
+      (sessionId: string, options: { output?: string }, command: Command) => {
+        const optionValues = command.optsWithGlobals<{ output?: string }>();
+        const outputFormat = parseSessionInspectOutputFormat(
+          options.output ?? optionValues.output
+        );
+        const runtime = new AgentRuntime();
+        const resumed = runtime.resumeSession(sessionId);
+
+        if (!resumed.ok) {
+          throw resumed.error;
+        }
+
+        writeMessage(
+          io,
+          outputFormat === "json"
+            ? renderSessionResumeJson(resumed.value)
+            : renderSessionResumeText(resumed.value)
+        );
+      }
+    );
+
   program.exitOverride();
 
   return program;

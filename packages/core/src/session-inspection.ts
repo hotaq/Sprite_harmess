@@ -1,5 +1,6 @@
 import {
   readSessionArtifacts,
+  type SessionEventRecord,
   type SessionSnapshotPlanStep,
   type SessionSnapshotRuntimePhase,
   type SessionSnapshotTaskStatus,
@@ -91,24 +92,17 @@ export function inspectSessionState(
     return err(artifacts.error);
   }
 
-  const runtimeEvents: RuntimeEventRecord[] = [];
+  const allRuntimeEvents = validateRuntimeEvents(artifacts.value.events);
 
-  for (const event of artifacts.value.recentEvents) {
-    const validation = validateRuntimeEvent(event);
-
-    if (!validation.ok) {
-      return err(
-        new SpriteError(
-          "SESSION_EVENT_RUNTIME_INVALID",
-          `Stored session event ${event.eventId} is not a valid runtime event: ${validation.error.message}`
-        )
-      );
-    }
-
-    runtimeEvents.push(validation.value);
+  if (!allRuntimeEvents.ok) {
+    return err(allRuntimeEvents.error);
   }
 
   const { state, persistedEventCount } = artifacts.value;
+  const recentRuntimeEvents =
+    artifacts.value.recentEvents.length === 0
+      ? []
+      : allRuntimeEvents.value.slice(-artifacts.value.recentEvents.length);
   const warnings = [
     ".sprite/sessions artifacts are local private state for this project cwd and should not be committed or treated as portable across machines.",
     ...(state.eventCount === persistedEventCount
@@ -119,10 +113,13 @@ export function inspectSessionState(
   ].map((warning) => safePreview(warning, 240));
 
   const view: SessionInspectionView = {
-    commandsRun: extractCommandSummaries(runtimeEvents),
+    commandsRun: extractCommandSummaries(allRuntimeEvents.value),
     cwd: safePreview(state.cwd, 320),
     eventCount: state.eventCount,
-    executionState: summarizeExecutionState(state.latestTask, runtimeEvents),
+    executionState: summarizeExecutionState(
+      state.latestTask,
+      allRuntimeEvents.value
+    ),
     filesChanged: redactList(state.filesChanged),
     filesProposedForChange: redactList(state.filesProposedForChange),
     filesRead: redactList(state.filesRead),
@@ -137,13 +134,36 @@ export function inspectSessionState(
       : { nextStep: safePreview(state.nextStep, 320) }),
     pendingApprovalCount: state.pendingApprovalCount,
     persistedEventCount,
-    recentEvents: runtimeEvents.map(summarizeRuntimeEvent),
+    recentEvents: recentRuntimeEvents.map(summarizeRuntimeEvent),
     schemaVersion: 1,
     sessionId: state.sessionId,
     warnings
   };
 
   return { ok: true, value: view };
+}
+
+function validateRuntimeEvents(
+  events: readonly SessionEventRecord[]
+): Result<RuntimeEventRecord[], SpriteError> {
+  const runtimeEvents: RuntimeEventRecord[] = [];
+
+  for (const event of events) {
+    const validation = validateRuntimeEvent(event);
+
+    if (!validation.ok) {
+      return err(
+        new SpriteError(
+          "SESSION_EVENT_RUNTIME_INVALID",
+          `Stored session event ${event.eventId} is not a valid runtime event: ${validation.error.message}`
+        )
+      );
+    }
+
+    runtimeEvents.push(validation.value);
+  }
+
+  return { ok: true, value: runtimeEvents };
 }
 
 function redactLatestTask(

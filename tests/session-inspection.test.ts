@@ -163,4 +163,110 @@ describe("session inspection view", () => {
       rmSync(projectDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps command summaries outside the recent event display window", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-04-26T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const events = [
+        {
+          schemaVersion: 1,
+          eventId: "evt_validation",
+          sessionId,
+          taskId: "task_test",
+          correlationId: "corr_test",
+          type: "validation.started",
+          createdAt: "2026-04-26T12:00:01.000Z",
+          payload: {
+            command: "npm test -- --runInBand",
+            cwd: projectDir,
+            status: "started",
+            summary: "Validation started",
+            toolCallId: "tool_call_1",
+            validationId: "validation_1"
+          }
+        },
+        {
+          schemaVersion: 1,
+          eventId: "evt_waiting",
+          sessionId,
+          taskId: "task_test",
+          correlationId: "corr_test",
+          type: "task.waiting",
+          createdAt: "2026-04-26T12:00:02.000Z",
+          payload: {
+            message: "Waiting for input",
+            reason: "user-input-required",
+            nextAction: "answer"
+          }
+        },
+        {
+          schemaVersion: 1,
+          eventId: "evt_failed",
+          sessionId,
+          taskId: "task_test",
+          correlationId: "corr_test",
+          type: "task.failed",
+          createdAt: "2026-04-26T12:00:03.000Z",
+          payload: {
+            reason: "max-iterations",
+            message: "Stopped after validation"
+          }
+        }
+      ] satisfies SessionEventRecord[];
+      const snapshot = {
+        schemaVersion: 1,
+        sessionId,
+        cwd: projectDir,
+        createdAt: "2026-04-26T12:00:00.000Z",
+        updatedAt: "2026-04-26T12:00:03.000Z",
+        eventCount: events.length,
+        filesChanged: [],
+        filesProposedForChange: [],
+        filesRead: [],
+        latestTask: {
+          taskId: "task_test",
+          correlationId: "corr_test",
+          status: "max-iterations",
+          currentPhase: "observe",
+          goal: "Inspect old command"
+        },
+        pendingApprovalCount: 0
+      } satisfies SessionStateSnapshot;
+
+      expect(store.appendEvents(sessionId, events).ok).toBe(true);
+      expect(store.writeStateSnapshot(snapshot).ok).toBe(true);
+
+      const inspected = inspectSessionState(projectDir, sessionId, {
+        recentEventLimit: 1
+      });
+
+      expect(inspected.ok).toBe(true);
+      if (!inspected.ok) {
+        return;
+      }
+
+      expect(
+        inspected.value.recentEvents.map((event) => event.eventId)
+      ).toEqual(["evt_failed"]);
+      expect(inspected.value.commandsRun).toEqual([
+        "validation.started started: npm test -- --runInBand"
+      ]);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
 });

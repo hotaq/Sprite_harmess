@@ -247,6 +247,33 @@ recoverable snapshot. This slice does not implement resume, session listing,
 project context loading, context assembly, TUI/RPC inspection screens, or
 compaction.
 
+## Local Session Resume
+
+Story 3.3 adds the first conservative resume slice for existing project-local
+sessions. `sprite resume <session-id>` reads the current cwd's
+`.sprite/sessions/<session-id>/state.json` and full `events.ndjson` history,
+validates persisted runtime events, restores a minimal runtime-owned active task
+from safe snapshot fields, and appends a metadata-only `session.resumed` event.
+
+Resume output supports text and JSON formats:
+
+```bash
+sprite resume ses_example --output text
+sprite resume ses_example --output json
+```
+
+The resume result includes the resumed session ID, task/correlation IDs, task
+goal, status, current phase, latest plan snapshot, restored event count, resume
+event ID, files touched, command summaries, pending approval count, last error,
+next-step hint, and local-state warnings. Displayed fields are redacted through
+the shared secret-like value helpers, and missing or unreadable sessions return
+structured recoverable errors without creating new session artifacts.
+
+Resume is intentionally conservative. It restores audit/history visibility and
+waiting/terminal task state, but it does not replay tools, commands,
+validations, approvals, provider calls, project context loading, context
+assembly, TUI/RPC flows, or compaction.
+
 ## Sandboxed Command Execution
 
 Story 2.5 adds sandboxed command execution for runtime/package API use through

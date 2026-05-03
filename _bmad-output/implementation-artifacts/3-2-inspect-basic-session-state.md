@@ -1,6 +1,6 @@
 # Story 3.2: Inspect Basic Session State
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -52,6 +52,10 @@ so that I know what task is active, what happened, and what can be resumed.
   - [x] Add text and JSON output tests for redaction and for all required display fields.
   - [x] Update README/progress only for implemented inspection behavior; do not claim resume, compaction, TUI, JSON-RPC, or project-context loading.
   - [x] Run `rtk npm run build`, `rtk npm run typecheck`, `rtk npm run lint`, `rtk npm test`, `rtk git diff --check`, targeted Prettier check, and `rtk gitnexus status`/`rtk gitnexus analyze` fallback before marking review-ready.
+
+### Review Findings
+
+- [x] [Review][Patch] Commands run are derived only from bounded recent events [packages/core/src/session-inspection.ts:122]
 
 ## Dev Notes
 

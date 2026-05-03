@@ -27,6 +27,16 @@ const RUNTIME_LOOP_PHASES = [
 const TASK_STARTED_STATUSES = [
   "planned"
 ] as const satisfies readonly TaskExecutionStatus[];
+
+const TASK_EXECUTION_STATUSES = [
+  "planned",
+  "waiting-for-input",
+  "completed",
+  "cancelled",
+  "max-iterations",
+  "failed"
+] as const satisfies readonly TaskExecutionStatus[];
+
 const TASK_WAITING_REASONS = [
   "steering-required",
   "approval-required",
@@ -145,6 +155,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.steering.received",
   "task.recovery.recorded",
   "memory.safety.evaluated",
+  "session.resumed",
   "policy.decision.recorded",
   "approval.requested",
   "approval.resolved",
@@ -217,6 +228,14 @@ export interface RuntimeEventPayloadMap {
     status: "recorded";
     summary: string;
     target: SpriteSafetyRuleTarget;
+  };
+  "session.resumed": {
+    currentPhase: RuntimeLoopPhase;
+    nextStep?: string;
+    restoredEventCount: number;
+    restoredTaskStatus: TaskExecutionStatus;
+    status: "recorded";
+    summary: string;
   };
   "policy.decision.recorded": {
     action: (typeof POLICY_ACTIONS)[number];
@@ -682,6 +701,13 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "session.resumed": {
+      return validateSessionResumedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "memory.safety.evaluated": {
       return validateMemorySafetyEvaluatedEvent(
         context,
@@ -994,6 +1020,94 @@ function validateMemorySafetyEvaluatedEvent(
     status: status.value,
     summary: summary.value,
     target: target.value
+  });
+}
+
+function validateSessionResumedEvent(
+  context: RuntimeEventContext,
+  type: "session.resumed",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"session.resumed">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null || "rawEventPayload" in payload) {
+    const field = forbiddenField ?? "rawEventPayload";
+
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${field}'.`
+      )
+    );
+  }
+  const currentPhase = requirePayloadLiteral(
+    type,
+    payload,
+    "currentPhase",
+    RUNTIME_LOOP_PHASES
+  );
+  const nextStep = optionalPayloadString(type, payload, "nextStep");
+  const restoredEventCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "restoredEventCount"
+  );
+  const restoredTaskStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "restoredTaskStatus",
+    TASK_EXECUTION_STATUSES
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+
+  if (currentPhase.ok === false) {
+    return err(currentPhase.error);
+  }
+  if (nextStep.ok === false) {
+    return err(nextStep.error);
+  }
+  if (restoredEventCount.ok === false) {
+    return err(restoredEventCount.error);
+  }
+  if (restoredTaskStatus.ok === false) {
+    return err(restoredTaskStatus.error);
+  }
+
+  if (status.ok === false) {
+    return err(status.error);
+  }
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+
+  const secretCheckedFields = [
+    ["nextStep", nextStep.value],
+    ["summary", summary.value]
+  ] as const;
+  for (const [field, value] of secretCheckedFields) {
+    if (value !== undefined && containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${field}' contains a secret-like value.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    currentPhase: currentPhase.value,
+    ...(nextStep.value === undefined ? {} : { nextStep: nextStep.value }),
+    restoredEventCount: restoredEventCount.value,
+    restoredTaskStatus: restoredTaskStatus.value,
+    status: status.value,
+    summary: summary.value
   });
 }
 
@@ -2166,6 +2280,34 @@ function optionalPayloadLiteral<T extends string>(
   }
 
   return { ok: true, value: value as T };
+}
+
+function requireNonNegativeInteger(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<number, SpriteError> {
+  const value = payload[key];
+
+  if (value === undefined) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' required payload field '${key}' is missing.`
+      )
+    );
+  }
+
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' required payload field '${key}' must be a non-negative integer.`
+      )
+    );
+  }
+
+  return { ok: true, value };
 }
 
 function optionalNonNegativeInteger(

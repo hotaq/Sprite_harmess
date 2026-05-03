@@ -698,6 +698,60 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(secretMetadata).ok).toBe(false);
   });
 
+  it("validates session resume events without raw persisted payloads or secrets", () => {
+    const resumed = {
+      schemaVersion: 1,
+      eventId: "evt_session_resumed",
+      sessionId: "session_test",
+      taskId: "task_test",
+      correlationId: "corr_test",
+      type: "session.resumed",
+      createdAt: "2026-04-23T12:40:05.000Z",
+      payload: {
+        currentPhase: "act",
+        nextStep: "Wait for fresh user direction before running tools.",
+        restoredEventCount: 7,
+        restoredTaskStatus: "waiting-for-input",
+        status: "recorded",
+        summary: "Session resumed from local persisted state."
+      }
+    };
+    const rawPayloadDump = {
+      ...resumed,
+      payload: {
+        ...resumed.payload,
+        rawEventPayload: { content: "raw persisted event payload" }
+      }
+    };
+    const rawCommandOutput = {
+      ...resumed,
+      payload: {
+        ...resumed.payload,
+        stdout: "raw command output"
+      }
+    };
+    const secretSummary = {
+      ...resumed,
+      payload: {
+        ...resumed.payload,
+        summary: "Resume recovered OPENAI_API_KEY=sk-test-secret."
+      }
+    };
+    const negativeEventCount = {
+      ...resumed,
+      payload: {
+        ...resumed.payload,
+        restoredEventCount: -1
+      }
+    };
+
+    expect(validateRuntimeEvent(resumed).ok).toBe(true);
+    expect(validateRuntimeEvent(rawPayloadDump).ok).toBe(false);
+    expect(validateRuntimeEvent(rawCommandOutput).ok).toBe(false);
+    expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
+    expect(validateRuntimeEvent(negativeEventCount).ok).toBe(false);
+  });
+
   it("validates memory safety audit events without raw content or secret values", () => {
     const valid = createRuntimeEventRecord(
       {

@@ -100,12 +100,25 @@ export interface ReadSessionArtifactsOptions {
 }
 
 export interface ReadSessionArtifactsResult {
+  events: SessionEventRecord[];
   paths: SessionArtifactPaths;
   persistedEventCount: number;
   recentEvents: SessionEventRecord[];
   state: SessionStateSnapshot;
 }
 
+export interface ReadSessionForResumeResult {
+  paths: SessionArtifactPaths;
+  persistedEventCount: number;
+  events: SessionEventRecord[];
+  state: SessionStateSnapshot;
+}
+
+interface ReadSessionArtifactBundle {
+  paths: SessionArtifactPaths;
+  events: SessionEventRecord[];
+  state: SessionStateSnapshot;
+}
 export interface SessionStore {
   ensureSession(
     sessionId: string,
@@ -314,17 +327,10 @@ export function resolveSessionArtifactPaths(
   };
 }
 
-export function readSessionArtifacts(
+function readSessionArtifactBundle(
   cwd: string,
-  sessionId: string,
-  options: ReadSessionArtifactsOptions = {}
-): Result<ReadSessionArtifactsResult, SpriteError> {
-  const eventLimit = normalizeRecentEventLimit(options.recentEventLimit);
-
-  if (!eventLimit.ok) {
-    return err(eventLimit.error);
-  }
-
+  sessionId: string
+): Result<ReadSessionArtifactBundle, SpriteError> {
   const paths = resolveSessionArtifactPaths(cwd, sessionId);
 
   if (!paths.ok) {
@@ -344,7 +350,7 @@ export function readSessionArtifacts(
     return err(
       new SpriteError(
         "SESSION_STATE_MISSING",
-        `Session ${sessionId} is missing state.json.`
+        `Session state file not found for session ${sessionId}`
       )
     );
   }
@@ -353,7 +359,7 @@ export function readSessionArtifacts(
     return err(
       new SpriteError(
         "SESSION_EVENTS_MISSING",
-        `Session ${sessionId} is missing events.ndjson.`
+        `Session events file not found for session ${sessionId}`
       )
     );
   }
@@ -381,10 +387,54 @@ export function readSessionArtifacts(
 
   return okSession({
     paths: { ...paths.value },
-    persistedEventCount: events.value.length,
-    recentEvents:
-      eventLimit.value === 0 ? [] : events.value.slice(-eventLimit.value),
+    events: events.value,
     state: state.value
+  });
+}
+
+export function readSessionForResume(
+  cwd: string,
+  sessionId: string
+): Result<ReadSessionForResumeResult, SpriteError> {
+  const bundle = readSessionArtifactBundle(cwd, sessionId);
+
+  if (!bundle.ok) {
+    return err(bundle.error);
+  }
+
+  return okSession({
+    paths: { ...bundle.value.paths },
+    persistedEventCount: bundle.value.events.length,
+    events: bundle.value.events,
+    state: bundle.value.state
+  });
+}
+
+export function readSessionArtifacts(
+  cwd: string,
+  sessionId: string,
+  options: ReadSessionArtifactsOptions = {}
+): Result<ReadSessionArtifactsResult, SpriteError> {
+  const eventLimit = normalizeRecentEventLimit(options.recentEventLimit);
+
+  if (!eventLimit.ok) {
+    return err(eventLimit.error);
+  }
+
+  const bundle = readSessionArtifactBundle(cwd, sessionId);
+
+  if (!bundle.ok) {
+    return err(bundle.error);
+  }
+
+  const events = [...bundle.value.events];
+
+  return okSession({
+    events,
+    paths: { ...bundle.value.paths },
+    persistedEventCount: events.length,
+    recentEvents: eventLimit.value === 0 ? [] : events.slice(-eventLimit.value),
+    state: bundle.value.state
   });
 }
 
