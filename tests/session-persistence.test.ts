@@ -515,6 +515,68 @@ describe("AgentRuntime session persistence", () => {
     }
   });
 
+  it("clears restored pending approval counts when a resumed task becomes terminal", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume task with stale approval"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const statePath = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId,
+        "state.json"
+      );
+      const stateBeforeResume = readJson(statePath);
+
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            ...stateBeforeResume,
+            pendingApprovalCount: 1
+          },
+          null,
+          2
+        )}\n`
+      );
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, submitted.value.sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+      expect(resumed.value?.inspection.pendingApprovalCount).toBe(1);
+
+      const cancelled = resumedRuntime.cancelActiveTask(
+        "Stop resumed task after clearing stale approvals."
+      );
+
+      expect(cancelled.ok).toBe(true);
+      const stateAfterCancel = readJson(statePath);
+
+      expect(stateAfterCancel).toMatchObject({
+        latestTask: {
+          status: "cancelled"
+        },
+        pendingApprovalCount: 0
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns a structured error when resuming a missing session", () => {
     const { homeDir, projectDir, rootDir } = createTempWorkspace();
 

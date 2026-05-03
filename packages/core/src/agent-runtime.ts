@@ -2846,6 +2846,8 @@ export class AgentRuntime {
         this.pendingApprovals.delete(approvalRequestId);
       }
     }
+
+    this.restoredPendingApprovalCounts.delete(taskId);
   }
 
   private countPendingApprovalsForTask(taskId: string): number {
