@@ -48,6 +48,86 @@ function getReadSessionForResume(): ReadSessionForResume {
   return readSessionForResume;
 }
 
+type SessionCompactionArtifact = {
+  artifactId: string;
+  createdAt: string;
+  schemaVersion: 1;
+  sessionId: string;
+  summary: {
+    continuity: {
+      taskGoal: string;
+    };
+    kind: "session.compaction.summary";
+    source: {
+      eventCount: number;
+      eventRange: {
+        firstEventId: string;
+        lastEventId: string;
+      };
+      firstRetainedEventId?: string;
+    };
+    status: "created";
+    triggerReason: "manual" | "threshold" | "context-overflow" | "recovery";
+  };
+};
+
+type WriteSessionCompactionArtifact = (
+  paths: {
+    compactionsDir: string;
+    eventsPath: string;
+    rootDir: string;
+    statePath: string;
+  },
+  artifact: SessionCompactionArtifact
+) => {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: { artifactId: string; artifactPath: string };
+};
+
+type ReadSessionCompactionArtifact = (
+  paths: {
+    compactionsDir: string;
+    eventsPath: string;
+    rootDir: string;
+    statePath: string;
+  },
+  artifactId: string
+) => {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: SessionCompactionArtifact;
+};
+
+function getCompactionArtifactStorage(): {
+  readSessionCompactionArtifact: ReadSessionCompactionArtifact;
+  writeSessionCompactionArtifact: WriteSessionCompactionArtifact;
+} {
+  const storageWithCompaction = storage as typeof storage & {
+    readSessionCompactionArtifact?: ReadSessionCompactionArtifact;
+    writeSessionCompactionArtifact?: WriteSessionCompactionArtifact;
+  };
+
+  if (storageWithCompaction.writeSessionCompactionArtifact === undefined) {
+    throw new Error(
+      "Expected @sprite/storage to export writeSessionCompactionArtifact."
+    );
+  }
+
+  if (storageWithCompaction.readSessionCompactionArtifact === undefined) {
+    throw new Error(
+      "Expected @sprite/storage to export readSessionCompactionArtifact."
+    );
+  }
+
+  return {
+    readSessionCompactionArtifact:
+      storageWithCompaction.readSessionCompactionArtifact,
+    writeSessionCompactionArtifact:
+      storageWithCompaction.writeSessionCompactionArtifact
+  };
+}
+
 function createTempProject(): string {
   return mkdtempSync(join(tmpdir(), "sprite-session-store-"));
 }
@@ -105,8 +185,18 @@ describe("local session store", () => {
       expect(result.value.rootDir).toBe(
         join(projectDir, ".sprite", "sessions", sessionId)
       );
+      expect(
+        (result.value as typeof result.value & { compactionsDir?: string })
+          .compactionsDir
+      ).toBe(join(result.value.rootDir, "compactions"));
       expect(existsSync(result.value.eventsPath)).toBe(true);
       expect(existsSync(result.value.statePath)).toBe(true);
+      expect(
+        existsSync(
+          (result.value as typeof result.value & { compactionsDir: string })
+            .compactionsDir
+        )
+      ).toBe(true);
       expect(readNdjson(result.value.eventsPath)).toEqual([]);
       expect(readJson(result.value.statePath)).toMatchObject({
         schemaVersion: 1,
@@ -116,6 +206,83 @@ describe("local session store", () => {
         updatedAt: "2026-04-26T12:00:00.000Z",
         eventCount: 0
       });
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists structured compaction artifacts inside the session compactions directory", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-04T00:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const paths = ensured.value as typeof ensured.value & {
+        compactionsDir: string;
+      };
+      const { readSessionCompactionArtifact, writeSessionCompactionArtifact } =
+        getCompactionArtifactStorage();
+      const artifact = {
+        artifactId: "cmp-threshold-001",
+        createdAt: "2026-05-04T00:01:00.000Z",
+        schemaVersion: 1,
+        sessionId,
+        summary: {
+          continuity: {
+            taskGoal: "Compact long-running context into a structured summary."
+          },
+          kind: "session.compaction.summary",
+          source: {
+            eventCount: 2,
+            eventRange: {
+              firstEventId: "evt_started",
+              lastEventId: "evt_waiting"
+            },
+            firstRetainedEventId: "evt_waiting"
+          },
+          status: "created",
+          triggerReason: "threshold"
+        }
+      } satisfies SessionCompactionArtifact;
+
+      const written = writeSessionCompactionArtifact(paths, artifact);
+
+      expect(written.ok).toBe(true);
+      if (!written.ok || written.value === undefined) {
+        return;
+      }
+
+      expect(written.value).toMatchObject({
+        artifactId: "cmp-threshold-001",
+        artifactPath: join(paths.compactionsDir, "cmp-threshold-001.json")
+      });
+      expect(existsSync(written.value.artifactPath)).toBe(true);
+      expect(
+        resolve(written.value.artifactPath).startsWith(paths.compactionsDir)
+      ).toBe(true);
+
+      const readBack = readSessionCompactionArtifact(
+        paths,
+        "cmp-threshold-001"
+      );
+
+      expect(readBack.ok).toBe(true);
+      if (!readBack.ok || readBack.value === undefined) {
+        return;
+      }
+
+      expect(readBack.value).toEqual(artifact);
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }

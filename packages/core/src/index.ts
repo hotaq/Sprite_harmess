@@ -1,4 +1,5 @@
 export * from "./agent-runtime.js";
+export * from "./compaction.js";
 export * from "./file-activity.js";
 export * from "./final-task-summary.js";
 export * from "./runtime-events.js";

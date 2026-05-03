@@ -11,6 +11,7 @@ import { SpriteError, err, type Result } from "@sprite/shared";
 
 export const SESSION_STATE_SCHEMA_VERSION = 1 as const;
 const SESSION_ID_PATTERN = /^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const SESSION_COMPACTION_ARTIFACT_ID_PATTERN = /^cmp-[a-z0-9][a-z0-9-]*$/;
 export const SESSION_SNAPSHOT_TASK_STATUSES = [
   "planned",
   "waiting-for-input",
@@ -51,6 +52,7 @@ export interface SessionArtifactPaths {
   rootDir: string;
   eventsPath: string;
   statePath: string;
+  compactionsDir: string;
 }
 
 export interface SessionEventRecord {
@@ -114,6 +116,19 @@ export interface ReadSessionForResumeResult {
   state: SessionStateSnapshot;
 }
 
+export interface SessionCompactionArtifact {
+  artifactId: string;
+  sessionId: string;
+  schemaVersion: typeof SESSION_STATE_SCHEMA_VERSION;
+  createdAt: string;
+  summary: object;
+}
+
+export interface WriteSessionCompactionArtifactResult {
+  artifactId: string;
+  artifactPath: string;
+}
+
 interface ReadSessionArtifactBundle {
   paths: SessionArtifactPaths;
   events: SessionEventRecord[];
@@ -154,6 +169,7 @@ export class LocalSessionStore implements SessionStore {
 
     try {
       mkdirSync(paths.value.rootDir, { recursive: true });
+      mkdirSync(paths.value.compactionsDir, { recursive: true });
       writeFileSync(paths.value.eventsPath, "", { flag: "a" });
       this.sessionPaths.set(sessionId, paths.value);
 
@@ -286,6 +302,10 @@ export function isValidSessionId(sessionId: string): boolean {
   return SESSION_ID_PATTERN.test(sessionId);
 }
 
+export function isValidCompactionArtifactId(artifactId: string): boolean {
+  return SESSION_COMPACTION_ARTIFACT_ID_PATTERN.test(artifactId);
+}
+
 export function createLocalSessionStore(): LocalSessionStore {
   return new LocalSessionStore();
 }
@@ -322,9 +342,126 @@ export function resolveSessionArtifactPaths(
     value: {
       rootDir,
       eventsPath: path.join(rootDir, "events.ndjson"),
-      statePath: path.join(rootDir, "state.json")
+      statePath: path.join(rootDir, "state.json"),
+      compactionsDir: path.join(rootDir, "compactions")
     }
   };
+}
+
+export function resolveSessionCompactionArtifactPath(
+  paths: SessionArtifactPaths,
+  artifactId: string
+): Result<string, SpriteError> {
+  if (!isValidCompactionArtifactId(artifactId)) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_ID_INVALID",
+        "Compaction artifact ID must use the cmp- prefix and contain only kebab-case identifier characters."
+      )
+    );
+  }
+
+  const compactionsDir = path.resolve(paths.compactionsDir);
+  const artifactPath = path.resolve(compactionsDir, `${artifactId}.json`);
+  const relative = path.relative(compactionsDir, artifactPath);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_PATH_ESCAPE",
+        "Compaction artifact path must remain inside the session compactions directory."
+      )
+    );
+  }
+
+  return okSession(artifactPath);
+}
+
+export function writeSessionCompactionArtifact(
+  paths: SessionArtifactPaths,
+  artifact: SessionCompactionArtifact
+): Result<WriteSessionCompactionArtifactResult, SpriteError> {
+  const validation = validateSessionCompactionArtifact(artifact);
+
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  const artifactPath = resolveSessionCompactionArtifactPath(
+    paths,
+    artifact.artifactId
+  );
+
+  if (!artifactPath.ok) {
+    return err(artifactPath.error);
+  }
+
+  try {
+    mkdirSync(paths.compactionsDir, { recursive: true });
+    const tempPath = path.join(
+      paths.compactionsDir,
+      `.${artifact.artifactId}.json.tmp-${process.pid}-${Date.now()}-${randomUUID()}`
+    );
+    writeFileSync(tempPath, `${JSON.stringify(validation.value, null, 2)}\n`);
+    renameSync(tempPath, artifactPath.value);
+
+    return okSession({
+      artifactId: artifact.artifactId,
+      artifactPath: artifactPath.value
+    });
+  } catch (error: unknown) {
+    return err(
+      toSessionStorageError("SESSION_COMPACTION_ARTIFACT_WRITE_FAILED", error)
+    );
+  }
+}
+
+export function readSessionCompactionArtifact(
+  paths: SessionArtifactPaths,
+  artifactId: string
+): Result<SessionCompactionArtifact, SpriteError> {
+  const artifactPath = resolveSessionCompactionArtifactPath(paths, artifactId);
+
+  if (!artifactPath.ok) {
+    return err(artifactPath.error);
+  }
+
+  let raw: string;
+
+  try {
+    raw = readFileSync(artifactPath.value, "utf8");
+  } catch (error: unknown) {
+    return err(
+      toSessionStorageError("SESSION_COMPACTION_ARTIFACT_READ_FAILED", error)
+    );
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error: unknown) {
+    return err(
+      toSessionStorageError("SESSION_COMPACTION_ARTIFACT_INVALID_JSON", error)
+    );
+  }
+
+  const validation = validateSessionCompactionArtifact(parsed);
+
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  if (validation.value.artifactId !== artifactId) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_SCOPE_MISMATCH",
+        "Compaction artifact ID must match the requested artifact."
+      )
+    );
+  }
+
+  return okSession(validation.value);
 }
 
 function readSessionArtifactBundle(
@@ -823,6 +960,75 @@ function validateSessionEventRecord(
   }
 
   return okSession(event as unknown as SessionEventRecord);
+}
+
+function validateSessionCompactionArtifact(
+  artifact: unknown
+): Result<SessionCompactionArtifact, SpriteError> {
+  if (!isPlainRecord(artifact)) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_INVALID",
+        "Compaction artifact must be a plain object."
+      )
+    );
+  }
+
+  if (artifact.schemaVersion !== SESSION_STATE_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_INVALID",
+        "Compaction artifact schemaVersion is not supported."
+      )
+    );
+  }
+
+  if (
+    typeof artifact.artifactId !== "string" ||
+    !isValidCompactionArtifactId(artifact.artifactId)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_INVALID",
+        "Compaction artifact artifactId is not supported."
+      )
+    );
+  }
+
+  if (
+    typeof artifact.sessionId !== "string" ||
+    !isValidSessionId(artifact.sessionId)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_INVALID",
+        "Compaction artifact sessionId is not supported."
+      )
+    );
+  }
+
+  if (
+    typeof artifact.createdAt !== "string" ||
+    artifact.createdAt.length === 0
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_INVALID",
+        "Compaction artifact createdAt must be a non-empty string."
+      )
+    );
+  }
+
+  if (!isPlainRecord(artifact.summary)) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_INVALID",
+        "Compaction artifact summary must be a plain object."
+      )
+    );
+  }
+
+  return okSession(artifact as unknown as SessionCompactionArtifact);
 }
 
 function isPlainPayloadObject(value: unknown): value is object {
