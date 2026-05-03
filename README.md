@@ -80,6 +80,10 @@ Current runtime/package API capabilities include:
 - bounded project-context discovery for direct `SPRITE.md`, `AGENTS.md`,
   `CLAUDE.md`, and `.cursorrules` files, exposed as loaded/skipped/truncated/
   blocked untrusted records through bootstrap and one-shot output
+- structured task context packets assembled by the runtime from runtime
+  self-model, provider limits, user input, session state, project context,
+  memory, and skills source slots with explicit included/skipped/blocked/
+  redacted section statuses
 
 ## Current Limitations
 
@@ -89,6 +93,6 @@ Not implemented yet:
 - full multi-iteration agent loop progression
 - TUI
 - RPC server
-- full context packet assembly and compaction
+- context compaction and provider prompt injection from context packets
 - durable memory persistence and skills
 - CLI/TUI/RPC approval prompts

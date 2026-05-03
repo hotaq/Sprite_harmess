@@ -332,6 +332,9 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("- status: max-iterations");
     expect(result.stdout).toContain("- correlation id: corr_");
     expect(result.stdout).toContain("Final summary:");
+    expect(result.stdout).toContain("Task context:");
+    expect(result.stdout).toContain("- runtime-self-model: included");
+    expect(result.stdout).toContain("- memory: skipped");
     expect(result.stdout).toContain("- result:");
     expect(result.stdout).toContain("Provider-driven tool execution");
     expect(result.stdout).toContain("Validation");
@@ -385,6 +388,34 @@ describe("sprite cli smoke tests", () => {
             fileName: "CLAUDE.md",
             status: "loaded",
             trust: "untrusted"
+          })
+        ])
+      },
+      contextPacket: {
+        summary: {
+          sources: [
+            "runtime-self-model",
+            "provider-limits",
+            "user-input",
+            "session-state",
+            "project-context",
+            "memory",
+            "skills"
+          ]
+        },
+        sections: expect.arrayContaining([
+          expect.objectContaining({
+            source: "project-context",
+            status: "included",
+            trust: "untrusted"
+          }),
+          expect.objectContaining({
+            source: "memory",
+            status: "skipped"
+          }),
+          expect.objectContaining({
+            source: "skills",
+            status: "skipped"
           })
         ])
       },

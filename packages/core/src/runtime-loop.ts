@@ -14,18 +14,34 @@ import type {
   TaskTerminalReason,
   TaskWaitingReason
 } from "./task-state.js";
+import {
+  assembleTaskContextPacket,
+  type TaskContextSessionStateInput
+} from "./task-context.js";
 
 const DEFAULT_MAX_ITERATIONS = 1;
 
+export interface TaskRequestContextOptions {
+  sessionState?: TaskContextSessionStateInput;
+}
+
 export function createTaskRequest(
   task: string,
-  bootstrapState: BootstrapState
+  bootstrapState: BootstrapState,
+  options: TaskRequestContextOptions = {}
 ): TaskRequest {
   return {
     task,
     cwd: bootstrapState.startup.cwd,
     provider: bootstrapState.provider,
     startup: bootstrapState.startup,
+    contextPacket: assembleTaskContextPacket({
+      projectContext: bootstrapState.projectContext,
+      provider: bootstrapState.provider,
+      sessionState: options.sessionState,
+      startup: bootstrapState.startup,
+      task
+    }),
     allowedDefaults: {
       outputFormat: bootstrapState.startup.outputFormat,
       sandboxMode: bootstrapState.startup.sandboxMode,

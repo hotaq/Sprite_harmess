@@ -91,6 +91,7 @@ import {
   inspectSessionState,
   type SessionInspectionView
 } from "./session-inspection.js";
+import type { TaskContextPacket } from "./task-context.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
 
 export interface BootstrapState {
@@ -123,6 +124,7 @@ export interface OneShotPrintTaskResult {
   sessionId: string;
   taskId: string;
   correlationId: string;
+  contextPacket: TaskContextPacket;
   projectContext: ProjectContextLoadResult;
   provider: ResolvedProviderState | null;
   model: string | null;
@@ -344,9 +346,20 @@ export class AgentRuntime {
 
     this.pendingApprovals.clear();
 
-    const request = createTaskRequest(task, resolvedBootstrapState);
     const taskId = this.nextId("task");
     const correlationId = this.nextId("corr");
+    const request = createTaskRequest(task, resolvedBootstrapState, {
+      sessionState: {
+        correlationId,
+        currentPhase: "plan",
+        pendingApprovalCount: 0,
+        restoredEventCount: 0,
+        resumed: false,
+        sessionId: this.sessionId,
+        status: "planned",
+        taskId
+      }
+    });
     const createdAt = this.now();
     const taskState = runInitialPlanActObserveLoop(
       request,
@@ -2432,7 +2445,24 @@ export class AgentRuntime {
     events: RuntimeEventRecord[]
   ): PlannedExecutionFlow {
     const request = {
-      ...createTaskRequest(latestTask.goal, bootstrapState),
+      ...createTaskRequest(latestTask.goal, bootstrapState, {
+        sessionState: {
+          correlationId: latestTask.correlationId,
+          currentPhase: latestTask.currentPhase,
+          filesChangedCount: state.filesChanged.length,
+          filesProposedForChangeCount: state.filesProposedForChange.length,
+          filesReadCount: state.filesRead.length,
+          lastError: state.lastError,
+          latestPlanStepCount: latestTask.latestPlan?.length ?? 0,
+          nextStep: state.nextStep,
+          pendingApprovalCount: state.pendingApprovalCount,
+          restoredEventCount: state.eventCount,
+          resumed: true,
+          sessionId: state.sessionId,
+          status: latestTask.status,
+          taskId: latestTask.taskId
+        }
+      }),
       cwd: state.cwd
     };
     const terminalState = this.createResumedTerminalState(
@@ -3442,6 +3472,7 @@ function createOneShotPrintTaskResult(
     sessionId: state.sessionId,
     taskId: state.taskId,
     correlationId: state.correlationId,
+    contextPacket: state.request.contextPacket,
     projectContext,
     provider: state.request.provider,
     model: state.request.provider?.model ?? null,

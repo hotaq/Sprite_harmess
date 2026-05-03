@@ -510,6 +510,25 @@ describe("AgentRuntime session persistence", () => {
           .getEventHistory(submitted.value.taskId)
           .map((event) => event.type)
       ).toEqual(["task.started", "task.waiting", "session.resumed"]);
+
+      const activeTask = resumedRuntime.getActiveTask();
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+      expect(
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "session-state"
+        )
+      ).toMatchObject({
+        metadata: expect.objectContaining({
+          restoredEventCount: 2,
+          resumed: true,
+          sessionId: submitted.value.sessionId,
+          taskId: submitted.value.taskId
+        }),
+        status: "included"
+      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

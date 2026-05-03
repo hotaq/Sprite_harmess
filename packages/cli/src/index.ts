@@ -120,6 +120,7 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
     ...waitingLine,
     ...terminalLine,
     ...renderProjectContextText(result.projectContext),
+    ...renderTaskContextText(result.contextPacket),
     ...renderFinalSummaryText(result.finalSummary),
     "Runtime events:",
     ...eventLines,
@@ -150,6 +151,19 @@ function renderProjectContextText(
 
       return `- ${record.fileName}: ${record.status}, ${record.trust}, ${byteSummary}${reason}${preview}`;
     })
+  ];
+}
+
+function renderTaskContextText(
+  contextPacket: OneShotPrintTaskResult["contextPacket"]
+): string[] {
+  return [
+    "Task context:",
+    `- summary: included=${contextPacket.summary.includedCount}, skipped=${contextPacket.summary.skippedCount}, blocked=${contextPacket.summary.blockedCount}, redacted=${contextPacket.summary.redactedCount}`,
+    ...contextPacket.summary.sections.map(
+      (section) =>
+        `- ${section.source}: ${section.status}, ${section.trust}${section.redacted ? ", redacted" : ""} - ${section.summary}`
+    )
   ];
 }
 

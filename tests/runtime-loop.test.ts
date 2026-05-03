@@ -36,6 +36,31 @@ describe("AgentRuntime interactive task flow", () => {
     expect(result.value.request.allowedDefaults.toolExecutionEnabled).toBe(
       false
     );
+    expect(
+      result.value.request.contextPacket.sections.map(
+        (section) => section.source
+      )
+    ).toEqual([
+      "runtime-self-model",
+      "provider-limits",
+      "user-input",
+      "session-state",
+      "project-context",
+      "memory",
+      "skills"
+    ]);
+    expect(
+      result.value.request.contextPacket.sections.find(
+        (section) => section.source === "session-state"
+      )
+    ).toMatchObject({
+      status: "included",
+      metadata: expect.objectContaining({
+        correlationId: result.value.correlationId,
+        sessionId: result.value.sessionId,
+        taskId: result.value.taskId
+      })
+    });
     expect(result.value.request.stopConditions.maxIterations).toBe(1);
     expect(result.value.status).toBe("waiting-for-input");
     expect(result.value.currentPhase).toBe("act");
@@ -448,6 +473,23 @@ describe("AgentRuntime interactive task flow", () => {
           })
         ])
       );
+      expect(result.value.contextPacket.summary.sources).toEqual([
+        "runtime-self-model",
+        "provider-limits",
+        "user-input",
+        "session-state",
+        "project-context",
+        "memory",
+        "skills"
+      ]);
+      expect(
+        result.value.contextPacket.sections.find(
+          (section) => section.source === "project-context"
+        )
+      ).toMatchObject({
+        status: "included",
+        trust: "untrusted"
+      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

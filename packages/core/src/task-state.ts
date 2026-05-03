@@ -6,6 +6,7 @@ import type {
 import type { ResolvedProviderState } from "@sprite/providers";
 import type { FileActivityRecord } from "./file-activity.js";
 import type { RuntimeEventRecord } from "./runtime-events.js";
+import type { TaskContextPacket } from "./task-context.js";
 
 export type RuntimeLoopPhase = "plan" | "act" | "observe";
 export type TaskExecutionStatus =
@@ -43,6 +44,7 @@ export interface TaskRequest {
   cwd: string;
   provider: ResolvedProviderState | null;
   startup: ResolvedStartupConfig;
+  contextPacket: TaskContextPacket;
   allowedDefaults: TaskAllowedDefaults;
   stopConditions: TaskStopConditions;
 }

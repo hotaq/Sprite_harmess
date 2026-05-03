@@ -312,9 +312,55 @@ The shared runtime exposes the project-context result through
 one-shot text/JSON output render only core-returned records; the CLI does not
 read project files directly.
 
-This slice still does not implement full context packet assembly, provider
+This slice itself did not implement full context packet assembly, provider
 prompt injection, memory or skill context inclusion, semantic search, TUI/RPC
 inspection screens, or compaction. Later Epic 3 stories own those flows.
+
+## Task Context Packet Assembly
+
+Story 3.5 adds the first structured task context packet. `@sprite/core`
+exposes `assembleTaskContextPacket()` and stores the packet on
+`TaskRequest.contextPacket` for both new tasks and conservatively resumed
+sessions.
+
+The canonical source order is:
+
+1. `runtime-self-model`
+2. `provider-limits`
+3. `user-input`
+4. `session-state`
+5. `project-context`
+6. `memory`
+7. `skills`
+
+Every packet section records a source, trust level, status, summary, safe
+metadata, and optional bounded redacted content. Section statuses are:
+`included`, `skipped`, `blocked`, and `redacted`. The packet summary exposes
+source ordering and counts without raw section content.
+
+Runtime-owned sections stay trusted and authoritative. Project context records
+remain explicitly `untrusted` and lower priority than runtime/system policy.
+User input, project context, and future memory/skill summaries are represented
+only through bounded redacted previews before adapter-facing output can see
+them.
+
+Current runtime integration:
+
+- new interactive tasks include session identity, task ID, correlation ID, and
+  lifecycle phase in the `session-state` section
+- resumed tasks include bounded restored-session metadata such as restored event
+  count, pending approval count, file activity counts, task status, and current
+  phase without replaying tools, commands, approvals, validations, or provider
+  calls
+- one-shot JSON output includes the structured `contextPacket`
+- one-shot text output renders a concise task-context status summary and does
+  not dump raw project documents, memory, or skills
+
+Memory and skills do not load durable backing stores yet. Their source slots are
+represented as explicit `skipped` sections until later memory and skill-registry
+stories implement those systems. This story also does not implement provider
+prompt injection, live provider completions, automatic tool calls, semantic
+search, TUI/RPC context rendering, or compaction.
 
 ## Sandboxed Command Execution
 
