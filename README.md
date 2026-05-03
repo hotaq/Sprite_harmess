@@ -77,6 +77,9 @@ Current runtime/package API capabilities include:
   state, validates event history, emits a metadata-only `session.resumed`
   event, and does not replay tools, commands, approvals, validations, or
   provider calls
+- bounded project-context discovery for direct `SPRITE.md`, `AGENTS.md`,
+  `CLAUDE.md`, and `.cursorrules` files, exposed as loaded/skipped/truncated/
+  blocked untrusted records through bootstrap and one-shot output
 
 ## Current Limitations
 
@@ -86,6 +89,6 @@ Not implemented yet:
 - full multi-iteration agent loop progression
 - TUI
 - RPC server
-- context loading and compaction
+- full context packet assembly and compaction
 - durable memory persistence and skills
 - CLI/TUI/RPC approval prompts

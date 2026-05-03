@@ -274,6 +274,48 @@ waiting/terminal task state, but it does not replay tools, commands,
 validations, approvals, provider calls, project context loading, context
 assembly, TUI/RPC flows, or compaction.
 
+## Project Context Loading
+
+Story 3.4 adds the first safe project-context loading slice. The runtime now
+checks the resolved project cwd for direct files in this deterministic order:
+
+1. `SPRITE.md`
+2. `AGENTS.md`
+3. `CLAUDE.md`
+4. `.cursorrules`
+
+`@sprite/config` exposes `loadProjectContextFiles()` and records every
+candidate as `loaded`, `skipped`, `truncated`, or `blocked`. Records include
+the direct file name, absolute and relative path, priority, byte counts,
+truncation state, redaction state, optional bounded redacted content/preview,
+and a reason for skipped, truncated, or blocked candidates.
+
+Project context files are always marked `untrusted`. They are repository
+guidance with lower priority than runtime/system policy, sandbox policy,
+approval state, provider configuration, validation commands, and user input.
+The loader does not parse project context as executable configuration and does
+not allow these files to introduce tools, approvals, safety overrides, or
+sandbox changes.
+
+Safety behavior for this slice:
+
+- only direct files under the resolved cwd are considered
+- directories, symlinks, unreadable files, and non-regular candidates are
+  blocked with per-file records
+- each file uses a deterministic per-file byte budget and truncates instead of
+  loading unbounded content
+- secret-like values are redacted with the shared sensitive-value helpers before
+  content or previews are exposed
+
+The shared runtime exposes the project-context result through
+`AgentRuntime.getBootstrapState()` and one-shot print results. CLI bootstrap and
+one-shot text/JSON output render only core-returned records; the CLI does not
+read project files directly.
+
+This slice still does not implement full context packet assembly, provider
+prompt injection, memory or skill context inclusion, semantic search, TUI/RPC
+inspection screens, or compaction. Later Epic 3 stories own those flows.
+
 ## Sandboxed Command Execution
 
 Story 2.5 adds sandboxed command execution for runtime/package API use through
@@ -429,5 +471,5 @@ Not implemented yet:
 - Full multi-iteration agent loop progression
 - TUI
 - RPC server
-- Session resume/context/compaction flows
+- Full context packet assembly and compaction flows
 - Durable memory persistence and skills

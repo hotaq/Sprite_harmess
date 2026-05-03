@@ -384,6 +384,98 @@ describe("AgentRuntime interactive task flow", () => {
     });
   });
 
+  it("exposes untrusted project-context records through bootstrap state", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      writeFileSync(join(projectDir, "AGENTS.md"), "Use rtk in this repo.\n");
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const result = runtime.getBootstrapState();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+
+      expect(result.value.projectContext.warning).toContain("untrusted");
+      expect(result.value.projectContext.records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            content: expect.stringContaining("Use rtk"),
+            fileName: "AGENTS.md",
+            relativePath: "AGENTS.md",
+            status: "loaded",
+            trust: "untrusted"
+          })
+        ])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("carries project-context records into one-shot print results", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      writeFileSync(
+        join(projectDir, "CLAUDE.md"),
+        "Repository guidance is advisory.\n"
+      );
+
+      const result = runOneShotPrintTask("summarize context", {
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        outputFormat: "json"
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+
+      expect(result.value.projectContext.records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            content: expect.stringContaining("Repository guidance"),
+            fileName: "CLAUDE.md",
+            status: "loaded",
+            trust: "untrusted"
+          })
+        ])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses one bootstrap state when creating one-shot print results", () => {
+    const originalGetBootstrapState = AgentRuntime.prototype.getBootstrapState;
+    let bootstrapReadCount = 0;
+
+    AgentRuntime.prototype.getBootstrapState = function getBootstrapStateSpy() {
+      bootstrapReadCount += 1;
+      return originalGetBootstrapState.call(this);
+    };
+
+    try {
+      const result = runOneShotPrintTask("avoid stale bootstrap reads", {
+        cwd: "/tmp/sprite-project",
+        homeDir: "/tmp/sprite-home",
+        outputFormat: "json"
+      });
+
+      expect(result.ok).toBe(true);
+      expect(bootstrapReadCount).toBe(1);
+    } finally {
+      AgentRuntime.prototype.getBootstrapState = originalGetBootstrapState;
+    }
+  });
+
   it("includes grouped file activity in final summaries", async () => {
     const { projectDir, rootDir } = createTempProject();
 

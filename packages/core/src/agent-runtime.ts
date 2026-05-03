@@ -1,7 +1,10 @@
 import {
+  loadProjectContextFiles,
   resolveSpriteRuntimeConfig,
   toStartupConfig,
   type ConfigLoaderOptions,
+  type ProjectContextFileRecord,
+  type ProjectContextLoadResult,
   type ResolvedStartupConfig,
   type SpriteOutputFormat,
   type SpriteValidationCommand
@@ -95,6 +98,7 @@ export interface BootstrapState {
   message: string;
   interfaces: string[];
   startup: ResolvedStartupConfig;
+  projectContext: ProjectContextLoadResult;
   provider: ResolvedProviderState | null;
   warnings: string[];
 }
@@ -119,6 +123,7 @@ export interface OneShotPrintTaskResult {
   sessionId: string;
   taskId: string;
   correlationId: string;
+  projectContext: ProjectContextLoadResult;
   provider: ResolvedProviderState | null;
   model: string | null;
   waitingState: PlannedExecutionFlow["waitingState"];
@@ -296,6 +301,12 @@ export class AgentRuntime {
   getBootstrapState(): Result<BootstrapState> {
     const runtimeConfig = resolveSpriteRuntimeConfig(this.options);
     const startup = toStartupConfig(runtimeConfig);
+    const projectContext = loadProjectContextFiles(startup.cwd);
+
+    if (!projectContext.ok) {
+      return projectContext;
+    }
+
     const provider = initializeProviderAdapter(runtimeConfig, {
       env: this.options.env,
       homeDir: this.options.homeDir,
@@ -309,21 +320,31 @@ export class AgentRuntime {
         "Sprite Harness bootstrap workspace is ready. Interactive task planning is available through the shared runtime.",
       interfaces: ["cli"],
       startup,
+      projectContext: projectContext.value,
       provider: provider.adapter?.getState() ?? null,
       warnings
     });
   }
 
-  submitInteractiveTask(task: string): Result<PlannedExecutionFlow> {
-    const bootstrapState = this.getBootstrapState();
+  submitInteractiveTask(
+    task: string,
+    bootstrapState?: BootstrapState
+  ): Result<PlannedExecutionFlow> {
+    let resolvedBootstrapState = bootstrapState;
 
-    if (!bootstrapState.ok) {
-      return bootstrapState;
+    if (resolvedBootstrapState === undefined) {
+      const loadedBootstrapState = this.getBootstrapState();
+
+      if (!loadedBootstrapState.ok) {
+        return loadedBootstrapState;
+      }
+
+      resolvedBootstrapState = loadedBootstrapState.value;
     }
 
     this.pendingApprovals.clear();
 
-    const request = createTaskRequest(task, bootstrapState.value);
+    const request = createTaskRequest(task, resolvedBootstrapState);
     const taskId = this.nextId("task");
     const correlationId = this.nextId("corr");
     const createdAt = this.now();
@@ -338,7 +359,7 @@ export class AgentRuntime {
       this.nextEventId(),
       this.nextEventId(),
       [
-        ...bootstrapState.value.warnings,
+        ...resolvedBootstrapState.warnings,
         "Interactive task planning is available; repository inspection tools are available through runtime/package APIs, while provider-driven tool use starts in later stories."
       ]
     );
@@ -3123,6 +3144,30 @@ function formatProviderCapabilities(
   return `streaming=${provider.capabilities.supportsStreaming}, tool-calls=${provider.capabilities.supportsToolCalls}, context-window=${contextWindow}`;
 }
 
+function formatProjectContextRecord(record: ProjectContextFileRecord): string {
+  const byteSummary =
+    record.totalBytes === 0
+      ? "0 bytes"
+      : record.truncated
+        ? `${record.bytesRead}/${record.totalBytes} bytes`
+        : `${record.bytesRead} bytes`;
+  const reason = record.reason === undefined ? "" : ` - ${record.reason}`;
+  const preview =
+    record.preview === undefined ? "" : ` - preview: ${record.preview}`;
+
+  return `- ${record.fileName}: ${record.status}, ${record.trust}, ${byteSummary}${reason}${preview}`;
+}
+
+function formatProjectContextLines(
+  projectContext: ProjectContextLoadResult
+): string[] {
+  return [
+    "Project context:",
+    `- note: ${projectContext.warning}`,
+    ...projectContext.records.map(formatProjectContextRecord)
+  ];
+}
+
 export function createBootstrapMessage(
   options: RuntimeStartupOptions = {}
 ): string {
@@ -3156,6 +3201,7 @@ export function createBootstrapMessage(
       startup.projectConfigLoaded,
       startup.projectConfigPath
     )}`,
+    ...formatProjectContextLines(state.value.projectContext),
     ...warningLines,
     "Use --help to inspect the current CLI surface."
   ].join("\n");
@@ -3336,13 +3382,22 @@ export function runOneShotPrintTask(
   options: OneShotPrintTaskOptions = {}
 ): Result<OneShotPrintTaskResult> {
   const runtime = new AgentRuntime(options);
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return bootstrapState;
+  }
+
   const unsubscribe =
     options.onEvent === undefined
       ? undefined
       : runtime.subscribeToEvents(options.onEvent);
 
   try {
-    const submittedState = runtime.submitInteractiveTask(task);
+    const submittedState = runtime.submitInteractiveTask(
+      task,
+      bootstrapState.value
+    );
 
     if (!submittedState.ok) {
       return submittedState;
@@ -3365,7 +3420,8 @@ export function runOneShotPrintTask(
     return ok(
       createOneShotPrintTaskResult(
         finalState,
-        options.outputFormat ?? finalState.request.allowedDefaults.outputFormat
+        options.outputFormat ?? finalState.request.allowedDefaults.outputFormat,
+        bootstrapState.value.projectContext
       )
     );
   } finally {
@@ -3375,7 +3431,8 @@ export function runOneShotPrintTask(
 
 function createOneShotPrintTaskResult(
   state: PlannedExecutionFlow,
-  outputFormat: OneShotPrintOutputFormat
+  outputFormat: OneShotPrintOutputFormat,
+  projectContext: ProjectContextLoadResult
 ): OneShotPrintTaskResult {
   return {
     task: state.request.task,
@@ -3385,6 +3442,7 @@ function createOneShotPrintTaskResult(
     sessionId: state.sessionId,
     taskId: state.taskId,
     correlationId: state.correlationId,
+    projectContext,
     provider: state.request.provider,
     model: state.request.provider?.model ?? null,
     waitingState: state.waitingState,

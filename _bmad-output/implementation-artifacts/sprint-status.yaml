@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-05-03T17:12:04+0700
+# last_updated: 2026-05-03T17:37:27+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-05-03T17:12:04+0700
+last_updated: 2026-05-03T17:37:27+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -67,7 +67,7 @@ development_status:
   3-1-create-and-persist-local-sessions: done
   3-2-inspect-basic-session-state: done
   3-3-resume-previous-sessions: done
-  3-4-load-project-context-files-as-untrusted-context: backlog
+  3-4-load-project-context-files-as-untrusted-context: done
   3-5-assemble-task-context-from-runtime-sources: backlog
   3-6-compact-long-running-context-into-structured-summary: backlog
   3-7-trigger-manual-compaction: backlog

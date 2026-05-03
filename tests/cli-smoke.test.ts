@@ -149,6 +149,30 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).not.toContain("sk-test-secret");
   });
 
+  it("shows project-context load records in bootstrap output as untrusted guidance", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    writeRaw(
+      join(projectDir, "AGENTS.md"),
+      "OPENAI_API_KEY=sk-test-secret\nUse rtk for commands.\n"
+    );
+
+    const result = spawnSync("node", [cliPath], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Project context:");
+    expect(result.stdout).toContain("- AGENTS.md: loaded");
+    expect(result.stdout).toContain("untrusted");
+    expect(result.stdout).toContain("[REDACTED]");
+    expect(result.stdout).not.toContain("sk-test-secret");
+  });
+
   it("routes an interactive task through AgentRuntime and returns a planned execution flow", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 
@@ -325,6 +349,10 @@ describe("sprite cli smoke tests", () => {
       },
       output: { format: "text" }
     });
+    writeRaw(
+      join(projectDir, "CLAUDE.md"),
+      "Repository guidance is advisory and lower priority.\n"
+    );
 
     const result = spawnSync(
       "node",
@@ -350,6 +378,16 @@ describe("sprite cli smoke tests", () => {
     expect(output).toMatchObject({
       task: "fix the json output",
       status: "max-iterations",
+      projectContext: {
+        records: expect.arrayContaining([
+          expect.objectContaining({
+            content: expect.stringContaining("Repository guidance"),
+            fileName: "CLAUDE.md",
+            status: "loaded",
+            trust: "untrusted"
+          })
+        ])
+      },
       provider: {
         providerName: "openai-compatible",
         model: "gpt-5.4",

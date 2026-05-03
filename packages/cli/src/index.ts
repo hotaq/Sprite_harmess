@@ -119,6 +119,7 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
     `- correlation id: ${result.correlationId}`,
     ...waitingLine,
     ...terminalLine,
+    ...renderProjectContextText(result.projectContext),
     ...renderFinalSummaryText(result.finalSummary),
     "Runtime events:",
     ...eventLines,
@@ -128,6 +129,28 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
 
 function renderOneShotJson(result: OneShotPrintTaskResult): string {
   return JSON.stringify(result, null, 2);
+}
+
+function renderProjectContextText(
+  projectContext: OneShotPrintTaskResult["projectContext"]
+): string[] {
+  return [
+    "Project context:",
+    `- note: ${projectContext.warning}`,
+    ...projectContext.records.map((record) => {
+      const byteSummary =
+        record.totalBytes === 0
+          ? "0 bytes"
+          : record.truncated
+            ? `${record.bytesRead}/${record.totalBytes} bytes`
+            : `${record.bytesRead} bytes`;
+      const reason = record.reason === undefined ? "" : ` - ${record.reason}`;
+      const preview =
+        record.preview === undefined ? "" : ` - preview: ${record.preview}`;
+
+      return `- ${record.fileName}: ${record.status}, ${record.trust}, ${byteSummary}${reason}${preview}`;
+    })
+  ];
 }
 
 function renderSessionInspectionJson(view: SessionInspectionView): string {
