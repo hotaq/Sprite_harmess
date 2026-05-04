@@ -5,7 +5,18 @@ import {
   err,
   type Result
 } from "@sprite/shared";
-import type { SessionEventRecord, SessionStateSnapshot } from "@sprite/storage";
+import {
+  readSessionArtifacts,
+  writeSessionCompactionArtifact,
+  type SessionCompactionArtifact,
+  type SessionEventRecord,
+  type SessionStateSnapshot
+} from "@sprite/storage";
+import {
+  inspectSessionState,
+  type SessionInspectionView
+} from "./session-inspection.js";
+import type { TaskContextPacket } from "./task-context.js";
 
 export const COMPACTION_SUMMARY_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_COMPACTION_MAX_LARGE_OUTPUT_PREVIEW_CHARS = 2_000;
@@ -113,6 +124,120 @@ export interface CompactionSummaryOptions {
   maxLargeOutputPreviewChars?: number;
 }
 
+export interface CompactSessionArtifactsOptions extends CompactionSummaryOptions {
+  artifactId?: string;
+  contextPacket?: TaskContextPacket;
+  createdAt?: string;
+  firstRetainedEventId?: string;
+  previousCompactionArtifactId?: string;
+  triggerReason?: CompactionTriggerReason;
+}
+
+export interface CompactSessionArtifactsResult {
+  artifact: SessionCompactionArtifact;
+  artifactPath: string;
+  summary: CompactionSummary;
+}
+
+interface BuildCompactionInputFromSessionArtifactsInput {
+  contextPacket?: TaskContextPacket;
+  createdAt: string;
+  events: SessionEventRecord[];
+  firstRetainedEventId?: string;
+  inspection: SessionInspectionView;
+  previousCompactionArtifactId?: string;
+  sessionId: string;
+  state: SessionStateSnapshot;
+  triggerReason: CompactionTriggerReason;
+}
+
+export function compactSessionArtifacts(
+  cwd: string,
+  sessionId: string,
+  options: CompactSessionArtifactsOptions = {}
+): Result<CompactSessionArtifactsResult, SpriteError> {
+  const contextPacketValidation = validateContextPacketForSession(
+    options.contextPacket,
+    sessionId
+  );
+
+  if (!contextPacketValidation.ok) {
+    return err(contextPacketValidation.error);
+  }
+
+  const artifacts = readSessionArtifacts(cwd, sessionId, {
+    recentEventLimit: 0
+  });
+
+  if (!artifacts.ok) {
+    return err(artifacts.error);
+  }
+
+  const inspection = inspectSessionState(cwd, sessionId, {
+    recentEventLimit: 50
+  });
+
+  if (!inspection.ok) {
+    return err(inspection.error);
+  }
+
+  if (inspection.value.persistedEventCount !== artifacts.value.events.length) {
+    return err(
+      new SpriteError(
+        "COMPACTION_SESSION_CHANGED_DURING_READ",
+        "Session artifacts changed while compaction evidence was being read; retry compaction."
+      )
+    );
+  }
+
+  const createdAt = options.createdAt ?? new Date().toISOString();
+  const summary = createCompactionSummary(
+    buildCompactionInputFromSessionArtifacts({
+      contextPacket: options.contextPacket,
+      createdAt,
+      events: artifacts.value.events,
+      firstRetainedEventId:
+        options.firstRetainedEventId ??
+        selectFirstRetainedEventId(artifacts.value.events),
+      inspection: inspection.value,
+      previousCompactionArtifactId: options.previousCompactionArtifactId,
+      sessionId,
+      state: artifacts.value.state,
+      triggerReason: options.triggerReason ?? "manual"
+    }),
+    options
+  );
+
+  if (!summary.ok) {
+    return err(summary.error);
+  }
+
+  const artifact = {
+    artifactId: options.artifactId ?? createCompactionArtifactId(createdAt),
+    createdAt,
+    schemaVersion: COMPACTION_SUMMARY_SCHEMA_VERSION,
+    sessionId,
+    summary: summary.value
+  } satisfies SessionCompactionArtifact;
+  const written = writeSessionCompactionArtifact(
+    artifacts.value.paths,
+    artifact
+  );
+
+  if (!written.ok) {
+    return err(written.error);
+  }
+
+  return {
+    ok: true,
+    value: {
+      artifact,
+      artifactPath: written.value.artifactPath,
+      summary: summary.value
+    }
+  };
+}
+
 export function createCompactionSummary(
   input: CompactionSummaryInput,
   options: CompactionSummaryOptions = {}
@@ -210,6 +335,250 @@ export function summarizeLargeOutputReference(
       ? {}
       : { toolCallId: output.toolCallId })
   };
+}
+
+function buildCompactionInputFromSessionArtifacts(
+  input: BuildCompactionInputFromSessionArtifactsInput
+): CompactionSummaryInput {
+  const latestTask = input.inspection.latestTask ?? input.state.latestTask;
+  const nextStep = input.inspection.nextStep ?? input.state.nextStep;
+  const progress = compactTextList([
+    ...(input.state.lastEventType === undefined
+      ? []
+      : [`Latest event: ${input.state.lastEventType}`]),
+    `Execution state: ${input.inspection.executionState.kind} - ${input.inspection.executionState.detail}`,
+    ...contextPacketProgress(input.contextPacket),
+    ...(latestTask === undefined
+      ? []
+      : [
+          `Task status: ${latestTask.status}`,
+          `Current phase: ${latestTask.currentPhase}`
+        ])
+  ]);
+
+  return {
+    activeConstraints: activeConstraintsFromContextPacket(input.contextPacket),
+    commandsRun: input.inspection.commandsRun,
+    createdAt: input.createdAt,
+    currentPlan: latestTask?.latestPlan?.map((step) => step.summary) ?? [],
+    decisions: decisionsFromEvents(input.events),
+    events: input.events,
+    failures:
+      input.inspection.lastError === undefined
+        ? []
+        : [input.inspection.lastError],
+    filesTouched: [
+      ...input.inspection.filesChanged,
+      ...input.inspection.filesProposedForChange,
+      ...input.inspection.filesRead
+    ],
+    firstRetainedEventId: input.firstRetainedEventId,
+    nextSteps: nextStep === undefined ? [] : [nextStep],
+    pendingApprovals:
+      input.inspection.pendingApprovalCount > 0
+        ? [`${input.inspection.pendingApprovalCount} pending approval(s)`]
+        : [],
+    previousCompactionArtifactId: input.previousCompactionArtifactId,
+    progress,
+    sessionId: input.sessionId,
+    state: input.state,
+    taskGoal: latestTask?.goal ?? "No active task goal recorded.",
+    triggerReason: input.triggerReason
+  };
+}
+
+function validateContextPacketForSession(
+  contextPacket: TaskContextPacket | undefined,
+  sessionId: string
+): Result<void, SpriteError> {
+  if (contextPacket === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  const sessionSection = contextPacket.sections.find(
+    (section) => section.source === "session-state"
+  );
+  const contextSessionId = sessionSection?.metadata.sessionId;
+
+  if (sessionSection === undefined || typeof contextSessionId !== "string") {
+    return err(
+      new SpriteError(
+        "COMPACTION_CONTEXT_PACKET_SESSION_MISSING",
+        "Compaction context packet must include a session-state section with a concrete sessionId."
+      )
+    );
+  }
+
+  if (contextSessionId !== sessionId) {
+    return err(
+      new SpriteError(
+        "COMPACTION_CONTEXT_PACKET_SESSION_MISMATCH",
+        "Compaction context packet sessionId must match the compacted session."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
+}
+
+function createCompactionArtifactId(createdAt: string): string {
+  const normalized = createdAt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+
+  return `cmp-${normalized.length === 0 ? "manual" : normalized}`;
+}
+
+function selectFirstRetainedEventId(
+  events: readonly SessionEventRecord[]
+): string | undefined {
+  return events.at(-1)?.eventId;
+}
+
+function activeConstraintsFromContextPacket(
+  contextPacket: TaskContextPacket | undefined
+): string[] {
+  if (contextPacket === undefined) {
+    return [];
+  }
+
+  return contextPacket.sections
+    .filter(
+      (section) =>
+        section.trust !== "untrusted" &&
+        (section.status === "included" || section.status === "redacted") &&
+        (section.source === "runtime-self-model" ||
+          section.source === "provider-limits" ||
+          section.source === "session-state")
+    )
+    .map((section) => `${section.title}: ${section.summary}`);
+}
+
+function decisionsFromEvents(events: readonly SessionEventRecord[]): string[] {
+  return events.flatMap((event) => {
+    switch (event.type) {
+      case "task.recovery.recorded":
+        return decisionFromTaskRecoveryEvent(event);
+      case "policy.decision.recorded":
+        return decisionFromPolicyEvent(event);
+      case "approval.resolved":
+        return decisionFromApprovalResolvedEvent(event);
+      default:
+        return [];
+    }
+  });
+}
+
+function decisionFromTaskRecoveryEvent(event: SessionEventRecord): string[] {
+  const payload = event.payload as Record<string, unknown>;
+  const decision = stringPayloadValue(payload, "decision");
+  const trigger = stringPayloadValue(payload, "trigger");
+  const summary = stringPayloadValue(payload, "summary");
+  const nextAction = stringPayloadValue(payload, "nextAction");
+
+  if (
+    decision === undefined ||
+    trigger === undefined ||
+    summary === undefined
+  ) {
+    return [];
+  }
+
+  return [
+    compactDecisionText([
+      `Recovery ${decision} after ${trigger}`,
+      summary,
+      nextAction === undefined ? undefined : `next: ${nextAction}`
+    ])
+  ];
+}
+
+function decisionFromPolicyEvent(event: SessionEventRecord): string[] {
+  const payload = event.payload as Record<string, unknown>;
+  const action = stringPayloadValue(payload, "action");
+  const requestType = stringPayloadValue(payload, "requestType");
+  const riskLevel = stringPayloadValue(payload, "riskLevel");
+  const ruleId = stringPayloadValue(payload, "ruleId");
+  const summary = stringPayloadValue(payload, "summary");
+  const reason = stringPayloadValue(payload, "reason");
+
+  if (
+    action === undefined ||
+    requestType === undefined ||
+    riskLevel === undefined ||
+    ruleId === undefined ||
+    summary === undefined
+  ) {
+    return [];
+  }
+
+  return [
+    compactDecisionText([
+      `Policy ${requestType} ${action}`,
+      `risk: ${riskLevel}`,
+      `rule: ${ruleId}`,
+      summary,
+      reason
+    ])
+  ];
+}
+
+function decisionFromApprovalResolvedEvent(
+  event: SessionEventRecord
+): string[] {
+  const payload = event.payload as Record<string, unknown>;
+  const decision = stringPayloadValue(payload, "decision");
+  const requestType = stringPayloadValue(payload, "requestType");
+  const summary = stringPayloadValue(payload, "summary");
+  const reason = stringPayloadValue(payload, "reason");
+
+  if (
+    decision === undefined ||
+    requestType === undefined ||
+    summary === undefined
+  ) {
+    return [];
+  }
+
+  return [
+    compactDecisionText([
+      `Approval ${requestType} ${decision}`,
+      summary,
+      reason
+    ])
+  ];
+}
+
+function compactDecisionText(parts: readonly (string | undefined)[]): string {
+  return parts
+    .filter((part) => part !== undefined && part.length > 0)
+    .join(" — ");
+}
+
+function stringPayloadValue(
+  payload: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const value = payload[key];
+
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function contextPacketProgress(
+  contextPacket: TaskContextPacket | undefined
+): string[] {
+  if (contextPacket === undefined) {
+    return [];
+  }
+
+  return [
+    `Context packet included sections: ${contextPacket.summary.includedCount}`,
+    `Context packet sources: ${contextPacket.summary.sources.join(", ")}`,
+    ...contextPacket.summary.sections
+      .filter((section) => section.status === "included")
+      .map((section) => `Context ${section.source}: ${section.summary}`)
+  ];
 }
 
 function createSourceEventRange(

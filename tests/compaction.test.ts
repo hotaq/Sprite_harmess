@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import * as core from "@sprite/core";
 import type { SessionEventRecord, SessionStateSnapshot } from "@sprite/storage";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 type CompactionTriggerReason =
   | "manual"
@@ -93,6 +102,37 @@ type CreateCompactionSummary = (
   };
 };
 
+type CompactionSummaryValue = NonNullable<
+  ReturnType<CreateCompactionSummary>["value"]
+>;
+
+type CompactSessionArtifacts = (
+  cwd: string,
+  sessionId: string,
+  options?: {
+    artifactId?: string;
+    contextPacket?: unknown;
+    createdAt?: string;
+    firstRetainedEventId?: string;
+    previousCompactionArtifactId?: string;
+    triggerReason?: CompactionTriggerReason;
+  }
+) => {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    artifact: {
+      artifactId: string;
+      createdAt: string;
+      schemaVersion: 1;
+      sessionId: string;
+      summary: CompactionSummaryValue;
+    };
+    artifactPath: string;
+    summary: CompactionSummaryValue;
+  };
+};
+
 function getCreateCompactionSummary(): CreateCompactionSummary {
   const createCompactionSummary = (
     core as typeof core & {
@@ -105,6 +145,20 @@ function getCreateCompactionSummary(): CreateCompactionSummary {
   }
 
   return createCompactionSummary;
+}
+
+function getCompactSessionArtifacts(): CompactSessionArtifacts {
+  const compactSessionArtifacts = (
+    core as typeof core & {
+      compactSessionArtifacts?: CompactSessionArtifacts;
+    }
+  ).compactSessionArtifacts;
+
+  if (compactSessionArtifacts === undefined) {
+    throw new Error("Expected @sprite/core to export compactSessionArtifacts.");
+  }
+
+  return compactSessionArtifacts;
 }
 
 function createSessionEvent(
@@ -123,6 +177,34 @@ function createSessionEvent(
     createdAt: "2026-05-04T00:00:00.000Z",
     payload
   };
+}
+
+function createRuntimeSessionEvent(
+  sessionId: string,
+  taskId: string,
+  correlationId: string,
+  eventId: string,
+  type: string,
+  payload: object
+): SessionEventRecord {
+  return {
+    schemaVersion: 1,
+    eventId,
+    sessionId,
+    taskId,
+    correlationId,
+    type,
+    createdAt: "2026-05-04T00:30:00.000Z",
+    payload
+  };
+}
+
+function readSessionEvents(path: string): SessionEventRecord[] {
+  const content = readFileSync(path, "utf8").trim();
+
+  return content.length === 0
+    ? []
+    : content.split("\n").map((line) => JSON.parse(line) as SessionEventRecord);
 }
 
 function createSnapshot(sessionId: string): SessionStateSnapshot {
@@ -336,5 +418,225 @@ describe("compaction summary creation", () => {
       "RAW_OUTPUT_SHOULD_NOT_BE_EMBEDDED"
     );
     expect(JSON.stringify(result.value)).not.toContain("x".repeat(1_000));
+  });
+});
+
+describe("compaction runtime boundary", () => {
+  it("writes a session compaction artifact without rewriting the event log", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-session-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "compact this running task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const artifactPath = join(
+        sessionDir,
+        "compactions",
+        "cmp-runtime-001.json"
+      );
+      const recordedFiles = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["package.json"],
+        summary: "Updated package metadata during compaction setup."
+      });
+      expect(recordedFiles.ok).toBe(true);
+
+      const policyDecision = createRuntimeSessionEvent(
+        sessionId,
+        submitted.value.taskId,
+        submitted.value.correlationId,
+        "evt_compaction_policy",
+        "policy.decision.recorded",
+        {
+          action: "require_approval",
+          command: "rtk run npm test -- --run",
+          reason: "Project validation command requires user approval.",
+          requestType: "command",
+          riskLevel: "medium",
+          ruleId: "command-approval",
+          status: "recorded",
+          summary: "Command policy decision recorded.",
+          timeoutMs: 30_000
+        }
+      );
+      const recoveryDecision = createRuntimeSessionEvent(
+        sessionId,
+        submitted.value.taskId,
+        submitted.value.correlationId,
+        "evt_compaction_recovery",
+        "task.recovery.recorded",
+        {
+          decision: "retry_with_fix",
+          message: "Validation failed before compaction.",
+          nextAction: "Fix validation failure before resume.",
+          sourceEventId: "evt_compaction_policy",
+          status: "recorded",
+          summary: "Retry with a narrower validation command.",
+          trigger: "validation_failed",
+          validationId: "val_compaction"
+        }
+      );
+      const approvalDecision = createRuntimeSessionEvent(
+        sessionId,
+        submitted.value.taskId,
+        submitted.value.correlationId,
+        "evt_compaction_approval",
+        "approval.resolved",
+        {
+          approvalRequestId: "approval_compaction",
+          decision: "allow",
+          reason: "User approved validation command.",
+          requestType: "command",
+          status: "resolved",
+          summary: "Approval resolved for validation command."
+        }
+      );
+
+      appendFileSync(
+        eventsPath,
+        [policyDecision, recoveryDecision, approvalDecision]
+          .map((event) => JSON.stringify(event))
+          .join("\n") + "\n"
+      );
+
+      const eventsBefore = readFileSync(eventsPath, "utf8");
+      const persistedEvents = readSessionEvents(eventsPath);
+      const compactSessionArtifacts = getCompactSessionArtifacts();
+
+      const compacted = compactSessionArtifacts(projectDir, sessionId, {
+        artifactId: "cmp-runtime-001",
+        contextPacket: submitted.value.request.contextPacket,
+        createdAt: "2026-05-04T00:50:00.000Z",
+        triggerReason: "manual"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      expect(readFileSync(eventsPath, "utf8")).toBe(eventsBefore);
+      expect(existsSync(artifactPath)).toBe(true);
+      expect(compacted.value.artifactPath).toBe(artifactPath);
+      expect(compacted.value.artifact).toMatchObject({
+        artifactId: "cmp-runtime-001",
+        createdAt: "2026-05-04T00:50:00.000Z",
+        schemaVersion: 1,
+        sessionId
+      });
+      expect(compacted.value.summary).toMatchObject({
+        schemaVersion: 1,
+        kind: "session.compaction.summary",
+        sessionId,
+        createdAt: "2026-05-04T00:50:00.000Z",
+        triggerReason: "manual",
+        source: {
+          eventCount: persistedEvents.length,
+          eventRange: {
+            firstEventId: persistedEvents[0]?.eventId,
+            lastEventId: persistedEvents.at(-1)?.eventId
+          },
+          firstRetainedEventId: persistedEvents.at(-1)?.eventId
+        },
+        continuity: {
+          taskGoal: "compact this running task"
+        },
+        safety: {
+          largeRawOutputsEmbedded: false
+        }
+      });
+      expect(compacted.value.summary.continuity.progress).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Context packet included sections:"),
+          expect.stringContaining("Context packet sources:")
+        ])
+      );
+      expect(compacted.value.summary.continuity.activeConstraints).toEqual(
+        expect.arrayContaining([expect.stringContaining("Runtime self-model:")])
+      );
+      expect(compacted.value.summary.continuity.decisions).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Policy command require_approval"),
+          expect.stringContaining("Recovery retry_with_fix"),
+          expect.stringContaining("Approval command allow")
+        ])
+      );
+      expect(compacted.value.summary.continuity.commandsRun).toContain(
+        "rtk run npm test -- --run"
+      );
+      expect(compacted.value.summary.continuity.filesTouched).toContain(
+        "package.json"
+      );
+      expect(readFileSync(artifactPath, "utf8")).toContain(
+        '"kind": "session.compaction.summary"'
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a live context packet from a different session", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-session-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "reject mismatched context"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const mismatchedContextPacket = JSON.parse(
+        JSON.stringify(submitted.value.request.contextPacket)
+      ) as {
+        sections: Array<{
+          metadata: Record<string, unknown>;
+          source: string;
+        }>;
+      };
+      const sessionSection = mismatchedContextPacket.sections.find(
+        (section) => section.source === "session-state"
+      );
+
+      if (sessionSection !== undefined) {
+        sessionSection.metadata.sessionId = "ses_other_session";
+      }
+
+      const compactSessionArtifacts = getCompactSessionArtifacts();
+      const compacted = compactSessionArtifacts(
+        projectDir,
+        submitted.value.sessionId,
+        {
+          artifactId: "cmp-context-mismatch",
+          contextPacket: mismatchedContextPacket,
+          createdAt: "2026-05-04T00:55:00.000Z",
+          triggerReason: "manual"
+        }
+      );
+
+      expect(compacted.ok).toBe(false);
+      expect(compacted.error?.code).toBe(
+        "COMPACTION_CONTEXT_PACKET_SESSION_MISMATCH"
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
   });
 });

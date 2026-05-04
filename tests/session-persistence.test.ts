@@ -459,6 +459,9 @@ describe("AgentRuntime session persistence", () => {
         "sessions",
         submitted.value.sessionId
       );
+      rmSync(join(sessionDir, "compactions"), { recursive: true, force: true });
+      expect(existsSync(join(sessionDir, "compactions"))).toBe(false);
+
       const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
       const resumed = resumeSession(resumedRuntime, submitted.value.sessionId);
 
