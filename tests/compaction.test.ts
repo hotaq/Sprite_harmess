@@ -6,7 +6,8 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
-  rmSync
+  rmSync,
+  writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -133,6 +134,39 @@ type CompactSessionArtifacts = (
   };
 };
 
+type CompactSessionManually = (
+  cwd: string,
+  sessionId: string,
+  options?: {
+    artifactId?: string;
+    createdAt?: string;
+    eventId?: string;
+    triggerReason?: CompactionTriggerReason;
+  }
+) => {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    artifactId: string;
+    artifactPath: string;
+    compactionEventId: string;
+    createdAt: string;
+    sessionId: string;
+    source: {
+      eventCount: number;
+      eventRange: {
+        firstEventId: string;
+        lastEventId: string;
+      };
+      firstRetainedEventId?: string;
+      previousCompactionArtifactId?: string;
+    };
+    summary: CompactionSummaryValue;
+    taskId: string;
+    triggerReason: CompactionTriggerReason;
+  };
+};
+
 function getCreateCompactionSummary(): CreateCompactionSummary {
   const createCompactionSummary = (
     core as typeof core & {
@@ -159,6 +193,20 @@ function getCompactSessionArtifacts(): CompactSessionArtifacts {
   }
 
   return compactSessionArtifacts;
+}
+
+function getCompactSessionManually(): CompactSessionManually {
+  const compactSessionManually = (
+    core as typeof core & {
+      compactSessionManually?: CompactSessionManually;
+    }
+  ).compactSessionManually;
+
+  if (compactSessionManually === undefined) {
+    throw new Error("Expected @sprite/core to export compactSessionManually.");
+  }
+
+  return compactSessionManually;
 }
 
 function createSessionEvent(
@@ -582,6 +630,178 @@ describe("compaction runtime boundary", () => {
       expect(readFileSync(artifactPath, "utf8")).toContain(
         '"kind": "session.compaction.summary"'
       );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manual compaction writes an artifact, appends one event, and updates the snapshot", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask("manual compact now");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const statePath = join(sessionDir, "state.json");
+      const compactSessionManually = getCompactSessionManually();
+      const beforeEvents = readSessionEvents(eventsPath);
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-manual-001",
+        createdAt: "2026-05-04T01:00:00.000Z",
+        eventId: "evt_session_compacted_manual"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      const afterEvents = readSessionEvents(eventsPath);
+      const state = JSON.parse(readFileSync(statePath, "utf8")) as {
+        eventCount: number;
+        lastEventId?: string;
+        lastEventType?: string;
+      };
+
+      expect(afterEvents).toHaveLength(beforeEvents.length + 1);
+      expect(afterEvents.at(-1)).toMatchObject({
+        eventId: "evt_session_compacted_manual",
+        sessionId,
+        taskId: submitted.value.taskId,
+        correlationId: submitted.value.correlationId,
+        type: "session.compacted",
+        payload: {
+          artifactId: "cmp-manual-001",
+          sourceEventCount: beforeEvents.length,
+          sourceFirstEventId: beforeEvents[0]?.eventId,
+          sourceLastEventId: beforeEvents.at(-1)?.eventId,
+          status: "recorded",
+          triggerReason: "manual"
+        }
+      });
+      expect(compacted.value).toMatchObject({
+        artifactId: "cmp-manual-001",
+        compactionEventId: "evt_session_compacted_manual",
+        sessionId,
+        taskId: submitted.value.taskId,
+        triggerReason: "manual",
+        source: {
+          eventCount: beforeEvents.length,
+          eventRange: {
+            firstEventId: beforeEvents[0]?.eventId,
+            lastEventId: beforeEvents.at(-1)?.eventId
+          }
+        }
+      });
+      expect(existsSync(compacted.value.artifactPath)).toBe(true);
+      expect(state).toMatchObject({
+        eventCount: afterEvents.length,
+        lastEventId: "evt_session_compacted_manual",
+        lastEventType: "session.compacted"
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manual compaction fails recoverably before writing an artifact when latest task metadata is missing", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "manual compact missing task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const statePath = join(sessionDir, "state.json");
+      const compactionsDir = join(sessionDir, "compactions");
+      const state = JSON.parse(
+        readFileSync(statePath, "utf8")
+      ) as SessionStateSnapshot;
+      const { latestTask: _latestTask, ...stateWithoutLatestTask } = state;
+
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(stateWithoutLatestTask, null, 2)}\n`
+      );
+
+      const beforeEvents = readFileSync(eventsPath, "utf8");
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-should-not-exist",
+        createdAt: "2026-05-04T01:05:00.000Z",
+        eventId: "evt_should_not_append"
+      });
+
+      expect(compacted.ok).toBe(false);
+      expect(compacted.error?.code).toBe("MANUAL_COMPACTION_UNAVAILABLE");
+      expect(compacted.error?.message).toContain("state.latestTask");
+      expect(readFileSync(eventsPath, "utf8")).toBe(beforeEvents);
+      expect(existsSync(join(compactionsDir, "cmp-should-not-exist.json"))).toBe(
+        false
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manual compaction removes the artifact if event validation fails after artifact write", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "manual compact append failure"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const artifactPath = join(
+        sessionDir,
+        "compactions",
+        "cmp-event-validation-failure.json"
+      );
+      const beforeEvents = readFileSync(eventsPath, "utf8");
+      const compactSessionManually = getCompactSessionManually();
+
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-event-validation-failure",
+        createdAt: "not-a-date",
+        eventId: "evt_event_validation_failure"
+      });
+
+      expect(compacted.ok).toBe(false);
+      expect(compacted.error?.code).toBe("INVALID_RUNTIME_EVENT");
+      expect(readFileSync(eventsPath, "utf8")).toBe(beforeEvents);
+      expect(existsSync(artifactPath)).toBe(false);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

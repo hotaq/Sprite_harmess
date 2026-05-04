@@ -752,6 +752,63 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(negativeEventCount).ok).toBe(false);
   });
 
+  it("validates session compaction events without raw summary payloads or secrets", () => {
+    const compacted = createRuntimeEventRecord(
+      {
+        eventId: "evt_session_compacted",
+        sessionId: "ses_session_compacted",
+        taskId: "task_test",
+        correlationId: "corr_test",
+        createdAt: "2026-05-04T10:00:00.000Z"
+      },
+      "session.compacted",
+      {
+        artifactId: "cmp-manual-001",
+        firstRetainedEventId: "evt_last_before_compaction",
+        sourceEventCount: 3,
+        sourceFirstEventId: "evt_started",
+        sourceLastEventId: "evt_last_before_compaction",
+        status: "recorded",
+        summary: "Manual compaction recorded a resumable summary.",
+        triggerReason: "manual"
+      }
+    );
+    const invalidArtifact = {
+      ...compacted,
+      payload: {
+        ...compacted.payload,
+        artifactId: "artifact-001"
+      }
+    };
+    const rawSummary = {
+      ...compacted,
+      payload: {
+        ...compacted.payload,
+        rawContent: "full raw compaction summary"
+      }
+    };
+    const secretSummary = {
+      ...compacted,
+      payload: {
+        ...compacted.payload,
+        summary: "Compaction captured OPENAI_API_KEY=sk-test-secret."
+      }
+    };
+    const missingRange = {
+      ...compacted,
+      payload: {
+        ...compacted.payload,
+        sourceLastEventId: ""
+      }
+    };
+
+    expect(validateRuntimeEvent(compacted).ok).toBe(true);
+    expect(validateRuntimeEvent(invalidArtifact).ok).toBe(false);
+    expect(validateRuntimeEvent(rawSummary).ok).toBe(false);
+    expect(validateRuntimeEvent(secretSummary).ok).toBe(false);
+    expect(validateRuntimeEvent(missingRange).ok).toBe(false);
+  });
+
   it("validates memory safety audit events without raw content or secret values", () => {
     const valid = createRuntimeEventRecord(
       {

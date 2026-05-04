@@ -2,12 +2,14 @@
 
 import {
   AgentRuntime,
+  compactSessionManually,
   createBootstrapMessage,
   createInteractiveTaskMessage,
   inspectSessionState,
   resolveOneShotPrintOutputFormat,
   runOneShotPrintTask,
   type FinalTaskSummary,
+  type ManualSessionCompactionResult,
   type OneShotPrintOutputFormat,
   type OneShotPrintTaskResult,
   type SessionInspectionView,
@@ -175,6 +177,12 @@ function renderSessionResumeJson(result: SessionResumeResult): string {
   return JSON.stringify(result, null, 2);
 }
 
+function renderSessionCompactionJson(
+  result: ManualSessionCompactionResult
+): string {
+  return JSON.stringify(result, null, 2);
+}
+
 function renderSessionInspectionText(view: SessionInspectionView): string {
   const latestTask = view.latestTask;
   const latestTaskLines =
@@ -299,6 +307,36 @@ function renderSessionResumeText(result: SessionResumeResult): string {
   ].join("\n");
 }
 
+function renderSessionCompactionText(
+  result: ManualSessionCompactionResult
+): string {
+  const firstRetainedEventId =
+    result.source.firstRetainedEventId ?? "not recorded";
+  const previousArtifactId =
+    result.source.previousCompactionArtifactId ?? "none";
+
+  return [
+    "Session compacted:",
+    `- session id: ${result.sessionId}`,
+    `- task id: ${result.taskId}`,
+    `- artifact id: ${result.artifactId}`,
+    `- artifact path: ${result.artifactPath}`,
+    `- compaction event id: ${result.compactionEventId}`,
+    `- trigger reason: ${result.triggerReason}`,
+    `- created at: ${result.createdAt}`,
+    `- source event count: ${result.source.eventCount}`,
+    `- source event range: ${result.source.eventRange.firstEventId}..${result.source.eventRange.lastEventId}`,
+    `- first retained event id: ${firstRetainedEventId}`,
+    `- previous compaction artifact id: ${previousArtifactId}`,
+    `- task goal: ${result.summary.continuity.taskGoal}`,
+    `- decisions preserved: ${result.summary.continuity.decisions.length}`,
+    `- files touched preserved: ${result.summary.continuity.filesTouched.length}`,
+    `- commands preserved: ${result.summary.continuity.commandsRun.length}`,
+    "Next step:",
+    `- inspect with: sprite session inspect ${result.sessionId}`
+  ].join("\n");
+}
+
 function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
   const providerLabel =
     summary.provider === null
@@ -418,9 +456,11 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
       );
     });
 
-  program
+  const sessionCommand = program
     .command("session")
-    .description("inspect local session state")
+    .description("inspect or compact local session state");
+
+  sessionCommand
     .command("inspect <sessionId>")
     .description("inspect a project-local session without resuming it")
     .option("--output <format>", "print output format: text or json")
@@ -455,6 +495,31 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
           outputFormat === "json"
             ? renderSessionInspectionJson(inspected.value)
             : renderSessionInspectionText(inspected.value)
+        );
+      }
+    );
+
+  sessionCommand
+    .command("compact <sessionId>")
+    .description("compact a project-local session without resuming it")
+    .option("--output <format>", "print output format: text or json")
+    .action(
+      (sessionId: string, options: { output?: string }, command: Command) => {
+        const optionValues = command.optsWithGlobals<{ output?: string }>();
+        const outputFormat = parseSessionInspectOutputFormat(
+          options.output ?? optionValues.output
+        );
+        const compacted = compactSessionManually(process.cwd(), sessionId);
+
+        if (!compacted.ok) {
+          throw compacted.error;
+        }
+
+        writeMessage(
+          io,
+          outputFormat === "json"
+            ? renderSessionCompactionJson(compacted.value)
+            : renderSessionCompactionText(compacted.value)
         );
       }
     );

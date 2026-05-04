@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import {
   SpriteError,
   containsSecretLikeValue,
@@ -6,6 +7,7 @@ import {
   type Result
 } from "@sprite/shared";
 import {
+  LocalSessionStore,
   readSessionArtifacts,
   writeSessionCompactionArtifact,
   type SessionCompactionArtifact,
@@ -16,6 +18,10 @@ import {
   inspectSessionState,
   type SessionInspectionView
 } from "./session-inspection.js";
+import {
+  createRuntimeEventRecord,
+  validateRuntimeEvent
+} from "./runtime-events.js";
 import type { TaskContextPacket } from "./task-context.js";
 
 export const COMPACTION_SUMMARY_SCHEMA_VERSION = 1 as const;
@@ -139,6 +145,23 @@ export interface CompactSessionArtifactsResult {
   summary: CompactionSummary;
 }
 
+export interface ManualSessionCompactionOptions
+  extends CompactSessionArtifactsOptions {
+  eventId?: string;
+}
+
+export interface ManualSessionCompactionResult {
+  artifactId: string;
+  artifactPath: string;
+  compactionEventId: string;
+  createdAt: string;
+  sessionId: string;
+  source: CompactionSummarySource;
+  summary: CompactionSummary;
+  taskId: string;
+  triggerReason: CompactionTriggerReason;
+}
+
 interface BuildCompactionInputFromSessionArtifactsInput {
   contextPacket?: TaskContextPacket;
   createdAt: string;
@@ -234,6 +257,141 @@ export function compactSessionArtifacts(
       artifact,
       artifactPath: written.value.artifactPath,
       summary: summary.value
+    }
+  };
+}
+
+export function compactSessionManually(
+  cwd: string,
+  sessionId: string,
+  options: ManualSessionCompactionOptions = {}
+): Result<ManualSessionCompactionResult, SpriteError> {
+  const artifacts = readSessionArtifacts(cwd, sessionId, {
+    recentEventLimit: 0
+  });
+
+  if (!artifacts.ok) {
+    return err(artifacts.error);
+  }
+
+  const { events, state } = artifacts.value;
+  const latestTask = state.latestTask;
+
+  if (latestTask === undefined) {
+    return err(
+      new SpriteError(
+        "MANUAL_COMPACTION_UNAVAILABLE",
+        "Manual compaction requires state.latestTask in state.json before it can record a session.compacted event."
+      )
+    );
+  }
+
+  if (events.length === 0) {
+    return err(
+      new SpriteError(
+        "MANUAL_COMPACTION_UNAVAILABLE",
+        "Manual compaction requires at least one persisted runtime event in events.ndjson."
+      )
+    );
+  }
+
+  const sessionStore = new LocalSessionStore();
+  const ensured = sessionStore.ensureSession(
+    state.sessionId,
+    state.cwd,
+    state.createdAt
+  );
+
+  if (!ensured.ok) {
+    return err(ensured.error);
+  }
+
+  const snapshotPreflight = sessionStore.writeStateSnapshot(state);
+
+  if (!snapshotPreflight.ok) {
+    return err(snapshotPreflight.error);
+  }
+
+  const compacted = compactSessionArtifacts(cwd, sessionId, {
+    ...options,
+    triggerReason: options.triggerReason ?? "manual"
+  });
+
+  if (!compacted.ok) {
+    return err(compacted.error);
+  }
+
+  const { artifact, artifactPath, summary } = compacted.value;
+  const source = summary.source;
+  const createdAt = artifact.createdAt;
+  const compactionEvent = createRuntimeEventRecord(
+    {
+      correlationId: latestTask.correlationId,
+      createdAt,
+      eventId: options.eventId ?? createCompactionEventId(createdAt),
+      sessionId,
+      taskId: latestTask.taskId
+    },
+    "session.compacted",
+    {
+      artifactId: artifact.artifactId,
+      ...(source.firstRetainedEventId === undefined
+        ? {}
+        : { firstRetainedEventId: source.firstRetainedEventId }),
+      ...(source.previousCompactionArtifactId === undefined
+        ? {}
+        : {
+            previousCompactionArtifactId:
+              source.previousCompactionArtifactId
+          }),
+      sourceEventCount: source.eventCount,
+      sourceFirstEventId: source.eventRange.firstEventId,
+      sourceLastEventId: source.eventRange.lastEventId,
+      status: "recorded",
+      summary: createManualCompactionEventSummary(summary),
+      triggerReason: summary.triggerReason
+    }
+  );
+  const validatedEvent = validateRuntimeEvent(compactionEvent);
+
+  if (!validatedEvent.ok) {
+    removeWrittenCompactionArtifact(artifactPath);
+    return err(validatedEvent.error);
+  }
+
+  const appended = sessionStore.appendEvents(state.sessionId, [
+    validatedEvent.value
+  ]);
+
+  if (!appended.ok) {
+    removeWrittenCompactionArtifact(artifactPath);
+    return err(appended.error);
+  }
+
+  const snapshot = sessionStore.writeStateSnapshot({
+    ...state,
+    eventCount: source.eventCount + 1,
+    lastEventId: validatedEvent.value.eventId,
+    lastEventType: validatedEvent.value.type,
+    updatedAt: createdAt
+  });
+
+  if (!snapshot.ok) {
+    return err(snapshot.error);
+  }
+
+  return {
+    ok: true,
+    value: {
+      artifactId: artifact.artifactId,
+      artifactPath,
+      compactionEventId: validatedEvent.value.eventId,
+      createdAt,
+      sessionId,
+      source,
+      summary,
+      taskId: latestTask.taskId,
+      triggerReason: summary.triggerReason
     }
   };
 }
@@ -428,6 +586,31 @@ function createCompactionArtifactId(createdAt: string): string {
     .replace(/^-+|-+$/gu, "");
 
   return `cmp-${normalized.length === 0 ? "manual" : normalized}`;
+}
+
+function createCompactionEventId(createdAt: string): string {
+  const normalized = createdAt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+
+  return `evt_session_compacted_${normalized.length === 0 ? "manual" : normalized}`;
+}
+
+function createManualCompactionEventSummary(summary: CompactionSummary): string {
+  return createRedactedPreview(
+    `${summary.triggerReason} compaction recorded artifact ${summary.sessionId}/${summary.source.eventRange.firstEventId}..${summary.source.eventRange.lastEventId} as ${summary.kind}.`,
+    240
+  );
+}
+
+function removeWrittenCompactionArtifact(artifactPath: string): void {
+  try {
+    rmSync(artifactPath, { force: true });
+  } catch {
+    // Best-effort rollback. The original persistence error is more useful to
+    // callers than a cleanup failure for an artifact they did not request.
+  }
 }
 
 function selectFirstRetainedEventId(

@@ -156,6 +156,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.recovery.recorded",
   "memory.safety.evaluated",
   "session.resumed",
+  "session.compacted",
   "policy.decision.recorded",
   "approval.requested",
   "approval.resolved",
@@ -169,6 +170,13 @@ const RUNTIME_EVENT_TYPES = [
   "tool.call.started",
   "tool.call.completed",
   "tool.call.failed"
+] as const;
+
+const SESSION_COMPACTION_TRIGGER_REASONS = [
+  "manual",
+  "threshold",
+  "context-overflow",
+  "recovery"
 ] as const;
 
 export type RuntimeEventType = (typeof RUNTIME_EVENT_TYPES)[number];
@@ -236,6 +244,17 @@ export interface RuntimeEventPayloadMap {
     restoredTaskStatus: TaskExecutionStatus;
     status: "recorded";
     summary: string;
+  };
+  "session.compacted": {
+    artifactId: string;
+    firstRetainedEventId?: string;
+    previousCompactionArtifactId?: string;
+    sourceEventCount: number;
+    sourceFirstEventId: string;
+    sourceLastEventId: string;
+    status: "recorded";
+    summary: string;
+    triggerReason: (typeof SESSION_COMPACTION_TRIGGER_REASONS)[number];
   };
   "policy.decision.recorded": {
     action: (typeof POLICY_ACTIONS)[number];
@@ -708,6 +727,13 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "session.compacted": {
+      return validateSessionCompactedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "memory.safety.evaluated": {
       return validateMemorySafetyEvaluatedEvent(
         context,
@@ -1108,6 +1134,159 @@ function validateSessionResumedEvent(
     restoredTaskStatus: restoredTaskStatus.value,
     status: status.value,
     summary: summary.value
+  });
+}
+
+function validateSessionCompactedEvent(
+  context: RuntimeEventContext,
+  type: "session.compacted",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"session.compacted">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null || "rawEventPayload" in payload) {
+    const field = forbiddenField ?? "rawEventPayload";
+
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${field}'.`
+      )
+    );
+  }
+
+  const artifactId = requirePayloadString(type, payload, "artifactId");
+  const firstRetainedEventId = optionalPayloadString(
+    type,
+    payload,
+    "firstRetainedEventId"
+  );
+  const previousCompactionArtifactId = optionalPayloadString(
+    type,
+    payload,
+    "previousCompactionArtifactId"
+  );
+  const sourceEventCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "sourceEventCount"
+  );
+  const sourceFirstEventId = requirePayloadString(
+    type,
+    payload,
+    "sourceFirstEventId"
+  );
+  const sourceLastEventId = requirePayloadString(
+    type,
+    payload,
+    "sourceLastEventId"
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const triggerReason = requirePayloadLiteral(
+    type,
+    payload,
+    "triggerReason",
+    SESSION_COMPACTION_TRIGGER_REASONS
+  );
+
+  if (artifactId.ok === false) {
+    return err(artifactId.error);
+  }
+  if (firstRetainedEventId.ok === false) {
+    return err(firstRetainedEventId.error);
+  }
+  if (previousCompactionArtifactId.ok === false) {
+    return err(previousCompactionArtifactId.error);
+  }
+  if (sourceEventCount.ok === false) {
+    return err(sourceEventCount.error);
+  }
+  if (sourceFirstEventId.ok === false) {
+    return err(sourceFirstEventId.error);
+  }
+  if (sourceLastEventId.ok === false) {
+    return err(sourceLastEventId.error);
+  }
+  if (status.ok === false) {
+    return err(status.error);
+  }
+  if (summary.ok === false) {
+    return err(summary.error);
+  }
+  if (triggerReason.ok === false) {
+    return err(triggerReason.error);
+  }
+
+  if (sourceEventCount.value === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field 'sourceEventCount' must be greater than zero.`
+      )
+    );
+  }
+
+  if (!/^cmp-[a-z0-9][a-z0-9-]*$/u.test(artifactId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field 'artifactId' must be a valid compaction artifact ID.`
+      )
+    );
+  }
+
+  if (
+    previousCompactionArtifactId.value !== undefined &&
+    !/^cmp-[a-z0-9][a-z0-9-]*$/u.test(previousCompactionArtifactId.value)
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' optional payload field 'previousCompactionArtifactId' must be a valid compaction artifact ID.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    ["artifactId", artifactId.value],
+    ["firstRetainedEventId", firstRetainedEventId.value],
+    ["previousCompactionArtifactId", previousCompactionArtifactId.value],
+    ["sourceFirstEventId", sourceFirstEventId.value],
+    ["sourceLastEventId", sourceLastEventId.value],
+    ["summary", summary.value]
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (value !== undefined && containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload field '${field}' contains a secret-like value.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    artifactId: artifactId.value,
+    ...(firstRetainedEventId.value === undefined
+      ? {}
+      : { firstRetainedEventId: firstRetainedEventId.value }),
+    ...(previousCompactionArtifactId.value === undefined
+      ? {}
+      : { previousCompactionArtifactId: previousCompactionArtifactId.value }),
+    sourceEventCount: sourceEventCount.value,
+    sourceFirstEventId: sourceFirstEventId.value,
+    sourceLastEventId: sourceLastEventId.value,
+    status: status.value,
+    summary: summary.value,
+    triggerReason: triggerReason.value
   });
 }
 

@@ -674,6 +674,107 @@ describe("sprite cli smoke tests", () => {
     }
   });
 
+  it("compacts a session manually as JSON without leaking provider secrets", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const created = spawnSync(
+        "node",
+        [cliPath, "--print", "compact cli json", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            OPENAI_API_KEY: "sk-test-secret"
+          },
+          encoding: "utf8"
+        }
+      );
+
+      expect(created.status).toBe(0);
+      const sessionId = String(parseJsonOutput(created.stdout).sessionId);
+      const compacted = spawnSync(
+        "node",
+        [cliPath, "session", "compact", sessionId, "--output", "json"],
+        {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            OPENAI_API_KEY: "sk-test-secret"
+          },
+          encoding: "utf8"
+        }
+      );
+
+      expect(compacted.status).toBe(0);
+      expect(compacted.stdout).not.toContain("sk-test-secret");
+
+      const output = parseJsonOutput(compacted.stdout);
+
+      expect(output).toMatchObject({
+        sessionId,
+        artifactId: expect.stringMatching(/^cmp-/),
+        compactionEventId: expect.stringMatching(/^evt_/),
+        triggerReason: "manual",
+        source: {
+          eventCount: 3
+        },
+        summary: {
+          kind: "session.compaction.summary",
+          continuity: {
+            taskGoal: "compact cli json"
+          }
+        }
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders manual session compaction text with artifact and source metadata", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const created = spawnSync(
+        "node",
+        [cliPath, "--print", "compact cli text", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(created.status).toBe(0);
+      const sessionId = String(parseJsonOutput(created.stdout).sessionId);
+      const compacted = spawnSync(
+        "node",
+        [cliPath, "session", "compact", sessionId],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(compacted.status).toBe(0);
+      expect(compacted.stdout).toContain("Session compacted:");
+      expect(compacted.stdout).toContain(`- session id: ${sessionId}`);
+      expect(compacted.stdout).toContain("- artifact id: cmp-");
+      expect(compacted.stdout).toContain("- compaction event id: evt_");
+      expect(compacted.stdout).toContain("- trigger reason: manual");
+      expect(compacted.stdout).toContain("- source event count: 3");
+      expect(compacted.stdout).toContain("- first retained event id:");
+      expect(compacted.stdout).toContain("- task goal: compact cli text");
+      expect(compacted.stdout).toContain("Next step:");
+      expect(compacted.stdout).toContain("sprite session inspect");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("resumes a previous session as JSON without leaking provider secrets", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 
