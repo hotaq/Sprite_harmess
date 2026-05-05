@@ -45,6 +45,7 @@ describe("AgentRuntime interactive task flow", () => {
       "provider-limits",
       "user-input",
       "session-state",
+      "compacted-context",
       "project-context",
       "memory",
       "skills"
@@ -478,6 +479,7 @@ describe("AgentRuntime interactive task flow", () => {
         "provider-limits",
         "user-input",
         "session-state",
+        "compacted-context",
         "project-context",
         "memory",
         "skills"

@@ -8,7 +8,9 @@ import {
 } from "@sprite/shared";
 import {
   LocalSessionStore,
+  readSessionCompactionArtifact,
   readSessionArtifacts,
+  resolveSessionCompactionArtifactPath,
   writeSessionCompactionArtifact,
   type SessionCompactionArtifact,
   type SessionEventRecord,
@@ -21,12 +23,15 @@ import {
 } from "./session-inspection.js";
 import {
   createRuntimeEventRecord,
-  validateRuntimeEvent
+  validateRuntimeEvent,
+  type RuntimeEventRecord,
+  type RuntimeEventType
 } from "./runtime-events.js";
 import type { TaskContextPacket } from "./task-context.js";
 
 export const COMPACTION_SUMMARY_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_COMPACTION_MAX_LARGE_OUTPUT_PREVIEW_CHARS = 2_000;
+export const DEFAULT_COMPACTED_CONTEXT_RECENT_EVENT_LIMIT = 20;
 
 export const COMPACTION_TRIGGER_REASONS = [
   "manual",
@@ -167,6 +172,31 @@ export interface ManualSessionCompactionResult {
   taskId: string;
   triggerReason: CompactionTriggerReason;
   warnings?: string[];
+}
+
+export interface ContextAssemblyNote {
+  code: "COMPACTED_CONTEXT_SUPERSEDED";
+  field: keyof CompactionSummaryContinuity;
+  message: string;
+}
+
+export interface CompactedContextRecentEvent {
+  createdAt: string;
+  eventId: string;
+  summary: string;
+  type: RuntimeEventType;
+}
+
+export interface CompactedSessionContext {
+  artifactId: string;
+  artifactPath: string;
+  compactionEventId: string;
+  compactedAt: string;
+  notes: ContextAssemblyNote[];
+  omittedRecentEventCount: number;
+  recentEvents: CompactedContextRecentEvent[];
+  source: CompactionSummarySource;
+  summary: CompactionSummary;
 }
 
 interface BuildCompactionInputFromSessionArtifactsInput {
@@ -412,6 +442,113 @@ export function compactSessionManually(
   };
 }
 
+export function readLatestCompactedSessionContext(
+  cwd: string,
+  sessionId: string
+): Result<CompactedSessionContext | undefined, SpriteError> {
+  const artifacts = readSessionArtifacts(cwd, sessionId, {
+    recentEventLimit: 0
+  });
+
+  if (!artifacts.ok) {
+    return err(artifacts.error);
+  }
+
+  const runtimeEvents: RuntimeEventRecord[] = [];
+
+  for (const event of artifacts.value.events) {
+    const validation = validateRuntimeEvent(event);
+
+    if (!validation.ok) {
+      return err(
+        new SpriteError(
+          "SESSION_EVENT_RUNTIME_INVALID",
+          `Stored session event ${event.eventId} is not a valid runtime event: ${validation.error.message}`
+        )
+      );
+    }
+
+    runtimeEvents.push(validation.value);
+  }
+
+  const compactedEventIndex = findLatestCompactionEventIndex(runtimeEvents);
+
+  if (compactedEventIndex === -1) {
+    return { ok: true, value: undefined };
+  }
+
+  const compactionEvent = runtimeEvents[
+    compactedEventIndex
+  ] as RuntimeEventRecord<"session.compacted">;
+  const artifactId = compactionEvent.payload.artifactId;
+  const artifact = readSessionCompactionArtifact(
+    artifacts.value.paths,
+    artifactId
+  );
+
+  if (!artifact.ok) {
+    return err(artifact.error);
+  }
+
+  if (artifact.value.sessionId !== sessionId) {
+    return err(
+      new SpriteError(
+        "SESSION_COMPACTION_ARTIFACT_SCOPE_MISMATCH",
+        "Compaction artifact sessionId must match the restored session."
+      )
+    );
+  }
+
+  const summary = validateCompactionSummaryArtifact(
+    artifact.value.summary,
+    sessionId
+  );
+
+  if (!summary.ok) {
+    return err(summary.error);
+  }
+
+  const artifactPath = resolveSessionCompactionArtifactPath(
+    artifacts.value.paths,
+    artifact.value.artifactId
+  );
+
+  if (!artifactPath.ok) {
+    return err(artifactPath.error);
+  }
+
+  const postCompactionEvents = runtimeEvents.slice(compactedEventIndex + 1);
+  const boundedPostCompactionEvents = postCompactionEvents.slice(
+    -DEFAULT_COMPACTED_CONTEXT_RECENT_EVENT_LIMIT
+  );
+  const omittedRecentEventCount =
+    postCompactionEvents.length - boundedPostCompactionEvents.length;
+  const recentEvents = boundedPostCompactionEvents.map(
+    createCompactedContextRecentEvent
+  );
+  const notes = createCompactedContextNotes(
+    summary.value,
+    artifacts.value.state,
+    boundedPostCompactionEvents,
+    omittedRecentEventCount
+  );
+
+  return {
+    ok: true,
+    value: {
+      artifactId: artifact.value.artifactId,
+      artifactPath: artifactPath.value,
+      compactionEventId: compactionEvent.eventId,
+      compactedAt: compactionEvent.createdAt,
+      notes,
+      omittedRecentEventCount,
+      recentEvents,
+      source: summary.value.source,
+      summary: summary.value
+    }
+  };
+}
+
 export function createCompactionSummary(
   input: CompactionSummaryInput,
   options: CompactionSummaryOptions = {}
@@ -509,6 +646,389 @@ export function summarizeLargeOutputReference(
       ? {}
       : { toolCallId: output.toolCallId })
   };
+}
+
+function findLatestCompactionEventIndex(
+  events: readonly RuntimeEventRecord[]
+): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === "session.compacted") {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function validateCompactionSummaryArtifact(
+  summary: unknown,
+  sessionId: string
+): Result<CompactionSummary, SpriteError> {
+  if (!isPlainRecord(summary)) {
+    return err(
+      new SpriteError(
+        "COMPACTION_SUMMARY_INVALID",
+        "Compaction artifact summary must be a plain object."
+      )
+    );
+  }
+
+  if (
+    summary.schemaVersion !== COMPACTION_SUMMARY_SCHEMA_VERSION ||
+    summary.kind !== "session.compaction.summary" ||
+    summary.sessionId !== sessionId ||
+    typeof summary.createdAt !== "string" ||
+    !COMPACTION_TRIGGER_REASONS.includes(
+      summary.triggerReason as CompactionTriggerReason
+    ) ||
+    summary.status !== "created"
+  ) {
+    return err(
+      new SpriteError(
+        "COMPACTION_SUMMARY_INVALID",
+        "Compaction artifact summary metadata is not supported."
+      )
+    );
+  }
+
+  if (!isCompactionSummaryContinuity(summary.continuity)) {
+    return err(
+      new SpriteError(
+        "COMPACTION_SUMMARY_INVALID",
+        "Compaction artifact summary continuity is not supported."
+      )
+    );
+  }
+
+  if (!isCompactionSummarySource(summary.source)) {
+    return err(
+      new SpriteError(
+        "COMPACTION_SUMMARY_INVALID",
+        "Compaction artifact summary source metadata is not supported."
+      )
+    );
+  }
+
+  if (
+    !isPlainRecord(summary.metrics) ||
+    !Array.isArray(summary.largeOutputReferences) ||
+    !isPlainRecord(summary.safety) ||
+    summary.safety.largeRawOutputsEmbedded !== false ||
+    typeof summary.safety.redacted !== "boolean"
+  ) {
+    return err(
+      new SpriteError(
+        "COMPACTION_SUMMARY_INVALID",
+        "Compaction artifact summary safety metadata is not supported."
+      )
+    );
+  }
+
+  return { ok: true, value: summary as unknown as CompactionSummary };
+}
+
+function isCompactionSummaryContinuity(
+  value: unknown
+): value is CompactionSummaryContinuity {
+  if (!isPlainRecord(value) || typeof value.taskGoal !== "string") {
+    return false;
+  }
+
+  return [
+    "activeConstraints",
+    "decisions",
+    "currentPlan",
+    "progress",
+    "filesTouched",
+    "commandsRun",
+    "failures",
+    "pendingApprovals",
+    "nextSteps"
+  ].every((field) => isStringArray(value[field]));
+}
+
+function isCompactionSummarySource(
+  value: unknown
+): value is CompactionSummarySource {
+  if (!isPlainRecord(value) || !isPlainRecord(value.eventRange)) {
+    return false;
+  }
+
+  return (
+    typeof value.eventCount === "number" &&
+    Number.isInteger(value.eventCount) &&
+    value.eventCount >= 0 &&
+    typeof value.eventRange.firstEventId === "string" &&
+    typeof value.eventRange.lastEventId === "string" &&
+    (value.firstRetainedEventId === undefined ||
+      typeof value.firstRetainedEventId === "string") &&
+    (value.previousCompactionArtifactId === undefined ||
+      typeof value.previousCompactionArtifactId === "string")
+  );
+}
+
+function createCompactedContextRecentEvent(
+  event: RuntimeEventRecord
+): CompactedContextRecentEvent {
+  return {
+    createdAt: event.createdAt,
+    eventId: event.eventId,
+    summary: createRedactedPreview(createRuntimeEventSummary(event), 240),
+    type: event.type
+  };
+}
+
+function createRuntimeEventSummary(event: RuntimeEventRecord): string {
+  const payload = event.payload as Record<string, unknown>;
+  const details = [
+    typeof payload.status === "string" ? `status=${payload.status}` : "",
+    typeof payload.reason === "string" ? `reason=${payload.reason}` : "",
+    typeof payload.summary === "string" ? payload.summary : "",
+    typeof payload.message === "string" ? payload.message : "",
+    typeof payload.note === "string" ? payload.note : "",
+    typeof payload.nextAction === "string" ? `next=${payload.nextAction}` : ""
+  ].filter((part) => part.length > 0);
+
+  return details.length === 0
+    ? event.type
+    : `${event.type}: ${details.join(" | ")}`;
+}
+
+function createCompactedContextNotes(
+  summary: CompactionSummary,
+  state: SessionStateSnapshot,
+  postCompactionEvents: readonly RuntimeEventRecord[],
+  omittedRecentEventCount: number
+): ContextAssemblyNote[] {
+  const notes: ContextAssemblyNote[] = [];
+  const latestTask = state.latestTask;
+
+  if (
+    latestTask !== undefined &&
+    latestTask.goal !== summary.continuity.taskGoal
+  ) {
+    notes.push(
+      createSupersededNote(
+        "taskGoal",
+        `Newer session state task goal superseded compacted context task goal: ${latestTask.goal}`
+      )
+    );
+  }
+
+  const latestPlan =
+    latestTask?.latestPlan?.map((step) => step.summary) ?? [];
+
+  if (
+    latestPlan.length > 0 &&
+    !sameStringArray(latestPlan, summary.continuity.currentPlan)
+  ) {
+    notes.push(
+      createSupersededNote(
+        "currentPlan",
+        `Newer session state plan superseded compacted context plan: ${latestPlan.join(" | ")}`
+      )
+    );
+  }
+
+  if (
+    latestTask?.currentPhase !== undefined &&
+    !summary.continuity.progress.includes(
+      `Current phase: ${latestTask.currentPhase}`
+    )
+  ) {
+    notes.push(
+      createSupersededNote(
+        "progress",
+        `Newer session state current phase superseded compacted context progress: ${latestTask.currentPhase}`
+      )
+    );
+  }
+
+  if (
+    state.nextStep !== undefined &&
+    !summary.continuity.nextSteps.includes(state.nextStep)
+  ) {
+    notes.push(
+      createSupersededNote(
+        "nextSteps",
+        `Newer session state next step superseded compacted context next steps: ${state.nextStep}`
+      )
+    );
+  }
+
+  const postCompactionCommands = commandsFromRuntimeEvents(
+    postCompactionEvents
+  ).filter((command) => !summary.continuity.commandsRun.includes(command));
+
+  if (postCompactionCommands.length > 0) {
+    notes.push(
+      createSupersededNote(
+        "commandsRun",
+        `Newer event history commands superseded compacted context commands: ${postCompactionCommands.join(" | ")}`
+      )
+    );
+  }
+
+  const postCompactionProgress = progressFromRuntimeEvents(
+    postCompactionEvents
+  ).filter((progress) => !summary.continuity.progress.includes(progress));
+
+  if (postCompactionProgress.length > 0) {
+    notes.push(
+      createSupersededNote(
+        "progress",
+        `Newer event history progress superseded compacted context progress: ${postCompactionProgress.join(" | ")}`
+      )
+    );
+  }
+
+  if (omittedRecentEventCount > 0) {
+    notes.push(
+      createSupersededNote(
+        "progress",
+        `${omittedRecentEventCount} newer event(s) after compaction were omitted from the bounded compacted context.`
+      )
+    );
+  }
+
+  if (
+    state.lastError !== undefined &&
+    !summary.continuity.failures.includes(state.lastError)
+  ) {
+    notes.push(
+      createSupersededNote(
+        "failures",
+        `Newer session state last error superseded compacted context failures: ${state.lastError}`
+      )
+    );
+  }
+
+  const stateTouchedFiles = [
+    ...state.filesRead,
+    ...state.filesChanged,
+    ...state.filesProposedForChange
+  ];
+  const newTouchedFiles = stateTouchedFiles.filter(
+    (filePath) => !summary.continuity.filesTouched.includes(filePath)
+  );
+
+  if (newTouchedFiles.length > 0) {
+    notes.push(
+      createSupersededNote(
+        "filesTouched",
+        `Newer session state file activity superseded compacted context files touched: ${newTouchedFiles.join(", ")}`
+      )
+    );
+  }
+
+  if (
+    state.pendingApprovalCount !== summary.continuity.pendingApprovals.length
+  ) {
+    notes.push(
+      createSupersededNote(
+        "pendingApprovals",
+        `Newer session state pending approval count (${state.pendingApprovalCount}) superseded compacted context pending approval metadata (${summary.continuity.pendingApprovals.length}).`
+      )
+    );
+  }
+
+  return notes;
+}
+
+function createSupersededNote(
+  field: keyof CompactionSummaryContinuity,
+  message: string
+): ContextAssemblyNote {
+  return {
+    code: "COMPACTED_CONTEXT_SUPERSEDED",
+    field,
+    message: createRedactedPreview(message, 320)
+  };
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function commandsFromRuntimeEvents(
+  events: readonly RuntimeEventRecord[]
+): string[] {
+  return compactTextList(
+    events.flatMap((event) => {
+      const command = (event.payload as { command?: unknown }).command;
+
+      return typeof command === "string" && command.length > 0
+        ? [command]
+        : [];
+    })
+  );
+}
+
+function progressFromRuntimeEvents(
+  events: readonly RuntimeEventRecord[]
+): string[] {
+  return compactTextList(
+    events
+      .flatMap((event) => {
+        const payload = event.payload as Record<string, unknown>;
+
+        switch (event.type) {
+          case "task.started":
+            return [
+              stringPayloadValue(payload, "status") === undefined
+                ? undefined
+                : `Task status: ${payload.status}`,
+              stringPayloadValue(payload, "phase") === undefined
+                ? undefined
+                : `Current phase: ${payload.phase}`
+            ];
+          case "task.waiting":
+          case "task.completed":
+          case "task.failed":
+          case "task.cancelled":
+            return [stringPayloadValue(payload, "message")];
+          case "task.recovery.recorded":
+          case "session.resumed":
+          case "session.compacted":
+          case "policy.decision.recorded":
+          case "approval.requested":
+          case "approval.resolved":
+          case "validation.started":
+          case "validation.completed":
+          case "file.edit.applied":
+          case "file.edit.failed":
+          case "file.edit.requested":
+          case "file.activity.recorded":
+          case "tool.call.requested":
+          case "tool.call.started":
+          case "tool.call.completed":
+          case "tool.call.failed":
+            return [stringPayloadValue(payload, "summary")];
+          case "task.steering.received":
+            return [stringPayloadValue(payload, "note")];
+          case "memory.safety.evaluated":
+            return [stringPayloadValue(payload, "summary")];
+        }
+      })
+      .filter((value): value is string => value !== undefined)
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value as object);
+
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function buildCompactionInputFromSessionArtifacts(

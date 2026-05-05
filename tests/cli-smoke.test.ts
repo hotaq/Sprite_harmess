@@ -398,6 +398,7 @@ describe("sprite cli smoke tests", () => {
             "provider-limits",
             "user-input",
             "session-state",
+            "compacted-context",
             "project-context",
             "memory",
             "skills"

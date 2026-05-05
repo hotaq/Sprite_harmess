@@ -66,6 +66,11 @@ import {
   type FileActivityRecord
 } from "./file-activity.js";
 import {
+  readLatestCompactedSessionContext,
+  type CompactedSessionContext,
+  type ContextAssemblyNote
+} from "./compaction.js";
+import {
   createFinalTaskSummary,
   type FinalTaskSummary
 } from "./final-task-summary.js";
@@ -287,6 +292,19 @@ interface PendingApprovalRecord {
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
 
+function createCompactedContextWarnings(
+  notes: readonly ContextAssemblyNote[]
+): string[] {
+  return notes.map(
+    (note) => {
+      const fieldSuffix =
+        note.field === undefined ? "" : `/${note.field}`;
+
+      return `Recoverable compacted context note (${note.code}${fieldSuffix}): ${note.message}`;
+    }
+  );
+}
+
 export class AgentRuntime {
   private readonly sessionId = createSessionId();
   private readonly eventBus = new RuntimeEventBus();
@@ -463,6 +481,15 @@ export class AgentRuntime {
       this.emittedEventIds.add(event.eventId);
     }
 
+    const compactedContext = readLatestCompactedSessionContext(
+      bootstrapState.value.startup.cwd,
+      state.sessionId
+    );
+
+    if (!compactedContext.ok) {
+      return err(compactedContext.error);
+    }
+
     const resumeEvent = createRuntimeEventRecord(
       {
         sessionId: state.sessionId,
@@ -514,7 +541,8 @@ export class AgentRuntime {
       state,
       latestTask,
       bootstrapState.value,
-      this.eventBus.getHistory(latestTask.taskId)
+      this.eventBus.getHistory(latestTask.taskId),
+      compactedContext.value
     );
     this.activeTask = resumedTask;
 
@@ -544,7 +572,10 @@ export class AgentRuntime {
       restoredEventCount: persistedEventCount,
       resumeEventId: validatedResumeEvent.value.eventId,
       inspection: inspection.value,
-      warnings: inspection.value.warnings
+      warnings: [
+        ...inspection.value.warnings,
+        ...createCompactedContextWarnings(compactedContext.value?.notes ?? [])
+      ]
     });
   }
 
@@ -2442,10 +2473,12 @@ export class AgentRuntime {
     state: SessionStateSnapshot,
     latestTask: NonNullable<SessionStateSnapshot["latestTask"]>,
     bootstrapState: BootstrapState,
-    events: RuntimeEventRecord[]
+    events: RuntimeEventRecord[],
+    compactedContext?: CompactedSessionContext
   ): PlannedExecutionFlow {
     const request = {
       ...createTaskRequest(latestTask.goal, bootstrapState, {
+        compactedContext,
         sessionState: {
           correlationId: latestTask.correlationId,
           currentPhase: latestTask.currentPhase,

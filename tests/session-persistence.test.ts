@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { AgentRuntime, validateRuntimeEvent } from "@sprite/core";
+import {
+  AgentRuntime,
+  compactSessionManually,
+  createRuntimeEventRecord,
+  validateRuntimeEvent
+} from "@sprite/core";
 import { SpriteError, err } from "@sprite/shared";
 import type { SessionStore } from "@sprite/storage";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -62,6 +68,7 @@ type ResumeSessionResult = {
     sessionId: string;
     status: string;
     taskId: string;
+    warnings?: string[];
   };
 };
 
@@ -532,6 +539,336 @@ describe("AgentRuntime session persistence", () => {
         }),
         status: "included"
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes with compacted continuity and recoverable precedence notes", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume from compacted continuity"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const statePath = join(sessionDir, "state.json");
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-resume-context-001",
+        createdAt: "2026-05-04T01:07:00.000Z",
+        eventId: "evt_resume_context_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+
+      const state = readJson(statePath);
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            ...state,
+            nextStep: "Use the newer state next step after compaction.",
+            latestTask: {
+              ...(state.latestTask as Record<string, unknown>),
+              latestPlan: [
+                {
+                  phase: "act",
+                  status: "pending",
+                  summary:
+                    "Use the newer plan step from state after compaction."
+                }
+              ]
+            }
+          },
+          null,
+          2
+        )}\n`
+      );
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+
+      const activeTask = resumedRuntime.getActiveTask();
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+
+      const compactedSection =
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "compacted-context"
+        );
+
+      expect(compactedSection).toMatchObject({
+        metadata: expect.objectContaining({
+          artifactId: "cmp-resume-context-001",
+          compactionEventId: "evt_resume_context_compacted",
+          noteCodes: expect.arrayContaining(["COMPACTED_CONTEXT_SUPERSEDED"])
+        }),
+        status: "included"
+      });
+      expect(compactedSection?.content).toContain(
+        "resume from compacted continuity"
+      );
+      expect(compactedSection?.content).toContain(
+        "Use the newer state next step after compaction."
+      );
+      expect(resumed.value?.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining("compacted context")])
+      );
+      expect(
+        resumedRuntime
+          .getEventHistory(submitted.value.taskId)
+          .filter((event) => event.type === "session.resumed")
+      ).toHaveLength(1);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes with bounded newer events after compaction in the active task context", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume with newer compacted events"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const eventsPath = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        sessionId,
+        "events.ndjson"
+      );
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-resume-newer-events",
+        createdAt: "2026-05-04T01:08:00.000Z",
+        eventId: "evt_resume_newer_events_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) {
+        return;
+      }
+
+      const newerEvent = createRuntimeEventRecord(
+        {
+          correlationId: submitted.value.correlationId,
+          createdAt: "2026-05-04T01:09:00.000Z",
+          eventId: "evt_resume_newer_steering",
+          sessionId,
+          taskId: submitted.value.taskId
+        },
+        "task.steering.received",
+        {
+          note: "newer steering event restored after compaction"
+        }
+      );
+
+      expect(validateRuntimeEvent(newerEvent).ok).toBe(true);
+      appendFileSync(eventsPath, `${JSON.stringify(newerEvent)}\n`);
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+
+      const activeTask = resumedRuntime.getActiveTask();
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+
+      const compactedSection =
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "compacted-context"
+        );
+
+      expect(compactedSection).toMatchObject({
+        metadata: expect.objectContaining({
+          artifactId: "cmp-resume-newer-events",
+          recentEventCount: 1
+        }),
+        status: "included"
+      });
+      expect(compactedSection?.content).toContain("evt_resume_newer_steering");
+      expect(compactedSection?.content).toContain(
+        "newer steering event restored after compaction"
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails resume without appending session.resumed when compacted artifact is missing", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume after missing compacted artifact"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const eventsPath = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        sessionId,
+        "events.ndjson"
+      );
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-missing-during-resume",
+        createdAt: "2026-05-04T01:10:00.000Z",
+        eventId: "evt_missing_during_resume_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      rmSync(compacted.value.artifactPath, { force: true });
+
+      const beforeTypes = readNdjson(eventsPath).map((event) => event.type);
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, sessionId);
+      const afterTypes = readNdjson(eventsPath).map((event) => event.type);
+
+      expect(resumed.ok).toBe(false);
+      expect(resumed.error?.code).toBe(
+        "SESSION_COMPACTION_ARTIFACT_READ_FAILED"
+      );
+      expect(afterTypes).toEqual(beforeTypes);
+      expect(afterTypes).not.toContain("session.resumed");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores persisted effect events without replaying side effects", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume without replaying prior effects"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const sentinelPath = join(projectDir, "sentinel.txt");
+      writeFileSync(sentinelPath, "original\n");
+
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-no-replay-effects",
+        createdAt: "2026-05-04T01:11:00.000Z",
+        eventId: "evt_no_replay_effects_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) {
+        return;
+      }
+
+      const validationEvent = createRuntimeEventRecord(
+        {
+          correlationId: submitted.value.correlationId,
+          createdAt: "2026-05-04T01:12:00.000Z",
+          eventId: "evt_prior_validation_started",
+          sessionId,
+          taskId: submitted.value.taskId
+        },
+        "validation.started",
+        {
+          command: "rtk run npm test -- --run tests/session-persistence.test.ts",
+          cwd: projectDir,
+          status: "started",
+          summary: "Prior validation was already started before resume.",
+          toolCallId: "tool_prior_validation",
+          validationId: "val_prior_validation"
+        }
+      );
+      const fileEditEvent = createRuntimeEventRecord(
+        {
+          correlationId: submitted.value.correlationId,
+          createdAt: "2026-05-04T01:13:00.000Z",
+          eventId: "evt_prior_file_edit_applied",
+          sessionId,
+          taskId: submitted.value.taskId
+        },
+        "file.edit.applied",
+        {
+          affectedFiles: ["sentinel.txt"],
+          editId: "edit_prior_file",
+          status: "applied",
+          summary: "Prior file edit event must be restored, not replayed.",
+          toolCallId: "tool_prior_file_edit",
+          toolName: "apply_patch"
+        }
+      );
+
+      expect(validateRuntimeEvent(validationEvent).ok).toBe(true);
+      expect(validateRuntimeEvent(fileEditEvent).ok).toBe(true);
+      appendFileSync(eventsPath, `${JSON.stringify(validationEvent)}\n`);
+      appendFileSync(eventsPath, `${JSON.stringify(fileEditEvent)}\n`);
+
+      const eventCountBeforeResume = readNdjson(eventsPath).length;
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, sessionId);
+      const eventsAfterResume = readNdjson(eventsPath);
+
+      expect(resumed.ok).toBe(true);
+      expect(readFileSync(sentinelPath, "utf8")).toBe("original\n");
+      expect(eventsAfterResume).toHaveLength(eventCountBeforeResume + 1);
+      expect(
+        eventsAfterResume.filter((event) => event.type === "session.resumed")
+      ).toHaveLength(1);
+      expect(
+        eventsAfterResume.filter(
+          (event) => event.type === "file.edit.applied"
+        )
+      ).toHaveLength(1);
+      expect(
+        eventsAfterResume.filter(
+          (event) => event.type === "validation.started"
+        )
+      ).toHaveLength(1);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

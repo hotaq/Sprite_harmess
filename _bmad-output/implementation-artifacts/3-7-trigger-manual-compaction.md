@@ -1,6 +1,6 @@
 # Story 3.7: Trigger Manual Compaction
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -213,6 +213,7 @@ GPT-5.4 Codex (session default)
 - 2026-05-04: Post-change GitNexus fallback: `rtk run 'npx gitnexus analyze && npx gitnexus status'` reported index up-to-date at `179c852`; `compactSessionManually` was not found because the GitNexus CLI indexes committed symbols only in this state. Scoped diff review and full validation were used as fallback evidence before review handoff.
 - 2026-05-04: Code review follow-up fixed two medium concerns: manual compaction now preflights session-store writes and removes the just-written artifact if event validation/append fails, and story evidence now states that active-runtime compaction API is intentionally out of scope for this story. Targeted validation `rtk run 'npm test -- --run tests/compaction.test.ts'` passed: 1 file / 7 tests; full validation rerun passed with 15 files / 191 tests.
 - 2026-05-05: Post-push code review follow-up fixed remaining audit/history concerns: compaction artifact writes now reject duplicate artifact IDs, manual compaction returns degraded success with warnings if snapshot update fails after event append, and CLI compact invalid-output errors now name `Session compact`. Impact checks reported `writeSessionCompactionArtifact`, `compactSessionManually`, and parser changes as LOW risk. Full validation passed with `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`: 15 files / 194 tests.
+- 2026-05-05: Closed Story 3.7 after commits `f48c097` and `4b35cbe` were pushed to `origin/main`; GitNexus was re-indexed and reported up-to-date at `4b35cbe`.
 
 ### Completion Notes List
 

@@ -147,6 +147,7 @@ type CompactSessionManually = (
     artifactId?: string;
     createdAt?: string;
     eventId?: string;
+    previousCompactionArtifactId?: string;
     sessionStore?: SessionStore;
     triggerReason?: CompactionTriggerReason;
   }
@@ -172,6 +173,32 @@ type CompactSessionManually = (
     taskId: string;
     triggerReason: CompactionTriggerReason;
     warnings?: string[];
+  };
+};
+
+type ReadLatestCompactedSessionContext = (
+  cwd: string,
+  sessionId: string
+) => {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    artifactId: string;
+    compactionEventId: string;
+    compactedAt: string;
+    notes: Array<{
+      code: string;
+      field?: string;
+      message: string;
+    }>;
+    omittedRecentEventCount: number;
+    recentEvents: Array<{
+      createdAt: string;
+      eventId: string;
+      summary: string;
+      type: string;
+    }>;
+    summary: CompactionSummaryValue;
   };
 };
 
@@ -215,6 +242,22 @@ function getCompactSessionManually(): CompactSessionManually {
   }
 
   return compactSessionManually;
+}
+
+function getReadLatestCompactedSessionContext(): ReadLatestCompactedSessionContext {
+  const readLatestCompactedSessionContext = (
+    core as typeof core & {
+      readLatestCompactedSessionContext?: ReadLatestCompactedSessionContext;
+    }
+  ).readLatestCompactedSessionContext;
+
+  if (readLatestCompactedSessionContext === undefined) {
+    throw new Error(
+      "Expected @sprite/core to export readLatestCompactedSessionContext."
+    );
+  }
+
+  return readLatestCompactedSessionContext;
 }
 
 function createSessionEvent(
@@ -717,6 +760,460 @@ describe("compaction runtime boundary", () => {
         lastEventId: "evt_session_compacted_manual",
         lastEventType: "session.compacted"
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the latest compacted context with bounded events after compaction", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "continue from compacted context"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-read-latest-001",
+        createdAt: "2026-05-04T01:05:00.000Z",
+        eventId: "evt_compacted_for_restore"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      const newerEvent = core.createRuntimeEventRecord(
+        {
+          correlationId: submitted.value.correlationId,
+          createdAt: "2026-05-04T01:06:00.000Z",
+          eventId: "evt_after_compaction_steering",
+          sessionId,
+          taskId: submitted.value.taskId
+        },
+        "task.steering.received",
+        {
+          note: "Continue with newer event history after compaction."
+        }
+      );
+
+      expect(core.validateRuntimeEvent(newerEvent).ok).toBe(true);
+      appendFileSync(eventsPath, `${JSON.stringify(newerEvent)}\n`);
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, sessionId);
+
+      expect(restored.ok).toBe(true);
+      if (!restored.ok || restored.value === undefined) {
+        return;
+      }
+
+      expect(restored.value).toMatchObject({
+        artifactId: "cmp-read-latest-001",
+        compactionEventId: "evt_compacted_for_restore",
+        compactedAt: "2026-05-04T01:05:00.000Z",
+        omittedRecentEventCount: 0,
+        summary: {
+          continuity: {
+            taskGoal: "continue from compacted context"
+          }
+        }
+      });
+      expect(restored.value.recentEvents).toEqual([
+        expect.objectContaining({
+          eventId: "evt_after_compaction_steering",
+          summary: expect.stringContaining("newer event history"),
+          type: "task.steering.received"
+        })
+      ]);
+      expect(JSON.stringify(restored.value)).not.toContain("sk-test");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds post-compaction recent events to the latest restore window", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "bound compacted recent events"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-bounded-recent-events",
+        createdAt: "2026-05-04T01:05:00.000Z",
+        eventId: "evt_bounded_recent_events_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) {
+        return;
+      }
+
+      for (let index = 0; index < 25; index += 1) {
+        const event = core.createRuntimeEventRecord(
+          {
+            correlationId: submitted.value.correlationId,
+            createdAt: `2026-05-04T01:${String(10 + index).padStart(2, "0")}:00.000Z`,
+            eventId: `evt_after_compaction_${String(index).padStart(2, "0")}`,
+            sessionId,
+            taskId: submitted.value.taskId
+          },
+          "task.steering.received",
+          {
+            note: `newer steering event ${index}`
+          }
+        );
+
+        expect(core.validateRuntimeEvent(event).ok).toBe(true);
+        appendFileSync(eventsPath, `${JSON.stringify(event)}\n`);
+      }
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, sessionId);
+
+      expect(restored.ok).toBe(true);
+      if (!restored.ok || restored.value === undefined) {
+        return;
+      }
+
+      expect(restored.value.recentEvents).toHaveLength(
+        core.DEFAULT_COMPACTED_CONTEXT_RECENT_EVENT_LIMIT
+      );
+      expect(restored.value.omittedRecentEventCount).toBe(5);
+      expect(restored.value.recentEvents[0]?.eventId).toBe(
+        "evt_after_compaction_05"
+      );
+      expect(restored.value.recentEvents.at(-1)?.eventId).toBe(
+        "evt_after_compaction_24"
+      );
+      expect(restored.value.notes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: "progress",
+            message: expect.stringContaining("5 newer event(s)")
+          })
+        ])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records recoverable notes for newer state and event-history conflicts", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "detect compacted context conflicts"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const statePath = join(sessionDir, "state.json");
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-conflict-notes",
+        createdAt: "2026-05-04T01:05:00.000Z",
+        eventId: "evt_conflict_notes_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) {
+        return;
+      }
+
+      const validationEvent = core.createRuntimeEventRecord(
+        {
+          correlationId: submitted.value.correlationId,
+          createdAt: "2026-05-04T01:06:00.000Z",
+          eventId: "evt_newer_validation_command",
+          sessionId,
+          taskId: submitted.value.taskId
+        },
+        "validation.started",
+        {
+          command: "rtk run npm test -- --run tests/compaction.test.ts",
+          cwd: projectDir,
+          status: "started",
+          summary: "Started newer validation command after compaction.",
+          toolCallId: "tool_newer_validation",
+          validationId: "val_newer_validation"
+        }
+      );
+
+      expect(core.validateRuntimeEvent(validationEvent).ok).toBe(true);
+      appendFileSync(eventsPath, `${JSON.stringify(validationEvent)}\n`);
+
+      const state = JSON.parse(
+        readFileSync(statePath, "utf8")
+      ) as Record<string, unknown>;
+      writeFileSync(
+        statePath,
+        `${JSON.stringify(
+          {
+            ...state,
+            filesChanged: [
+              ...((state.filesChanged as string[] | undefined) ?? []),
+              "packages/core/src/newer-conflict.ts"
+            ],
+            lastError: "Newer failure OPENAI_API_KEY=sk-test-secret",
+            latestTask: {
+              ...(state.latestTask as Record<string, unknown>),
+              currentPhase: "act",
+              goal: "newer goal after compaction",
+              latestPlan: [
+                {
+                  phase: "act",
+                  status: "pending",
+                  summary: "Use newer plan after compaction."
+                }
+              ]
+            },
+            nextStep: "Use newer next step after compaction.",
+            pendingApprovalCount: 2
+          },
+          null,
+          2
+        )}\n`
+      );
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, sessionId);
+
+      expect(restored.ok).toBe(true);
+      if (!restored.ok || restored.value === undefined) {
+        return;
+      }
+
+      expect(restored.value.notes.map((note) => note.field)).toEqual(
+        expect.arrayContaining([
+          "taskGoal",
+          "currentPlan",
+          "progress",
+          "nextSteps",
+          "failures",
+          "filesTouched",
+          "pendingApprovals",
+          "commandsRun"
+        ])
+      );
+      expect(JSON.stringify(restored.value)).not.toContain("sk-test-secret");
+      expect(JSON.stringify(restored.value)).toContain("[REDACTED]");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns no compacted context for sessions without a compaction event", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask("resume without compact");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, submitted.value.sessionId);
+
+      expect(restored.ok).toBe(true);
+      expect(restored.value).toBeUndefined();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the latest compaction event when multiple compactions exist", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask("compact more than once");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const compactSessionManually = getCompactSessionManually();
+      const first = compactSessionManually(projectDir, submitted.value.sessionId, {
+        artifactId: "cmp-restore-first",
+        createdAt: "2026-05-04T01:08:00.000Z",
+        eventId: "evt_first_restore_compaction"
+      });
+      const second = compactSessionManually(
+        projectDir,
+        submitted.value.sessionId,
+        {
+          artifactId: "cmp-restore-second",
+          createdAt: "2026-05-04T01:09:00.000Z",
+          eventId: "evt_second_restore_compaction",
+          previousCompactionArtifactId: "cmp-restore-first"
+        }
+      );
+
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(true);
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, submitted.value.sessionId);
+
+      expect(restored.ok).toBe(true);
+      expect(restored.value).toMatchObject({
+        artifactId: "cmp-restore-second",
+        compactionEventId: "evt_second_restore_compaction",
+        source: {
+          previousCompactionArtifactId: "cmp-restore-first"
+        }
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails with structured storage evidence when the latest compaction artifact is missing", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "compact then remove artifact"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(
+        projectDir,
+        submitted.value.sessionId,
+        {
+          artifactId: "cmp-missing-restore",
+          createdAt: "2026-05-04T01:10:00.000Z",
+          eventId: "evt_missing_restore_compaction"
+        }
+      );
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      rmSync(compacted.value.artifactPath, { force: true });
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, submitted.value.sessionId);
+
+      expect(restored.ok).toBe(false);
+      expect(restored.error?.code).toBe(
+        "SESSION_COMPACTION_ARTIFACT_READ_FAILED"
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the latest compaction artifact wrapper belongs to another session", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "reject cross-session compaction artifact"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(
+        projectDir,
+        submitted.value.sessionId,
+        {
+          artifactId: "cmp-scope-mismatch",
+          createdAt: "2026-05-04T01:11:00.000Z",
+          eventId: "evt_scope_mismatch_compaction"
+        }
+      );
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      const artifact = JSON.parse(
+        readFileSync(compacted.value.artifactPath, "utf8")
+      ) as Record<string, unknown>;
+      writeFileSync(
+        compacted.value.artifactPath,
+        `${JSON.stringify(
+          {
+            ...artifact,
+            sessionId: "ses_other_session"
+          },
+          null,
+          2
+        )}\n`
+      );
+
+      const readLatest = getReadLatestCompactedSessionContext();
+      const restored = readLatest(projectDir, submitted.value.sessionId);
+
+      expect(restored.ok).toBe(false);
+      expect(restored.error?.code).toBe(
+        "SESSION_COMPACTION_ARTIFACT_SCOPE_MISMATCH"
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

@@ -3,6 +3,7 @@ import type {
   ProjectContextLoadResult,
   ResolvedStartupConfig
 } from "@sprite/config";
+import type { CompactedSessionContext } from "./compaction.js";
 import {
   evaluateSafetySensitiveContent,
   type MemoryType
@@ -16,6 +17,7 @@ export const TASK_CONTEXT_SOURCE_ORDER = [
   "provider-limits",
   "user-input",
   "session-state",
+  "compacted-context",
   "project-context",
   "memory",
   "skills"
@@ -117,6 +119,7 @@ export interface TaskContextSkillInput {
 export interface TaskContextAssemblyInput {
   memoryEntries?: readonly TaskContextMemoryInput[];
   projectContext: ProjectContextLoadResult;
+  compactedContext?: CompactedSessionContext;
   provider: ResolvedProviderState | null;
   sessionState?: TaskContextSessionStateInput;
   skillEntries?: readonly TaskContextSkillInput[];
@@ -205,6 +208,8 @@ function createSection(
       return createUserInputSection(factoryInput);
     case "session-state":
       return createSessionStateSection(factoryInput);
+    case "compacted-context":
+      return createCompactedContextSection(factoryInput);
     case "project-context":
       return createProjectContextSection(factoryInput);
     case "memory":
@@ -412,6 +417,81 @@ function createSessionStateSection({
       ? "Bounded resumed session state is included without replaying prior work."
       : "Bounded current session identity and lifecycle state are included.",
     title: "Session state",
+    trust: "trusted"
+  };
+}
+
+function createCompactedContextSection({
+  input,
+  options,
+  priority
+}: SectionFactoryInput): TaskContextSection {
+  const compactedContext = input.compactedContext;
+
+  if (compactedContext === undefined) {
+    return {
+      metadata: {},
+      priority,
+      reason: "No compacted context summary was available for this session.",
+      redacted: false,
+      source: "compacted-context",
+      status: "skipped",
+      summary: "No compacted context is included for this packet.",
+      title: "Compacted context",
+      trust: "trusted"
+    };
+  }
+
+  const continuity = compactedContext.summary.continuity;
+  const noteMessages = compactedContext.notes.map((note) => note.message);
+  const recentEventSummaries = compactedContext.recentEvents.map(
+    (event) => `${event.eventId}: ${event.summary}`
+  );
+  const rawContent = [
+    `Compacted artifact: ${compactedContext.artifactId}.`,
+    `Compacted task goal: ${continuity.taskGoal}.`,
+    compactedContext.omittedRecentEventCount === 0
+      ? ""
+      : `Omitted newer events after compaction: ${compactedContext.omittedRecentEventCount}.`,
+    formatContextList("Recoverable assembly notes", noteMessages),
+    formatContextList("Recent events after compaction", recentEventSummaries),
+    formatContextList("Active constraints", continuity.activeConstraints),
+    formatContextList("Decisions", continuity.decisions),
+    formatContextList("Current plan", continuity.currentPlan),
+    formatContextList("Progress", continuity.progress),
+    formatContextList("Files touched", continuity.filesTouched),
+    formatContextList("Commands run", continuity.commandsRun),
+    formatContextList("Failures", continuity.failures),
+    formatContextList("Pending approvals", continuity.pendingApprovals),
+    formatContextList("Next steps", continuity.nextSteps)
+  ]
+    .filter((line) => line.length > 0)
+    .join(" ");
+  const redacted = containsSecretLikeValue(rawContent);
+  const content = createSafePreviewSection(
+    rawContent,
+    options.projectContextContentMaxLength
+  );
+
+  return {
+    content,
+    metadata: {
+      artifactId: compactedContext.artifactId,
+      compactedAt: compactedContext.compactedAt,
+      compactionEventId: compactedContext.compactionEventId,
+      noteCodes: compactedContext.notes.map((note) => note.code),
+      omittedRecentEventCount: compactedContext.omittedRecentEventCount,
+      recentEventCount: compactedContext.recentEvents.length,
+      sourceEventCount: compactedContext.source.eventCount,
+      triggerReason: compactedContext.summary.triggerReason
+    },
+    priority,
+    redacted,
+    source: "compacted-context",
+    status: redacted ? "redacted" : "included",
+    summary:
+      "Compacted session continuity is included with newer event-history notes.",
+    title: "Compacted context",
     trust: "trusted"
   };
 }
@@ -661,6 +741,10 @@ function createSkillsSection({
 
 function createSafePreviewSection(value: string, maxLength: number): string {
   return createRedactedPreview(value, maxLength);
+}
+
+function formatContextList(label: string, values: readonly string[]): string {
+  return values.length === 0 ? "" : `${label}: ${values.join(" | ")}.`;
 }
 
 function countSectionsByStatus(

@@ -1,4 +1,5 @@
 import type { BootstrapState } from "./agent-runtime.js";
+import type { CompactedSessionContext } from "./compaction.js";
 import {
   createRuntimeEventRecord,
   type RuntimeEventPayload,
@@ -22,6 +23,7 @@ import {
 const DEFAULT_MAX_ITERATIONS = 1;
 
 export interface TaskRequestContextOptions {
+  compactedContext?: CompactedSessionContext;
   sessionState?: TaskContextSessionStateInput;
 }
 
@@ -37,6 +39,7 @@ export function createTaskRequest(
     startup: bootstrapState.startup,
     contextPacket: assembleTaskContextPacket({
       projectContext: bootstrapState.projectContext,
+      compactedContext: options.compactedContext,
       provider: bootstrapState.provider,
       sessionState: options.sessionState,
       startup: bootstrapState.startup,
