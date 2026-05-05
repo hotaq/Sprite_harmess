@@ -397,6 +397,15 @@ export function writeSessionCompactionArtifact(
   }
 
   try {
+    if (existsSync(artifactPath.value)) {
+      return err(
+        new SpriteError(
+          "SESSION_COMPACTION_ARTIFACT_EXISTS",
+          "Compaction artifact already exists; use a new artifact ID to preserve the audit trail."
+        )
+      );
+    }
+
     mkdirSync(paths.compactionsDir, { recursive: true });
     const tempPath = path.join(
       paths.compactionsDir,

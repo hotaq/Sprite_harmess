@@ -212,6 +212,7 @@ GPT-5.4 Codex (session default)
 - 2026-05-04: Full validation passed with `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`: typecheck/lint passed, 15 test files / 191 tests passed, and whitespace check clean.
 - 2026-05-04: Post-change GitNexus fallback: `rtk run 'npx gitnexus analyze && npx gitnexus status'` reported index up-to-date at `179c852`; `compactSessionManually` was not found because the GitNexus CLI indexes committed symbols only in this state. Scoped diff review and full validation were used as fallback evidence before review handoff.
 - 2026-05-04: Code review follow-up fixed two medium concerns: manual compaction now preflights session-store writes and removes the just-written artifact if event validation/append fails, and story evidence now states that active-runtime compaction API is intentionally out of scope for this story. Targeted validation `rtk run 'npm test -- --run tests/compaction.test.ts'` passed: 1 file / 7 tests; full validation rerun passed with 15 files / 191 tests.
+- 2026-05-05: Post-push code review follow-up fixed remaining audit/history concerns: compaction artifact writes now reject duplicate artifact IDs, manual compaction returns degraded success with warnings if snapshot update fails after event append, and CLI compact invalid-output errors now name `Session compact`. Impact checks reported `writeSessionCompactionArtifact`, `compactSessionManually`, and parser changes as LOW risk. Full validation passed with `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`: 15 files / 194 tests.
 
 ### Completion Notes List
 
@@ -220,6 +221,8 @@ GPT-5.4 Codex (session default)
 - Added structured recoverable `MANUAL_COMPACTION_UNAVAILABLE` errors for missing `state.latestTask` or empty event history before artifact/event writes.
 - Added CLI `sprite session compact <sessionId>` with text and JSON renderers that use the core-owned result shape.
 - Added preflight session-store initialization/snapshot validation and best-effort artifact rollback when event validation or event append fails after artifact creation.
+- Prevented compaction artifact overwrite by rejecting duplicate artifact IDs with `SESSION_COMPACTION_ARTIFACT_EXISTS`.
+- Converted post-append snapshot update failures into degraded success warnings so callers do not see an error after the artifact/event already persisted.
 - Kept active-runtime compaction API and compaction summary consumption/resume behavior out of scope for Story 3.8/future runtime work.
 
 ### File List
@@ -227,8 +230,10 @@ GPT-5.4 Codex (session default)
 - `packages/core/src/runtime-events.ts`
 - `packages/core/src/compaction.ts`
 - `packages/cli/src/index.ts`
+- `packages/storage/src/session-store.ts`
 - `tests/runtime-events.test.ts`
 - `tests/compaction.test.ts`
+- `tests/session-store.test.ts`
 - `tests/cli-smoke.test.ts`
 - `_bmad-output/implementation-artifacts/3-7-trigger-manual-compaction.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
@@ -237,5 +242,6 @@ GPT-5.4 Codex (session default)
 
 | Date       | Version | Description                               | Author |
 | ---------- | ------- | ----------------------------------------- | ------ |
+| 2026-05-05 | 0.3     | Fixed post-review audit durability findings for duplicate artifacts, snapshot warnings, and CLI errors. | Codex  |
 | 2026-05-04 | 0.2     | Added manual compaction event, core trigger API, CLI command, and tests. | Codex  |
 | 2026-05-04 | 0.1     | Created Story 3.7 implementation context. | Codex  |

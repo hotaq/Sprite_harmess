@@ -775,6 +775,29 @@ describe("sprite cli smoke tests", () => {
     }
   });
 
+  it("reports compact-specific output format errors", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const result = spawnSync(
+        "node",
+        [cliPath, "session", "compact", "ses_missing", "--output", "yaml"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "Session compact output format must be one of: text, json."
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("resumes a previous session as JSON without leaking provider secrets", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import * as core from "@sprite/core";
-import type { SessionEventRecord, SessionStateSnapshot } from "@sprite/storage";
+import { createLocalSessionStore } from "@sprite/storage";
+import type {
+  SessionEventRecord,
+  SessionStateSnapshot,
+  SessionStore
+} from "@sprite/storage";
+import { SpriteError } from "@sprite/shared";
 import {
   appendFileSync,
   existsSync,
@@ -141,6 +147,7 @@ type CompactSessionManually = (
     artifactId?: string;
     createdAt?: string;
     eventId?: string;
+    sessionStore?: SessionStore;
     triggerReason?: CompactionTriggerReason;
   }
 ) => {
@@ -164,6 +171,7 @@ type CompactSessionManually = (
     summary: CompactionSummaryValue;
     taskId: string;
     triggerReason: CompactionTriggerReason;
+    warnings?: string[];
   };
 };
 
@@ -709,6 +717,112 @@ describe("compaction runtime boundary", () => {
         lastEventId: "evt_session_compacted_manual",
         lastEventType: "session.compacted"
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manual compaction rejects duplicate artifact IDs before appending another event", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask("manual compact twice");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const compactSessionManually = getCompactSessionManually();
+      const first = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-duplicate-001",
+        createdAt: "2026-05-04T01:02:00.000Z",
+        eventId: "evt_first_compaction"
+      });
+
+      expect(first.ok).toBe(true);
+
+      const eventsBeforeDuplicate = readFileSync(eventsPath, "utf8");
+      const duplicate = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-duplicate-001",
+        createdAt: "2026-05-04T01:03:00.000Z",
+        eventId: "evt_duplicate_compaction"
+      });
+
+      expect(duplicate.ok).toBe(false);
+      expect(duplicate.error?.code).toBe("SESSION_COMPACTION_ARTIFACT_EXISTS");
+      expect(readFileSync(eventsPath, "utf8")).toBe(eventsBeforeDuplicate);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manual compaction reports a warning when snapshot update fails after event append", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sprite-manual-compact-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      const runtime = new core.AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "manual compact snapshot warning"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const sessionDir = join(projectDir, ".sprite", "sessions", sessionId);
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const realStore = createLocalSessionStore();
+      let snapshotWriteAttempts = 0;
+      const warningStore: SessionStore = {
+        ensureSession: realStore.ensureSession.bind(realStore),
+        appendEvents: realStore.appendEvents.bind(realStore),
+        writeStateSnapshot: (snapshot) => {
+          snapshotWriteAttempts += 1;
+
+          if (snapshotWriteAttempts === 1) {
+            return realStore.writeStateSnapshot(snapshot);
+          }
+
+          return {
+            ok: false,
+            error: new SpriteError(
+              "SESSION_STATE_WRITE_FAILED",
+              "simulated snapshot write failure"
+            )
+          };
+        }
+      };
+      const beforeEvents = readSessionEvents(eventsPath);
+      const compactSessionManually = getCompactSessionManually();
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-snapshot-warning",
+        createdAt: "2026-05-04T01:04:00.000Z",
+        eventId: "evt_snapshot_warning",
+        sessionStore: warningStore
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok || compacted.value === undefined) {
+        return;
+      }
+
+      expect(compacted.value.warnings).toEqual([
+        expect.stringContaining("state snapshot could not be updated")
+      ]);
+      expect(readSessionEvents(eventsPath)).toHaveLength(
+        beforeEvents.length + 1
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

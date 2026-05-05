@@ -12,6 +12,7 @@ import {
   writeSessionCompactionArtifact,
   type SessionCompactionArtifact,
   type SessionEventRecord,
+  type SessionStore,
   type SessionStateSnapshot
 } from "@sprite/storage";
 import {
@@ -148,6 +149,11 @@ export interface CompactSessionArtifactsResult {
 export interface ManualSessionCompactionOptions
   extends CompactSessionArtifactsOptions {
   eventId?: string;
+  /**
+   * Advanced persistence override used by tests and alternate core callers.
+   * CLI callers should rely on the default project-local session store.
+   */
+  sessionStore?: SessionStore;
 }
 
 export interface ManualSessionCompactionResult {
@@ -160,6 +166,7 @@ export interface ManualSessionCompactionResult {
   summary: CompactionSummary;
   taskId: string;
   triggerReason: CompactionTriggerReason;
+  warnings?: string[];
 }
 
 interface BuildCompactionInputFromSessionArtifactsInput {
@@ -266,6 +273,11 @@ export function compactSessionManually(
   sessionId: string,
   options: ManualSessionCompactionOptions = {}
 ): Result<ManualSessionCompactionResult, SpriteError> {
+  const {
+    eventId,
+    sessionStore: configuredSessionStore,
+    ...compactionOptions
+  } = options;
   const artifacts = readSessionArtifacts(cwd, sessionId, {
     recentEventLimit: 0
   });
@@ -295,7 +307,7 @@ export function compactSessionManually(
     );
   }
 
-  const sessionStore = new LocalSessionStore();
+  const sessionStore = configuredSessionStore ?? new LocalSessionStore();
   const ensured = sessionStore.ensureSession(
     state.sessionId,
     state.cwd,
@@ -313,8 +325,8 @@ export function compactSessionManually(
   }
 
   const compacted = compactSessionArtifacts(cwd, sessionId, {
-    ...options,
-    triggerReason: options.triggerReason ?? "manual"
+    ...compactionOptions,
+    triggerReason: compactionOptions.triggerReason ?? "manual"
   });
 
   if (!compacted.ok) {
@@ -328,7 +340,7 @@ export function compactSessionManually(
     {
       correlationId: latestTask.correlationId,
       createdAt,
-      eventId: options.eventId ?? createCompactionEventId(createdAt),
+      eventId: eventId ?? createCompactionEventId(createdAt),
       sessionId,
       taskId: latestTask.taskId
     },
@@ -376,9 +388,12 @@ export function compactSessionManually(
     updatedAt: createdAt
   });
 
-  if (!snapshot.ok) {
-    return err(snapshot.error);
-  }
+  const warnings =
+    snapshot.ok === true
+      ? []
+      : [
+          `Session compaction event was recorded but state snapshot could not be updated: ${snapshot.error.message}`
+        ];
 
   return {
     ok: true,
@@ -391,7 +406,8 @@ export function compactSessionManually(
       source,
       summary,
       taskId: latestTask.taskId,
-      triggerReason: summary.triggerReason
+      triggerReason: summary.triggerReason,
+      ...(warnings.length === 0 ? {} : { warnings })
     }
   };
 }

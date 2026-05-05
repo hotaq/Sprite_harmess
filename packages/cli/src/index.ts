@@ -32,9 +32,9 @@ function writeMessage(io: CliIO, message: string): void {
 }
 
 const OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
-const SESSION_INSPECT_OUTPUT_FORMATS = ["text", "json"] as const;
-type SessionInspectOutputFormat =
-  (typeof SESSION_INSPECT_OUTPUT_FORMATS)[number];
+const SESSION_TEXT_JSON_OUTPUT_FORMATS = ["text", "json"] as const;
+type SessionTextJsonOutputFormat =
+  (typeof SESSION_TEXT_JSON_OUTPUT_FORMATS)[number];
 
 function parseOutputFormat(
   value: string | undefined
@@ -52,24 +52,25 @@ function parseOutputFormat(
   return value as OneShotPrintOutputFormat;
 }
 
-function parseSessionInspectOutputFormat(
-  value: string | undefined
-): SessionInspectOutputFormat {
+function parseSessionTextJsonOutputFormat(
+  value: string | undefined,
+  commandLabel: string
+): SessionTextJsonOutputFormat {
   if (value === undefined) {
     return "text";
   }
 
   if (
-    !SESSION_INSPECT_OUTPUT_FORMATS.includes(
-      value as SessionInspectOutputFormat
+    !SESSION_TEXT_JSON_OUTPUT_FORMATS.includes(
+      value as SessionTextJsonOutputFormat
     )
   ) {
     throw new Error(
-      `Session inspect output format must be one of: ${SESSION_INSPECT_OUTPUT_FORMATS.join(", ")}.`
+      `${commandLabel} output format must be one of: ${SESSION_TEXT_JSON_OUTPUT_FORMATS.join(", ")}.`
     );
   }
 
-  return value as SessionInspectOutputFormat;
+  return value as SessionTextJsonOutputFormat;
 }
 
 function parseRecentEventLimit(value: string | undefined): number | undefined {
@@ -314,6 +315,10 @@ function renderSessionCompactionText(
     result.source.firstRetainedEventId ?? "not recorded";
   const previousArtifactId =
     result.source.previousCompactionArtifactId ?? "none";
+  const warningLines =
+    result.warnings === undefined || result.warnings.length === 0
+      ? []
+      : ["Warnings:", ...result.warnings.map((warning) => `- ${warning}`)];
 
   return [
     "Session compacted:",
@@ -332,6 +337,7 @@ function renderSessionCompactionText(
     `- decisions preserved: ${result.summary.continuity.decisions.length}`,
     `- files touched preserved: ${result.summary.continuity.filesTouched.length}`,
     `- commands preserved: ${result.summary.continuity.commandsRun.length}`,
+    ...warningLines,
     "Next step:",
     `- inspect with: sprite session inspect ${result.sessionId}`
   ].join("\n");
@@ -478,8 +484,9 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
           output?: string;
           recentEvents?: string;
         }>();
-        const outputFormat = parseSessionInspectOutputFormat(
-          options.output ?? optionValues.output
+        const outputFormat = parseSessionTextJsonOutputFormat(
+          options.output ?? optionValues.output,
+          "Session inspect"
         );
         const recentEventLimit = parseRecentEventLimit(options.recentEvents);
         const inspected = inspectSessionState(process.cwd(), sessionId, {
@@ -506,8 +513,9 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     .action(
       (sessionId: string, options: { output?: string }, command: Command) => {
         const optionValues = command.optsWithGlobals<{ output?: string }>();
-        const outputFormat = parseSessionInspectOutputFormat(
-          options.output ?? optionValues.output
+        const outputFormat = parseSessionTextJsonOutputFormat(
+          options.output ?? optionValues.output,
+          "Session compact"
         );
         const compacted = compactSessionManually(process.cwd(), sessionId);
 
@@ -536,8 +544,9 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     .action(
       (sessionId: string, options: { output?: string }, command: Command) => {
         const optionValues = command.optsWithGlobals<{ output?: string }>();
-        const outputFormat = parseSessionInspectOutputFormat(
-          options.output ?? optionValues.output
+        const outputFormat = parseSessionTextJsonOutputFormat(
+          options.output ?? optionValues.output,
+          "Session resume"
         );
         const runtime = new AgentRuntime();
         const resumed = runtime.resumeSession(sessionId);

@@ -283,6 +283,24 @@ describe("local session store", () => {
       }
 
       expect(readBack.value).toEqual(artifact);
+
+      const duplicate = writeSessionCompactionArtifact(paths, {
+        ...artifact,
+        summary: {
+          ...artifact.summary,
+          continuity: {
+            taskGoal: "This duplicate write must not replace the first summary."
+          }
+        }
+      });
+
+      expect(duplicate.ok).toBe(false);
+      expect(duplicate.error?.code).toBe(
+        "SESSION_COMPACTION_ARTIFACT_EXISTS"
+      );
+      expect(
+        readSessionCompactionArtifact(paths, "cmp-threshold-001")
+      ).toEqual(readBack);
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
