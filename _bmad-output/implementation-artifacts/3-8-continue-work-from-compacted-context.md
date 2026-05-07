@@ -1,6 +1,6 @@
 # Story 3.8: Continue Work from Compacted Context
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
