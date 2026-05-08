@@ -17,7 +17,8 @@ import type {
 } from "./task-state.js";
 import {
   assembleTaskContextPacket,
-  type TaskContextSessionStateInput
+  type TaskContextSessionStateInput,
+  type WorkingMemorySnapshot
 } from "./task-context.js";
 
 const DEFAULT_MAX_ITERATIONS = 1;
@@ -25,6 +26,7 @@ const DEFAULT_MAX_ITERATIONS = 1;
 export interface TaskRequestContextOptions {
   compactedContext?: CompactedSessionContext;
   sessionState?: TaskContextSessionStateInput;
+  workingMemory?: WorkingMemorySnapshot;
 }
 
 export function createTaskRequest(
@@ -43,7 +45,8 @@ export function createTaskRequest(
       provider: bootstrapState.provider,
       sessionState: options.sessionState,
       startup: bootstrapState.startup,
-      task
+      task,
+      workingMemory: options.workingMemory
     }),
     allowedDefaults: {
       outputFormat: bootstrapState.startup.outputFormat,

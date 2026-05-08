@@ -2110,10 +2110,76 @@ describe("runtime event subscription", () => {
       expect(activeTask.value.waitingState).toMatchObject({
         reason: "approval-required"
       });
+      const workingMemorySection =
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "working-memory"
+        );
+
+      expect(workingMemorySection?.content).toContain("Constraints");
+      expect(workingMemorySection?.content).toContain(
+        "Pending approval count: 1."
+      );
+      expect(workingMemorySection?.content).not.toContain("completed: sudo");
+      expect(workingMemorySection?.content).not.toContain("completed: node");
     }
     expect(history.some((event) => event.type.startsWith("tool.call."))).toBe(
       false
     );
+  });
+
+  it("reports blocked validation commands as blocked in working memory", async () => {
+    const { projectDir } = createTempRuntimeProject();
+    writeProjectFile(
+      projectDir,
+      ".sprite/config.json",
+      JSON.stringify({
+        validation: {
+          commands: [
+            {
+              command: "node",
+              name: "unknown-runtime-validation",
+              timeoutMs: 30_000
+            }
+          ]
+        }
+      })
+    );
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: "/tmp/sprite-home"
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "record blocked validation accurately"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const validation = await runtime.runConfiguredValidationCommands();
+
+    expect(validation).toMatchObject({
+      ok: true,
+      value: {
+        status: "blocked"
+      }
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+
+    const activeTask = runtime.getActiveTask();
+    expect(activeTask.ok).toBe(true);
+    if (!activeTask.ok) {
+      return;
+    }
+
+    const workingMemorySection =
+      activeTask.value.request.contextPacket.sections.find(
+        (section) => section.source === "working-memory"
+      );
+
+    expect(workingMemorySection?.content).toContain("blocked: node");
+    expect(workingMemorySection?.content).not.toContain("failed: node");
   });
 
   it("records a safer-alternative recovery path after policy denies a command", async () => {

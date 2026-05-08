@@ -395,6 +395,7 @@ describe("sprite cli smoke tests", () => {
         summary: {
           sources: [
             "runtime-self-model",
+            "working-memory",
             "provider-limits",
             "user-input",
             "session-state",

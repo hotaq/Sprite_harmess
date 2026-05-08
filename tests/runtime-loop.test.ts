@@ -42,6 +42,7 @@ describe("AgentRuntime interactive task flow", () => {
       )
     ).toEqual([
       "runtime-self-model",
+      "working-memory",
       "provider-limits",
       "user-input",
       "session-state",
@@ -50,6 +51,24 @@ describe("AgentRuntime interactive task flow", () => {
       "memory",
       "skills"
     ]);
+    expect(
+      result.value.request.contextPacket.sections.find(
+        (section) => section.source === "working-memory"
+      )
+    ).toMatchObject({
+      metadata: expect.objectContaining({
+        scope: "task",
+        sessionId: result.value.sessionId,
+        taskId: result.value.taskId
+      }),
+      status: "included",
+      trust: "trusted"
+    });
+    expect(
+      result.value.request.contextPacket.sections.find(
+        (section) => section.source === "working-memory"
+      )?.content
+    ).toContain("fix the failing smoke test");
     expect(
       result.value.request.contextPacket.sections.find(
         (section) => section.source === "session-state"
@@ -476,6 +495,7 @@ describe("AgentRuntime interactive task flow", () => {
       );
       expect(result.value.contextPacket.summary.sources).toEqual([
         "runtime-self-model",
+        "working-memory",
         "provider-limits",
         "user-input",
         "session-state",
@@ -543,6 +563,13 @@ describe("AgentRuntime interactive task flow", () => {
         input: { path: "package.json" },
         toolName: "read_file"
       });
+      const commandResult = await runtime.executeToolCall({
+        input: {
+          command: "pwd",
+          timeoutMs: 30_000
+        },
+        toolName: "run_command"
+      });
       const proposed = runtime.recordFileActivity({
         kind: "proposed_change",
         paths: ["README.md"]
@@ -553,6 +580,7 @@ describe("AgentRuntime interactive task flow", () => {
       });
 
       expect(readResult.ok).toBe(true);
+      expect(commandResult.ok).toBe(true);
       expect(proposed.ok).toBe(true);
       expect(changed.ok).toBe(true);
 
@@ -568,6 +596,20 @@ describe("AgentRuntime interactive task flow", () => {
       expect(summary.filesRead).toEqual(["package.json"]);
       expect(summary.filesProposedForChange).toEqual(["README.md"]);
       expect(summary.filesChanged).toEqual(["README.md"]);
+
+      const workingMemorySection =
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "working-memory"
+        );
+
+      expect(workingMemorySection?.content).toContain("package.json");
+      expect(workingMemorySection?.content).toContain("README.md");
+      expect(workingMemorySection?.content).toContain("pwd");
+      expect(workingMemorySection?.metadata).toMatchObject({
+        commandCount: 1,
+        fileCount: 2,
+        sourceEventCountTotal: expect.any(Number)
+      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

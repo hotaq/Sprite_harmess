@@ -9,11 +9,13 @@ import {
   type MemoryType
 } from "@sprite/memory";
 import type { ResolvedProviderState } from "@sprite/providers";
+import type { ToolName } from "@sprite/tools";
 import { containsSecretLikeValue, createRedactedPreview } from "@sprite/shared";
 
 export const TASK_CONTEXT_PACKET_SCHEMA_VERSION = 1 as const;
 export const TASK_CONTEXT_SOURCE_ORDER = [
   "runtime-self-model",
+  "working-memory",
   "provider-limits",
   "user-input",
   "session-state",
@@ -25,6 +27,16 @@ export const TASK_CONTEXT_SOURCE_ORDER = [
 
 const DEFAULT_SECTION_CONTENT_MAX_LENGTH = 480;
 const DEFAULT_PROJECT_CONTEXT_CONTENT_MAX_LENGTH = 1_200;
+const RUNTIME_TOOL_NAMES = [
+  "apply_patch",
+  "list_files",
+  "read_file",
+  "run_command",
+  "search_files"
+] as const satisfies readonly ToolName[];
+const WORKING_MEMORY_SOURCE_EVENT_ID_LIMIT = 12;
+const WORKING_MEMORY_LIST_ITEM_LIMIT = 2;
+const WORKING_MEMORY_PREVIEW_MAX_LENGTH = 48;
 
 export type TaskContextSourceKind = (typeof TASK_CONTEXT_SOURCE_ORDER)[number];
 export type TaskContextSectionStatus =
@@ -110,10 +122,96 @@ export interface TaskContextMemoryInput {
   type: MemoryType;
 }
 
+export interface WorkingMemoryObservation {
+  createdAt?: string;
+  eventId?: string;
+  kind: "constraint" | "decision" | "failure" | "observation" | "progress";
+  summary: string;
+}
+
+export interface WorkingMemoryCommand {
+  command: string;
+  eventId?: string;
+  status?:
+    | "blocked"
+    | "completed"
+    | "failed"
+    | "planned"
+    | "skipped"
+    | "started";
+}
+
+export interface WorkingMemorySnapshot {
+  blockers: readonly string[];
+  commandsRun: readonly WorkingMemoryCommand[];
+  currentGoal: string;
+  currentPlan: readonly string[];
+  decisions: readonly string[];
+  filesTouched: readonly string[];
+  pendingConstraints: readonly string[];
+  recentObservations: readonly WorkingMemoryObservation[];
+  schemaVersion: 1;
+  scope: "session" | "task";
+  sessionId: string;
+  sourceEventIds: readonly string[];
+  sourceEventTotalCount?: number;
+  taskId: string;
+  updatedAt: string;
+}
+
 export interface TaskContextSkillInput {
   description?: string;
   name: string;
   source?: string;
+}
+
+export interface RuntimeSelfModelSnapshot {
+  context: {
+    compactedArtifactId?: string;
+    compactedContextAvailable: boolean;
+    packetSchemaVersion: typeof TASK_CONTEXT_PACKET_SCHEMA_VERSION;
+    sourceOrder: readonly TaskContextSourceKind[];
+  };
+  generatedAt: string;
+  limitations: readonly string[];
+  memory: {
+    candidateStoreAvailable: boolean;
+    durableRetrievalAvailable: boolean;
+    providerName: string;
+    safetyRulesCount: number;
+    workingMemoryAvailable: boolean;
+  };
+  provider: {
+    auth: "configured-redacted" | "missing";
+    configured: boolean;
+    contextWindowTokens: number | null;
+    model: string | null;
+    modelIdentity: string | null;
+    providerName: string;
+    supportsStreaming: boolean;
+    supportsToolCalls: boolean;
+  };
+  sandbox: {
+    approvalPolicy: "policy-governed";
+    cwd: string;
+    fileEditApproval: "policy-governed";
+    mode: string;
+    outputFormat: string;
+    pendingApprovalCount: number;
+    riskyCommandApproval: "policy-governed";
+    validationCommandCount: number;
+  };
+  skills: {
+    loaded: boolean;
+    names: readonly string[];
+    source: string;
+  };
+  tools: {
+    available: boolean;
+    names: readonly string[];
+    providerDrivenExecutionAvailable: boolean;
+    unavailableReason: string;
+  };
 }
 
 export interface TaskContextAssemblyInput {
@@ -125,6 +223,7 @@ export interface TaskContextAssemblyInput {
   skillEntries?: readonly TaskContextSkillInput[];
   startup: ResolvedStartupConfig;
   task: string;
+  workingMemory?: WorkingMemorySnapshot;
 }
 
 export interface TaskContextAssemblyOptions {
@@ -195,6 +294,71 @@ export function summarizeTaskContextPacket(
   };
 }
 
+export function updateTaskContextWorkingMemory(
+  packet: TaskContextPacket,
+  workingMemory: WorkingMemorySnapshot,
+  options: Pick<TaskContextAssemblyOptions, "sectionContentMaxLength"> = {}
+): TaskContextPacket {
+  const sectionContentMaxLength =
+    options.sectionContentMaxLength ?? DEFAULT_SECTION_CONTENT_MAX_LENGTH;
+  const sourceOrder = upsertTaskContextSourceOrder(
+    packet.sourceOrder,
+    "working-memory"
+  );
+  const workingMemorySection = createWorkingMemorySectionFromSnapshot(
+    workingMemory,
+    sourceOrder.indexOf("working-memory"),
+    sectionContentMaxLength
+  );
+  let replaced = false;
+  const replacedSections = packet.sections.map((section) => {
+    if (section.source !== "working-memory") {
+      return section;
+    }
+
+    replaced = true;
+    return workingMemorySection;
+  });
+  const nextSections = replaced
+    ? replacedSections
+    : sortTaskContextSections([...replacedSections, workingMemorySection]);
+  const nextPacket: TaskContextPacket = {
+    ...packet,
+    sections: nextSections,
+    sourceOrder
+  };
+
+  return {
+    ...nextPacket,
+    summary: summarizeTaskContextPacket(nextPacket)
+  };
+}
+
+function upsertTaskContextSourceOrder(
+  sourceOrder: readonly TaskContextSourceKind[],
+  source: TaskContextSourceKind
+): TaskContextSourceKind[] {
+  if (sourceOrder.includes(source)) {
+    return [...sourceOrder];
+  }
+
+  return [...sourceOrder, source].sort(
+    (left, right) =>
+      TASK_CONTEXT_SOURCE_ORDER.indexOf(left) -
+      TASK_CONTEXT_SOURCE_ORDER.indexOf(right)
+  );
+}
+
+function sortTaskContextSections(
+  sections: readonly TaskContextSection[]
+): TaskContextSection[] {
+  return [...sections].sort(
+    (left, right) =>
+      TASK_CONTEXT_SOURCE_ORDER.indexOf(left.source) -
+      TASK_CONTEXT_SOURCE_ORDER.indexOf(right.source)
+  );
+}
+
 function createSection(
   source: TaskContextSourceKind,
   factoryInput: SectionFactoryInput
@@ -202,6 +366,8 @@ function createSection(
   switch (source) {
     case "runtime-self-model":
       return createRuntimeSelfModelSection(factoryInput);
+    case "working-memory":
+      return createWorkingMemorySection(factoryInput);
     case "provider-limits":
       return createProviderLimitsSection(factoryInput);
     case "user-input":
@@ -224,32 +390,237 @@ function createRuntimeSelfModelSection({
   options,
   priority
 }: SectionFactoryInput): TaskContextSection {
-  const validationCommandCount = input.startup.validationCommands.length;
+  const snapshot = createRuntimeSelfModelSnapshot(input);
+  const redacted = runtimeSelfModelContainsSecret(snapshot);
 
   return {
     content: createSafePreviewSection(
       [
-        `Output format: ${input.startup.outputFormat}.`,
-        `Sandbox mode: ${input.startup.sandboxMode}.`,
+        `Output format: ${snapshot.sandbox.outputFormat}.`,
+        `Sandbox mode: ${snapshot.sandbox.mode}.`,
+        `Provider: ${snapshot.provider.configured ? snapshot.provider.providerName : "not configured"}.`,
+        `Provider model: ${snapshot.provider.model ?? "not configured"}.`,
+        `Provider auth: ${snapshot.provider.auth}.`,
         "Provider-driven tool execution is not connected in this MVP loop.",
-        `Configured validation commands: ${validationCommandCount}.`
+        "Runtime tool registry is available through explicit runtime/package APIs.",
+        "Risky commands and file edits remain policy-governed and may require approval.",
+        "Durable memory retrieval is not implemented.",
+        `Provider streaming: ${snapshot.provider.supportsStreaming}.`,
+        `Provider tool calls: ${snapshot.provider.supportsToolCalls}.`,
+        `Context schema: ${snapshot.context.packetSchemaVersion}.`,
+        `Context sources: ${snapshot.context.sourceOrder.join(" > ")}.`,
+        snapshot.memory.workingMemoryAvailable
+          ? "Working memory is available for this task/session."
+          : "Working memory is not available for this packet.",
+        snapshot.skills.loaded
+          ? `Loaded skills: ${snapshot.skills.names.join(", ")}.`
+          : "Skill registry integration is not loaded for this packet.",
+        `Configured validation commands: ${snapshot.sandbox.validationCommandCount}.`
       ].join(" "),
       options.sectionContentMaxLength
     ),
-    metadata: {
-      outputFormat: input.startup.outputFormat,
+    metadata: createSafeMetadata({
+      approvalPolicy: snapshot.sandbox.approvalPolicy,
+      candidateStoreAvailable: snapshot.memory.candidateStoreAvailable,
+      compactedContextAvailable: snapshot.context.compactedContextAvailable,
+      contextPacketSchemaVersion: snapshot.context.packetSchemaVersion,
+      contextSourceOrder: snapshot.context.sourceOrder,
+      cwd: createSafePathLabel(snapshot.sandbox.cwd),
+      cwdRedacted: containsSecretLikeValue(snapshot.sandbox.cwd),
+      durableRetrievalAvailable: snapshot.memory.durableRetrievalAvailable,
+      fileEditApproval: snapshot.sandbox.fileEditApproval,
+      memoryProviderName: snapshot.memory.providerName,
+      model: snapshot.provider.model,
+      modelIdentity: snapshot.provider.modelIdentity,
+      outputFormat: snapshot.sandbox.outputFormat,
+      pendingApprovalCount: snapshot.sandbox.pendingApprovalCount,
+      providerAuth: snapshot.provider.auth,
+      providerConfigured: snapshot.provider.configured,
       providerDrivenToolExecution: "not-connected",
-      sandboxMode: input.startup.sandboxMode,
+      providerDrivenToolExecutionAvailable:
+        snapshot.tools.providerDrivenExecutionAvailable,
+      providerName: snapshot.provider.providerName,
+      providerSupportsStreaming: snapshot.provider.supportsStreaming,
+      providerSupportsToolCalls: snapshot.provider.supportsToolCalls,
+      providerContextWindowTokens: snapshot.provider.contextWindowTokens,
+      riskyCommandApproval: snapshot.sandbox.riskyCommandApproval,
+      safetyRulesCount: snapshot.memory.safetyRulesCount,
+      sandboxMode: snapshot.sandbox.mode,
+      skillNames: snapshot.skills.names,
+      skillRegistryLoaded: snapshot.skills.loaded,
+      toolNames: snapshot.tools.names,
       toolExecutionEnabled: false,
-      validationCommandCount
-    },
+      toolsAvailable: snapshot.tools.available,
+      validationCommandCount: snapshot.sandbox.validationCommandCount,
+      workingMemoryAvailable: snapshot.memory.workingMemoryAvailable
+    }),
     priority,
-    redacted: false,
+    redacted,
     source: "runtime-self-model",
-    status: "included",
+    status: redacted ? "redacted" : "included",
     summary:
-      "Runtime-owned operating constraints and current MVP limitations are included.",
+      "Runtime-owned capability state and current MVP limitations are included.",
     title: "Runtime self-model",
+    trust: "trusted"
+  };
+}
+
+export function createRuntimeSelfModelSnapshot(
+  input: TaskContextAssemblyInput
+): RuntimeSelfModelSnapshot {
+  const provider = input.provider;
+  const skillEntries = input.skillEntries ?? [];
+  const providerConfigured = provider !== null;
+  const limitations = [
+    "Provider-driven tool execution is not connected in this MVP loop.",
+    "Durable memory retrieval is not implemented.",
+    "Memory candidate persistence is not implemented in Story 4.1.",
+    skillEntries.length === 0
+      ? "Skill registry integration is not loaded for this packet."
+      : ""
+  ].filter((value) => value.length > 0);
+
+  return {
+    context: {
+      ...(input.compactedContext === undefined
+        ? {}
+        : { compactedArtifactId: input.compactedContext.artifactId }),
+      compactedContextAvailable: input.compactedContext !== undefined,
+      packetSchemaVersion: TASK_CONTEXT_PACKET_SCHEMA_VERSION,
+      sourceOrder: [...TASK_CONTEXT_SOURCE_ORDER]
+    },
+    generatedAt: new Date().toISOString(),
+    limitations,
+    memory: {
+      candidateStoreAvailable: false,
+      durableRetrievalAvailable: false,
+      providerName: "not-configured",
+      safetyRulesCount: input.startup.safetyRules.length,
+      workingMemoryAvailable: input.workingMemory !== undefined
+    },
+    provider: {
+      auth:
+        providerConfigured && provider.auth.authenticated
+          ? "configured-redacted"
+          : "missing",
+      configured: providerConfigured,
+      contextWindowTokens: provider?.capabilities.contextWindowTokens ?? null,
+      model: provider?.model ?? null,
+      modelIdentity: provider?.capabilities.modelIdentity ?? null,
+      providerName: provider?.providerName ?? "not-configured",
+      supportsStreaming: provider?.capabilities.supportsStreaming ?? false,
+      supportsToolCalls: provider?.capabilities.supportsToolCalls ?? false
+    },
+    sandbox: {
+      approvalPolicy: "policy-governed",
+      cwd: input.startup.cwd,
+      fileEditApproval: "policy-governed",
+      mode: input.startup.sandboxMode,
+      outputFormat: input.startup.outputFormat,
+      pendingApprovalCount: input.sessionState?.pendingApprovalCount ?? 0,
+      riskyCommandApproval: "policy-governed",
+      validationCommandCount: input.startup.validationCommands.length
+    },
+    skills: {
+      loaded: skillEntries.length > 0,
+      names: skillEntries.map((entry) => entry.name),
+      source: skillEntries.length > 0 ? "provided" : "not-loaded"
+    },
+    tools: {
+      available: true,
+      names: [...RUNTIME_TOOL_NAMES],
+      providerDrivenExecutionAvailable: false,
+      unavailableReason:
+        "Provider-driven tool execution is not connected in this MVP loop."
+    }
+  };
+}
+
+function createWorkingMemorySection({
+  input,
+  options,
+  priority
+}: SectionFactoryInput): TaskContextSection {
+  const snapshot = input.workingMemory;
+
+  if (snapshot === undefined) {
+    return {
+      metadata: {
+        available: false
+      },
+      priority,
+      reason:
+        "No task-local working memory snapshot was available for this packet.",
+      redacted: false,
+      source: "working-memory",
+      status: "skipped",
+      summary: "No current-task working memory is included for this packet.",
+      title: "Working memory",
+      trust: "trusted"
+    };
+  }
+
+  return createWorkingMemorySectionFromSnapshot(
+    snapshot,
+    priority,
+    options.sectionContentMaxLength
+  );
+}
+
+function createWorkingMemorySectionFromSnapshot(
+  snapshot: WorkingMemorySnapshot,
+  priority: number,
+  sectionContentMaxLength: number
+): TaskContextSection {
+  const rawContent = formatWorkingMemoryContent(
+    snapshot,
+    sectionContentMaxLength
+  );
+  const redacted = workingMemoryContainsSecret(snapshot);
+  const sourceEventIds = snapshot.sourceEventIds.slice(
+    -WORKING_MEMORY_SOURCE_EVENT_ID_LIMIT
+  );
+
+  return {
+    content: createSafePreviewSection(
+      rawContent,
+      sectionContentMaxLength
+    ),
+    metadata: createSafeMetadata({
+      available: true,
+      blockerCount: snapshot.blockers.length,
+      commandCount: snapshot.commandsRun.length,
+      containsUserDerivedContent: true,
+      constraintCount: snapshot.pendingConstraints.length,
+      decisionCount: snapshot.decisions.length,
+      fileCount: snapshot.filesTouched.length,
+      observationCount: snapshot.recentObservations.length,
+      planStepCount: snapshot.currentPlan.length,
+      schemaVersion: snapshot.schemaVersion,
+      scope: snapshot.scope,
+      sessionId: snapshot.sessionId,
+      sourceEventCount: sourceEventIds.length,
+      sourceEventCountTotal:
+        snapshot.sourceEventTotalCount ?? snapshot.sourceEventIds.length,
+      sourceEventIds,
+      taskId: snapshot.taskId,
+      trustBasis: "runtime-owned-current-task-snapshot",
+      userDerivedFields: [
+        "commandsRun.command",
+        "currentGoal",
+        "currentPlan",
+        "filesTouched",
+        "recentObservations.summary"
+      ],
+      updatedAt: snapshot.updatedAt
+    }),
+    priority,
+    redacted,
+    source: "working-memory",
+    status: redacted ? "redacted" : "included",
+    summary:
+      "Task-local working memory is included as bounded runtime-owned context with user-derived fields labeled as descriptive.",
+    title: "Working memory",
     trust: "trusted"
   };
 }
@@ -265,7 +636,7 @@ function createProviderLimitsSection({
         "No active provider is configured; provider limits are unavailable.",
         options.sectionContentMaxLength
       ),
-      metadata: {
+      metadata: createSafeMetadata({
         authenticated: false,
         authSource: "missing",
         contextWindowTokens: null,
@@ -274,7 +645,7 @@ function createProviderLimitsSection({
         providerName: "not-configured",
         supportsStreaming: false,
         supportsToolCalls: false
-      },
+      }),
       priority,
       redacted: false,
       source: "provider-limits",
@@ -304,7 +675,7 @@ function createProviderLimitsSection({
       ].join(" "),
       options.sectionContentMaxLength
     ),
-    metadata: {
+    metadata: createSafeMetadata({
       authenticated: auth.authenticated,
       authSecretRedacted: auth.secretRedacted,
       authSource: auth.source,
@@ -314,7 +685,7 @@ function createProviderLimitsSection({
       providerName,
       supportsStreaming: capabilities.supportsStreaming,
       supportsToolCalls: capabilities.supportsToolCalls
-    },
+    }),
     priority,
     redacted: false,
     source: "provider-limits",
@@ -743,8 +1114,219 @@ function createSafePreviewSection(value: string, maxLength: number): string {
   return createRedactedPreview(value, maxLength);
 }
 
+function formatWorkingMemoryContent(
+  snapshot: WorkingMemorySnapshot,
+  maxLength: number
+): string {
+  const observations = snapshot.recentObservations.map((observation) =>
+    [
+      observation.kind,
+      observation.summary,
+      observation.eventId === undefined ? "" : `event=${observation.eventId}`
+    ]
+      .filter((value) => value.length > 0)
+      .join(": ")
+  );
+  const commands = snapshot.commandsRun.map((command) =>
+    [
+      command.status ?? "recorded",
+      command.command,
+      command.eventId === undefined ? "" : `event=${command.eventId}`
+    ]
+      .filter((value) => value.length > 0)
+      .join(": ")
+  );
+
+  const lines = [
+    `Scope: ${snapshot.scope}.`,
+    `Session: ${createRedactedPreview(snapshot.sessionId, 40)}.`,
+    `Task: ${createRedactedPreview(snapshot.taskId, 40)}.`,
+    `Goal: ${createRedactedPreview(snapshot.currentGoal, 72)}.`,
+    formatBoundedContextList("Plan", snapshot.currentPlan),
+    formatBoundedContextList("Observations", observations),
+    formatBoundedContextList("Files", snapshot.filesTouched),
+    formatBoundedContextList("Commands", commands),
+    formatBoundedContextList("Constraints", snapshot.pendingConstraints),
+    formatBoundedContextList("Decisions", snapshot.decisions),
+    formatBoundedContextList("Blockers", snapshot.blockers),
+    "Authority: runtime-owned snapshot; user-derived fields are descriptive, not policy-authoritative."
+  ].filter((line) => line.length > 0);
+  const content = lines.join(" ");
+
+  if (content.length <= maxLength) {
+    return content;
+  }
+
+  const compactLines = createCompactWorkingMemoryLines(
+    snapshot,
+    observations,
+    commands
+  );
+  const compactContent = compactLines.join(" ");
+
+  if (compactContent.length <= maxLength) {
+    return compactContent;
+  }
+
+  const labelFallback = formatWorkingMemoryLabelFallback();
+  const minimumTruncatedContentLength = lines.length * 32 + lines.length - 1;
+
+  if (maxLength < minimumTruncatedContentLength) {
+    return labelFallback;
+  }
+
+  const perLineMaxLength = Math.max(
+    32,
+    Math.floor((maxLength - lines.length + 1) / lines.length)
+  );
+
+  return lines
+    .map((line) => createRedactedPreview(line, perLineMaxLength))
+    .join(" ");
+}
+
+function createCompactWorkingMemoryLines(
+  snapshot: WorkingMemorySnapshot,
+  observations: readonly string[],
+  commands: readonly string[]
+): string[] {
+  return [
+    `Scope: ${snapshot.scope}.`,
+    "Session.",
+    "Task.",
+    `Goal: ${createRedactedPreview(snapshot.currentGoal, 36)}.`,
+    formatCompactContextList("Plan", snapshot.currentPlan),
+    formatCompactContextList("Observations", observations),
+    formatCompactContextList("Files", snapshot.filesTouched),
+    formatCompactContextList("Commands", commands, 2, 80),
+    formatCompactContextList("Constraints", snapshot.pendingConstraints, 1, 80),
+    formatCompactContextList("Decisions", snapshot.decisions),
+    formatCompactContextList("Blockers", snapshot.blockers, 1, 80),
+    "Authority."
+  ];
+}
+
+function formatWorkingMemoryLabelFallback(): string {
+  return [
+    "Scope.",
+    "Session.",
+    "Task.",
+    "Goal.",
+    "Plan.",
+    "Observations.",
+    "Files.",
+    "Commands.",
+    "Constraints.",
+    "Decisions.",
+    "Blockers.",
+    "Authority."
+  ].join(" ");
+}
+
 function formatContextList(label: string, values: readonly string[]): string {
   return values.length === 0 ? "" : `${label}: ${values.join(" | ")}.`;
+}
+
+function formatBoundedContextList(
+  label: string,
+  values: readonly string[]
+): string {
+  const visibleValues = values
+    .slice(-WORKING_MEMORY_LIST_ITEM_LIMIT)
+    .map((value) => createRedactedPreview(value, WORKING_MEMORY_PREVIEW_MAX_LENGTH));
+  const omittedCount = Math.max(0, values.length - visibleValues.length);
+  const omittedSuffix =
+    omittedCount === 0 ? "" : ` (${omittedCount} older omitted)`;
+  const representedValues =
+    visibleValues.length === 0 ? "none" : visibleValues.join(" | ");
+
+  return `${label}${omittedSuffix}: ${representedValues}.`;
+}
+
+function formatCompactContextList(
+  label: string,
+  values: readonly string[],
+  visibleLimit = 1,
+  previewMaxLength = 48
+): string {
+  const visibleValues = values
+    .slice(-visibleLimit)
+    .map((value) => createRedactedPreview(value, previewMaxLength));
+  const omittedCount = Math.max(0, values.length - visibleValues.length);
+  const omittedSuffix =
+    omittedCount === 0 ? "" : ` (${omittedCount} older omitted)`;
+  const representedValues =
+    visibleValues.length === 0 ? "none" : visibleValues.join(" | ");
+
+  return `${label}${omittedSuffix}: ${representedValues}.`;
+}
+
+function runtimeSelfModelContainsSecret(
+  snapshot: RuntimeSelfModelSnapshot
+): boolean {
+  return containsSecretLikeValue(
+    [
+      snapshot.provider.providerName,
+      snapshot.provider.model ?? "",
+      snapshot.provider.modelIdentity ?? "",
+      snapshot.sandbox.cwd,
+      ...snapshot.skills.names,
+      ...snapshot.tools.names
+    ].join(" ")
+  );
+}
+
+function workingMemoryContainsSecret(snapshot: WorkingMemorySnapshot): boolean {
+  return containsSecretLikeValue(
+    [
+      snapshot.currentGoal,
+      snapshot.sessionId,
+      snapshot.taskId,
+      ...snapshot.blockers,
+      ...snapshot.commandsRun.map((command) => command.command),
+      ...snapshot.currentPlan,
+      ...snapshot.decisions,
+      ...snapshot.filesTouched,
+      ...snapshot.pendingConstraints,
+      ...snapshot.recentObservations.map((observation) => observation.summary),
+      ...snapshot.sourceEventIds
+    ].join(" ")
+  );
+}
+
+function createSafePathLabel(pathValue: string): string {
+  if (containsSecretLikeValue(pathValue)) {
+    return createRedactedPreview(pathValue, 80);
+  }
+
+  const segments = pathValue.split(/[\\/]+/).filter((segment) => segment.length > 0);
+
+  return segments.at(-1) ?? ".";
+}
+
+function createSafeMetadata(
+  metadata: TaskContextSectionMetadata
+): TaskContextSectionMetadata {
+  return Object.fromEntries(
+    Object.entries(metadata).map(([key, value]) => [
+      key,
+      createSafeMetadataValue(value)
+    ])
+  );
+}
+
+function createSafeMetadataValue(
+  value: TaskContextSectionMetadataValue
+): TaskContextSectionMetadataValue {
+  if (typeof value === "string") {
+    return createRedactedPreview(value, 160);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => createRedactedPreview(item, 120));
+  }
+
+  return value;
 }
 
 function countSectionsByStatus(

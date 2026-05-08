@@ -4,8 +4,10 @@ import {
   TASK_CONTEXT_PACKET_SCHEMA_VERSION,
   TASK_CONTEXT_SOURCE_ORDER,
   summarizeTaskContextPacket,
+  updateTaskContextWorkingMemory,
   type CompactedSessionContext,
-  type TaskContextAssemblyInput
+  type TaskContextAssemblyInput,
+  type WorkingMemorySnapshot
 } from "@sprite/core";
 import type { ProjectContextLoadResult } from "@sprite/config";
 
@@ -86,6 +88,28 @@ function createProjectContext(): ProjectContextLoadResult {
   };
 }
 
+function createWorkingMemorySnapshot(
+  overrides: Partial<WorkingMemorySnapshot> = {}
+): WorkingMemorySnapshot {
+  return {
+    blockers: [],
+    commandsRun: [],
+    currentGoal: "Maintain working memory and runtime self-model.",
+    currentPlan: ["Add working-memory source."],
+    decisions: [],
+    filesTouched: [],
+    pendingConstraints: [],
+    recentObservations: [],
+    schemaVersion: 1,
+    scope: "task",
+    sessionId: "ses_test",
+    sourceEventIds: [],
+    taskId: "task_test",
+    updatedAt: "2026-05-08T01:10:00.000Z",
+    ...overrides
+  };
+}
+
 describe("task context packet assembly", () => {
   it("assembles sections in canonical order with safe summaries", () => {
     const packet = assembleTaskContextPacket(createAssemblyInput());
@@ -97,7 +121,7 @@ describe("task context packet assembly", () => {
     );
     expect(packet.summary.sources).toEqual(TASK_CONTEXT_SOURCE_ORDER);
     expect(packet.summary.includedCount).toBe(5);
-    expect(packet.summary.skippedCount).toBe(3);
+    expect(packet.summary.skippedCount).toBe(4);
 
     expect(packet.sections[0]).toMatchObject({
       source: "runtime-self-model",
@@ -105,27 +129,388 @@ describe("task context packet assembly", () => {
       trust: "trusted"
     });
     expect(packet.sections[1]).toMatchObject({
+      source: "working-memory",
+      status: "skipped",
+      trust: "trusted"
+    });
+    expect(packet.sections[2]).toMatchObject({
       source: "provider-limits",
       status: "included",
       trust: "trusted"
     });
-    expect(packet.sections[4]).toMatchObject({
+    expect(packet.sections[5]).toMatchObject({
       source: "compacted-context",
       status: "skipped"
     });
-    expect(packet.sections[5]).toMatchObject({
+    expect(packet.sections[6]).toMatchObject({
       source: "project-context",
       status: "included",
       trust: "untrusted"
     });
-    expect(packet.sections[6]).toMatchObject({
+    expect(packet.sections[7]).toMatchObject({
       source: "memory",
       status: "skipped"
     });
-    expect(packet.sections[7]).toMatchObject({
+    expect(packet.sections[8]).toMatchObject({
       source: "skills",
       status: "skipped"
     });
+  });
+
+  it("includes task-scoped working memory as a first-class trusted section", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        workingMemory: createWorkingMemorySnapshot({
+          blockers: ["Need user steering before risky work."],
+          commandsRun: [
+            {
+              command: "rtk run 'npm test -- --run tests/task-context.test.ts'",
+              eventId: "evt_validation_started",
+              status: "planned"
+            }
+          ],
+          currentGoal: "Maintain working memory and runtime self-model.",
+          currentPlan: [
+            "Add working-memory source.",
+            "Expand runtime self-model."
+          ],
+          decisions: ["Keep durable memory retrieval out of Story 4.1."],
+          filesTouched: ["packages/core/src/task-context.ts"],
+          pendingConstraints: [
+            "Do not promote working memory to durable memory."
+          ],
+          recentObservations: [
+            {
+              createdAt: "2026-05-08T01:10:00.000Z",
+              eventId: "evt_plan_observed",
+              kind: "observation",
+              summary: "Task context assembly needs a dedicated source."
+            }
+          ],
+          sourceEventIds: ["evt_plan_observed", "evt_validation_started"],
+          updatedAt: "2026-05-08T01:10:00.000Z"
+        })
+      })
+    );
+    const workingMemorySection = packet.sections.find(
+      (section) => section.source === "working-memory"
+    );
+
+    expect(workingMemorySection).toMatchObject({
+      metadata: expect.objectContaining({
+        available: true,
+        blockerCount: 1,
+        commandCount: 1,
+        containsUserDerivedContent: true,
+        constraintCount: 1,
+        decisionCount: 1,
+        fileCount: 1,
+        observationCount: 1,
+        planStepCount: 2,
+        scope: "task",
+        sessionId: "ses_test",
+        sourceEventCount: 2,
+        sourceEventCountTotal: 2,
+        taskId: "task_test"
+      }),
+      status: "included",
+      trust: "trusted"
+    });
+    expect(workingMemorySection?.content).toContain(
+      "Maintain working memory"
+    );
+    expect(workingMemorySection?.content).toContain(
+      "packages/core/src/task-context"
+    );
+    expect(workingMemorySection?.content).toContain("Commands:");
+    expect(workingMemorySection?.content).toContain("Constraints:");
+    expect(workingMemorySection?.content).toContain("Authority:");
+    expect(packet.summary.sources).toEqual(TASK_CONTEXT_SOURCE_ORDER);
+  });
+
+  it("upserts working memory when refreshing an older packet without that section", () => {
+    const packet = assembleTaskContextPacket(createAssemblyInput());
+    const olderPacket = {
+      ...packet,
+      sections: packet.sections.filter(
+        (section) => section.source !== "working-memory"
+      ),
+      sourceOrder: packet.sourceOrder.filter(
+        (source) => source !== "working-memory"
+      )
+    };
+    const updatedPacket = updateTaskContextWorkingMemory(
+      olderPacket,
+      createWorkingMemorySnapshot({
+        currentGoal: "Refresh a restored packet safely.",
+        sourceEventIds: ["evt_restored"]
+      })
+    );
+
+    expect(updatedPacket.sourceOrder).toEqual(TASK_CONTEXT_SOURCE_ORDER);
+    expect(updatedPacket.sections.map((section) => section.source)).toEqual(
+      TASK_CONTEXT_SOURCE_ORDER
+    );
+    expect(
+      updatedPacket.sections.find((section) => section.source === "working-memory")
+    ).toMatchObject({
+      metadata: expect.objectContaining({
+        sourceEventIds: ["evt_restored"]
+      }),
+      status: "included"
+    });
+  });
+
+  it("redacts secret-looking working memory values", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        workingMemory: {
+          blockers: [],
+          commandsRun: [],
+          currentGoal: "Debug OPENAI_API_KEY=sk-test-secret safely.",
+          currentPlan: ["Redact the secret from working memory context."],
+          decisions: [],
+          filesTouched: [],
+          pendingConstraints: [],
+          recentObservations: [],
+          schemaVersion: 1,
+          scope: "session",
+          sessionId: "ses_test",
+          sourceEventIds: [],
+          taskId: "task_test",
+          updatedAt: "2026-05-08T01:12:00.000Z"
+        }
+      })
+    );
+    const serialized = JSON.stringify(packet);
+    const workingMemorySection = packet.sections.find(
+      (section) => section.source === "working-memory"
+    );
+
+    expect(serialized).not.toContain("sk-test-secret");
+    expect(serialized).toContain("[REDACTED]");
+    expect(workingMemorySection).toMatchObject({
+      redacted: true,
+      status: "redacted"
+    });
+  });
+
+  it("bounds working-memory provenance metadata and preserves required category labels", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        workingMemory: {
+          blockers: ["wait for approval before applying the risky edit"],
+          commandsRun: Array.from({ length: 6 }, (_, index) => ({
+            command: `rtk run 'npm test -- test-${index}'`,
+            eventId: `evt_command_${index}`,
+            status: "completed" as const
+          })),
+          currentGoal: "x".repeat(600),
+          currentPlan: Array.from(
+            { length: 6 },
+            (_, index) => `plan step ${index}`
+          ),
+          decisions: ["keep durable memory out of this story"],
+          filesTouched: ["packages/core/src/task-context.ts"],
+          pendingConstraints: ["do not store raw command output"],
+          recentObservations: Array.from({ length: 6 }, (_, index) => ({
+            eventId: `evt_observation_${index}`,
+            kind: "observation" as const,
+            summary: `observation ${index}`
+          })),
+          schemaVersion: 1,
+          scope: "task",
+          sessionId: "ses_test",
+          sourceEventIds: Array.from(
+            { length: 30 },
+            (_, index) => `evt_${index}`
+          ),
+          sourceEventTotalCount: 30,
+          taskId: "task_test",
+          updatedAt: "2026-05-08T01:12:00.000Z"
+        }
+      })
+    );
+    const workingMemorySection = packet.sections.find(
+      (section) => section.source === "working-memory"
+    );
+
+    expect(workingMemorySection?.metadata).toMatchObject({
+      sourceEventCount: 12,
+      sourceEventCountTotal: 30
+    });
+    expect(
+      workingMemorySection?.metadata.sourceEventIds as readonly string[]
+    ).toHaveLength(12);
+    expect(workingMemorySection?.content).toContain("Plan");
+    expect(workingMemorySection?.content).toContain("Observations");
+    expect(workingMemorySection?.content).toContain("Files");
+    expect(workingMemorySection?.content).toContain("Commands");
+    expect(workingMemorySection?.content).toContain("Constraints");
+    expect(workingMemorySection?.content).toContain("Decisions");
+    expect(workingMemorySection?.content).toContain("Blockers");
+  });
+
+  it("preserves working-memory category labels under a tight content budget", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        workingMemory: createWorkingMemorySnapshot({
+          blockers: ["wait for approval before applying the risky edit"],
+          commandsRun: Array.from({ length: 6 }, (_, index) => ({
+            command: `rtk run 'npm test -- test-${index}'`,
+            eventId: `evt_command_${index}`,
+            status: "completed" as const
+          })),
+          currentGoal: "x".repeat(600),
+          currentPlan: Array.from(
+            { length: 6 },
+            (_, index) => `plan step ${index}`
+          ),
+          decisions: ["keep durable memory out of this story"],
+          filesTouched: ["packages/core/src/task-context.ts"],
+          pendingConstraints: ["do not store raw command output"],
+          recentObservations: Array.from({ length: 6 }, (_, index) => ({
+            eventId: `evt_observation_${index}`,
+            kind: "observation" as const,
+            summary: `observation ${index}`
+          }))
+        })
+      }),
+      { sectionContentMaxLength: 160 }
+    );
+    const workingMemorySection = packet.sections.find(
+      (section) => section.source === "working-memory"
+    );
+
+    expect(workingMemorySection?.content).toContain("Plan");
+    expect(workingMemorySection?.content).toContain("Observations");
+    expect(workingMemorySection?.content).toContain("Files");
+    expect(workingMemorySection?.content).toContain("Commands");
+    expect(workingMemorySection?.content).toContain("Constraints");
+    expect(workingMemorySection?.content).toContain("Decisions");
+    expect(workingMemorySection?.content).toContain("Blockers");
+    expect(workingMemorySection?.content).toContain("Authority");
+  });
+
+  it("reports runtime self-model state without overclaiming unavailable capabilities", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        provider: null,
+        skillEntries: []
+      })
+    );
+    const selfModelSection = packet.sections.find(
+      (section) => section.source === "runtime-self-model"
+    );
+
+    expect(selfModelSection).toMatchObject({
+      metadata: expect.objectContaining({
+        approvalPolicy: "policy-governed",
+        candidateStoreAvailable: false,
+        durableRetrievalAvailable: false,
+        fileEditApproval: "policy-governed",
+        pendingApprovalCount: 0,
+        providerConfigured: false,
+        providerDrivenToolExecution: "not-connected",
+        providerDrivenToolExecutionAvailable: false,
+        riskyCommandApproval: "policy-governed",
+        skillRegistryLoaded: false,
+        toolExecutionEnabled: false,
+        toolNames: [
+          "apply_patch",
+          "list_files",
+          "read_file",
+          "run_command",
+          "search_files"
+        ],
+        toolsAvailable: true,
+        workingMemoryAvailable: false
+      }),
+      status: "included",
+      trust: "trusted"
+    });
+    expect(selfModelSection?.content).toContain(
+      "Provider-driven tool execution is not connected"
+    );
+    expect(selfModelSection?.content).toContain(
+      "Durable memory retrieval is not implemented"
+    );
+    expect(selfModelSection?.content).toContain(
+      "Risky commands and file edits remain policy-governed"
+    );
+  });
+
+  it("redacts secret-looking runtime self-model metadata", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        provider: {
+          auth: {
+            authenticated: true,
+            secretRedacted: true,
+            source: "environment"
+          },
+          baseUrl: null,
+          capabilities: {
+            contextWindowTokens: 128_000,
+            modelIdentity: "OPENAI_API_KEY=sk-test-secret",
+            supportsStreaming: true,
+            supportsToolCalls: false
+          },
+          model: "OPENAI_API_KEY=sk-test-secret",
+          providerName: "OPENAI_API_KEY=sk-test-secret"
+        },
+        skillEntries: [
+          {
+            name: "OPENAI_API_KEY=sk-test-secret"
+          }
+        ],
+        startup: {
+          ...createAssemblyInput().startup,
+          cwd: "/tmp/OPENAI_API_KEY=sk-test-secret/project"
+        }
+      })
+    );
+    const selfModelSection = packet.sections.find(
+      (section) => section.source === "runtime-self-model"
+    );
+    const serialized = JSON.stringify(selfModelSection);
+
+    expect(selfModelSection).toMatchObject({
+      redacted: true,
+      status: "redacted"
+    });
+    expect(serialized).not.toContain("sk-test-secret");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("redacts secret-looking provider limits metadata in the full packet", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        provider: {
+          auth: {
+            authenticated: true,
+            secretRedacted: true,
+            source: "environment"
+          },
+          baseUrl: null,
+          capabilities: {
+            contextWindowTokens: 128_000,
+            modelIdentity: "OPENAI_API_KEY=sk-test-secret",
+            supportsStreaming: true,
+            supportsToolCalls: false
+          },
+          model: "OPENAI_API_KEY=sk-test-secret",
+          providerName: "OPENAI_API_KEY=sk-test-secret"
+        }
+      })
+    );
+    const providerSection = packet.sections.find(
+      (section) => section.source === "provider-limits"
+    );
+    const serialized = JSON.stringify(providerSection);
+
+    expect(serialized).not.toContain("sk-test-secret");
+    expect(serialized).toContain("[REDACTED]");
   });
 
   it("includes compacted continuity and bounded newer event notes when available", () => {

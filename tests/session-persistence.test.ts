@@ -3,7 +3,8 @@ import {
   AgentRuntime,
   compactSessionManually,
   createRuntimeEventRecord,
-  validateRuntimeEvent
+  validateRuntimeEvent,
+  type CompactedSessionContext
 } from "@sprite/core";
 import { SpriteError, err } from "@sprite/shared";
 import type { SessionStore } from "@sprite/storage";
@@ -539,6 +540,24 @@ describe("AgentRuntime session persistence", () => {
         }),
         status: "included"
       });
+      expect(
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "working-memory"
+        )
+      ).toMatchObject({
+        metadata: expect.objectContaining({
+          scope: "session",
+          sessionId: submitted.value.sessionId,
+          taskId: submitted.value.taskId
+        }),
+        status: "included",
+        trust: "trusted"
+      });
+      expect(
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "working-memory"
+        )?.content
+      ).toContain("resume this persisted task");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -634,6 +653,93 @@ describe("AgentRuntime session persistence", () => {
           .getEventHistory(submitted.value.taskId)
           .filter((event) => event.type === "session.resumed")
       ).toHaveLength(1);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not promote compacted requested or blocked commands to completed", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = originalRuntime.submitInteractiveTask(
+        "resume compacted command statuses"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const sessionId = submitted.value.sessionId;
+      const compacted = compactSessionManually(projectDir, sessionId, {
+        artifactId: "cmp-resume-command-statuses",
+        createdAt: "2026-05-04T01:07:30.000Z",
+        eventId: "evt_resume_command_statuses_compacted"
+      });
+
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) {
+        return;
+      }
+
+      const compactedArtifact = readJson(
+        compacted.value.artifactPath
+      ) as unknown as CompactedSessionContext;
+      writeFileSync(
+        compacted.value.artifactPath,
+        `${JSON.stringify(
+          {
+            ...compactedArtifact,
+            summary: {
+              ...compactedArtifact.summary,
+              continuity: {
+                ...compactedArtifact.summary.continuity,
+                commandsRun: [
+                  "policy.decision.recorded recorded: sudo rm -rf /",
+                  "tool.call.requested requested: node",
+                  "validation.completed blocked: npm run test"
+                ]
+              }
+            }
+          },
+          null,
+          2
+        )}\n`
+      );
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+
+      const activeTask = resumedRuntime.getActiveTask();
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+
+      const workingMemorySection =
+        activeTask.value.request.contextPacket.sections.find(
+          (section) => section.source === "working-memory"
+        );
+
+      expect(workingMemorySection?.content).toContain(
+        "planned: tool.call.requested requested: node"
+      );
+      expect(workingMemorySection?.content).toContain(
+        "blocked: validation.completed blocked: npm run test"
+      );
+      expect(workingMemorySection?.content).not.toContain(
+        "completed: tool.call.requested"
+      );
+      expect(workingMemorySection?.content).not.toContain(
+        "policy.decision.recorded"
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

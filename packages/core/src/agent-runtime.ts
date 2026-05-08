@@ -96,7 +96,13 @@ import {
   inspectSessionState,
   type SessionInspectionView
 } from "./session-inspection.js";
-import type { TaskContextPacket } from "./task-context.js";
+import {
+  updateTaskContextWorkingMemory,
+  type TaskContextPacket,
+  type WorkingMemoryCommand,
+  type WorkingMemoryObservation,
+  type WorkingMemorySnapshot
+} from "./task-context.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
 
 export interface BootstrapState {
@@ -291,6 +297,7 @@ interface PendingApprovalRecord {
 }
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
+const MAX_WORKING_MEMORY_EVENT_IDS = 12;
 
 function createCompactedContextWarnings(
   notes: readonly ContextAssemblyNote[]
@@ -366,6 +373,9 @@ export class AgentRuntime {
 
     const taskId = this.nextId("task");
     const correlationId = this.nextId("corr");
+    const createdAt = this.now();
+    const startedEventId = this.nextEventId();
+    const waitingEventId = this.nextEventId();
     const request = createTaskRequest(task, resolvedBootstrapState, {
       sessionState: {
         correlationId,
@@ -376,9 +386,15 @@ export class AgentRuntime {
         sessionId: this.sessionId,
         status: "planned",
         taskId
-      }
+      },
+      workingMemory: this.createInitialWorkingMemorySnapshot({
+        createdAt,
+        startedEventId,
+        task,
+        taskId,
+        waitingEventId
+      })
     });
-    const createdAt = this.now();
     const taskState = runInitialPlanActObserveLoop(
       request,
       {
@@ -387,8 +403,8 @@ export class AgentRuntime {
         correlationId
       },
       createdAt,
-      this.nextEventId(),
-      this.nextEventId(),
+      startedEventId,
+      waitingEventId,
       [
         ...resolvedBootstrapState.warnings,
         "Interactive task planning is available; repository inspection tools are available through runtime/package APIs, while provider-driven tool use starts in later stories."
@@ -910,7 +926,7 @@ export class AgentRuntime {
     }
 
     const events = this.eventBus.getHistory(activeTask.value.taskId);
-    this.activeTask = {
+    this.activeTask = this.withUpdatedWorkingMemory({
       ...activeTask.value,
       status:
         request.decision === "stop"
@@ -939,7 +955,7 @@ export class AgentRuntime {
             ? null
             : activeTask.value.terminalState,
       events
-    };
+    });
 
     return ok(recoveryEvent);
   }
@@ -1027,12 +1043,12 @@ export class AgentRuntime {
     }
 
     this.pendingApprovals.delete(response.approvalRequestId);
-    this.activeTask = {
+    this.activeTask = this.withUpdatedWorkingMemory({
       ...activeTask.value,
       summary: `Approval ${response.action} recorded.`,
       waitingState: null,
       events: this.eventBus.getHistory(activeTask.value.taskId)
-    };
+    });
     const approvalSnapshot = this.persistCurrentActiveTaskSnapshot();
 
     if (!approvalSnapshot.ok) {
@@ -2020,7 +2036,16 @@ export class AgentRuntime {
       return err(emitted.error);
     }
 
-    const nextActiveTask: PlannedExecutionFlow = {
+    const approvalRecord: PendingApprovalRecord = {
+      approvalRequest,
+      policyRequest,
+      toolCallId,
+      toolCallRequest
+    };
+
+    this.pendingApprovals.set(approvalRequest.approvalRequestId, approvalRecord);
+
+    const nextActiveTask: PlannedExecutionFlow = this.withUpdatedWorkingMemory({
       ...task,
       status: "waiting-for-input",
       summary: waitingMessage,
@@ -2030,19 +2055,14 @@ export class AgentRuntime {
       },
       terminalState: null,
       events: this.eventBus.getHistory(task.taskId)
-    };
+    });
     const approvalSnapshot = this.persistSessionSnapshot(nextActiveTask);
 
     if (!approvalSnapshot.ok) {
+      this.pendingApprovals.delete(approvalRequest.approvalRequestId);
       return err(approvalSnapshot.error);
     }
 
-    this.pendingApprovals.set(approvalRequest.approvalRequestId, {
-      approvalRequest,
-      policyRequest,
-      toolCallId,
-      toolCallRequest
-    });
     this.activeTask = nextActiveTask;
 
     return ok(approvalRequest);
@@ -2461,12 +2481,333 @@ export class AgentRuntime {
     return {};
   }
 
+  private createInitialWorkingMemorySnapshot({
+    createdAt,
+    startedEventId,
+    task,
+    taskId,
+    waitingEventId
+  }: {
+    createdAt: string;
+    startedEventId: string;
+    task: string;
+    taskId: string;
+    waitingEventId: string;
+  }): WorkingMemorySnapshot {
+    return {
+      blockers: [
+        "Provider-driven tool execution is not connected in this MVP loop."
+      ],
+      commandsRun: [],
+      currentGoal: task,
+      currentPlan: [
+        "Interpret the task goal and confirm runtime constraints.",
+        "Wait for explicit steering because provider-driven tool execution is not connected yet."
+      ],
+      decisions: [
+        "Keep working memory scoped to the current task/session and do not promote it to durable memory."
+      ],
+      filesTouched: [],
+      pendingConstraints: [
+        "Provider-driven tool execution is not connected in this MVP loop.",
+        "Risky commands, broad edits, and approvals remain governed by runtime policy."
+      ],
+      recentObservations: [
+        {
+          createdAt,
+          eventId: startedEventId,
+          kind: "progress",
+          summary: "Initial task request was assembled by the runtime."
+        },
+        {
+          createdAt,
+          eventId: waitingEventId,
+          kind: "observation",
+          summary:
+            "Runtime is waiting for steering before provider-driven tool work."
+        }
+      ],
+      schemaVersion: 1,
+      scope: "task",
+      sessionId: this.sessionId,
+      sourceEventIds: [startedEventId, waitingEventId],
+      taskId,
+      updatedAt: createdAt
+    };
+  }
+
   private nextId(prefix: string): string {
     return `${prefix}_${randomUUID()}`;
   }
 
   private now(): string {
     return new Date().toISOString();
+  }
+
+  private createResumedWorkingMemorySnapshot(
+    state: SessionStateSnapshot,
+    latestTask: NonNullable<SessionStateSnapshot["latestTask"]>,
+    events: RuntimeEventRecord[],
+    compactedContext?: CompactedSessionContext
+  ): WorkingMemorySnapshot {
+    const compactedContinuity = compactedContext?.summary.continuity;
+    const compactedCommands =
+      compactedContinuity?.commandsRun
+        .map((command) =>
+          this.createWorkingMemoryCommandFromCompactedSummary(command)
+        )
+        .filter((command): command is WorkingMemoryCommand => command !== null) ??
+      [];
+    const eventCommands = events
+      .map((event) => this.createWorkingMemoryCommandFromEvent(event))
+      .filter((command): command is WorkingMemoryCommand => command !== null);
+    const recentObservations = [
+      ...this.createWorkingMemoryObservationsFromEvents(events),
+      ...this.createWorkingMemoryObservationsFromCompactedContext(
+        compactedContext
+      ),
+      ...(state.lastError === undefined
+        ? []
+        : [
+            {
+              createdAt: state.updatedAt,
+              kind: "failure" as const,
+              summary: state.lastError
+            }
+          ]),
+      ...(state.nextStep === undefined
+        ? []
+        : [
+            {
+              createdAt: state.updatedAt,
+              kind: "progress" as const,
+              summary: state.nextStep
+            }
+          ])
+    ].slice(-8);
+    const sourceEventIds = collectWorkingMemorySourceEventIds(
+      events,
+      eventCommands,
+      recentObservations
+    );
+
+    return {
+      blockers:
+        state.pendingApprovalCount === 0
+          ? []
+          : [
+              "Session snapshot reports pending approvals; original approval payloads are not replayed during resume."
+            ],
+      commandsRun: dedupeWorkingMemoryCommands([
+        ...compactedCommands,
+        ...eventCommands
+      ]),
+      currentGoal: latestTask.goal,
+      currentPlan:
+        latestTask.latestPlan?.map((step) => step.summary) ??
+        compactedContinuity?.currentPlan ??
+        [],
+      decisions: compactedContinuity?.decisions ?? [],
+      filesTouched: uniqueStrings([
+        ...state.filesRead,
+        ...state.filesChanged,
+        ...state.filesProposedForChange,
+        ...(compactedContinuity?.filesTouched ?? [])
+      ]),
+      pendingConstraints: uniqueStrings([
+        "Provider-driven tool execution is not connected in this MVP loop.",
+        ...(compactedContinuity?.activeConstraints ?? []),
+        ...(state.pendingApprovalCount === 0
+          ? []
+          : [
+              `Pending approval count restored from session state: ${state.pendingApprovalCount}.`
+            ])
+      ]),
+      recentObservations,
+      schemaVersion: 1,
+      scope: "session",
+      sessionId: state.sessionId,
+      sourceEventIds,
+      sourceEventTotalCount: events.length,
+      taskId: latestTask.taskId,
+      updatedAt: state.updatedAt
+    };
+  }
+
+  private createTaskWorkingMemorySnapshot(
+    task: PlannedExecutionFlow,
+    events: RuntimeEventRecord[]
+  ): WorkingMemorySnapshot {
+    const eventCommands = events
+      .map((event) => this.createWorkingMemoryCommandFromEvent(event))
+      .filter((command): command is WorkingMemoryCommand => command !== null);
+    const recentObservations =
+      this.createWorkingMemoryObservationsFromEvents(events);
+    const pendingApprovalCount = this.countPendingApprovalsForTask(task.taskId);
+    const sourceEventIds = collectWorkingMemorySourceEventIds(
+      events,
+      eventCommands,
+      recentObservations
+    );
+    const latestEvent = events.at(-1);
+
+    return {
+      blockers:
+        task.waitingState === null
+          ? []
+          : [
+              `${task.waitingState.reason}: ${task.waitingState.message}`
+            ],
+      commandsRun: dedupeWorkingMemoryCommands(eventCommands),
+      currentGoal: task.request.task,
+      currentPlan: task.steps.map((step) => step.summary),
+      decisions: [
+        "Keep working memory scoped to the current task/session and do not promote it to durable memory.",
+        ...events
+          .filter((event) => event.type === "task.recovery.recorded")
+          .map((event) => event.payload.summary)
+      ],
+      filesTouched: uniqueStrings(
+        task.fileActivity.map((record) => record.path)
+      ),
+      pendingConstraints: uniqueStrings([
+        "Provider-driven tool execution is not connected in this MVP loop.",
+        "Risky commands, broad edits, and approvals remain governed by runtime policy.",
+        ...(pendingApprovalCount === 0
+          ? []
+          : [`Pending approval count: ${pendingApprovalCount}.`])
+      ]),
+      recentObservations,
+      schemaVersion: 1,
+      scope: "task",
+      sessionId: task.sessionId,
+      sourceEventIds,
+      sourceEventTotalCount: events.length,
+      taskId: task.taskId,
+      updatedAt: latestEvent?.createdAt ?? this.now()
+    };
+  }
+
+  private withUpdatedWorkingMemory(
+    task: PlannedExecutionFlow
+  ): PlannedExecutionFlow {
+    const events = this.eventBus.getHistory(task.taskId);
+    const workingMemory = this.createTaskWorkingMemorySnapshot(task, events);
+
+    return {
+      ...task,
+      events,
+      request: {
+        ...task.request,
+        contextPacket: updateTaskContextWorkingMemory(
+          task.request.contextPacket,
+          workingMemory
+        )
+      }
+    };
+  }
+
+  private createWorkingMemoryCommandFromEvent(
+    event: RuntimeEventRecord
+  ): WorkingMemoryCommand | null {
+    switch (event.type) {
+      case "tool.call.requested":
+      case "tool.call.started":
+      case "tool.call.completed":
+      case "tool.call.failed":
+      case "validation.started":
+      case "validation.completed": {
+        const command = event.payload.command;
+
+        if (command === undefined) {
+          return null;
+        }
+
+        return {
+          command,
+          eventId: event.eventId,
+          status: getWorkingMemoryCommandStatusFromEvent(event)
+        };
+      }
+      default:
+        return null;
+    }
+  }
+
+  private createWorkingMemoryCommandFromCompactedSummary(
+    command: string
+  ): WorkingMemoryCommand | null {
+    if (
+      command.startsWith("approval.requested") ||
+      command.startsWith("policy.decision.recorded")
+    ) {
+      return null;
+    }
+
+    const status = getWorkingMemoryCommandStatusFromCompactedSummary(command);
+
+    return {
+      command,
+      ...(status === undefined ? {} : { status })
+    };
+  }
+
+  private createWorkingMemoryObservationsFromEvents(
+    events: RuntimeEventRecord[]
+  ): WorkingMemoryObservation[] {
+    return events
+      .map((event): WorkingMemoryObservation | null => {
+        const summary = summarizeRuntimeEventForWorkingMemory(event);
+
+        if (summary === null) {
+          return null;
+        }
+
+        const kind: WorkingMemoryObservation["kind"] =
+          event.type === "task.failed" || event.type === "tool.call.failed"
+            ? "failure"
+            : event.type === "task.recovery.recorded" ||
+                event.type === "policy.decision.recorded"
+              ? "decision"
+              : event.type === "task.waiting" ||
+                  event.type === "approval.requested"
+                ? "constraint"
+                : "observation";
+
+        return {
+          createdAt: event.createdAt,
+          eventId: event.eventId,
+          kind,
+          summary
+        };
+      })
+      .filter(
+        (observation): observation is WorkingMemoryObservation =>
+          observation !== null
+      )
+      .slice(-6);
+  }
+
+  private createWorkingMemoryObservationsFromCompactedContext(
+    compactedContext?: CompactedSessionContext
+  ): WorkingMemoryObservation[] {
+    if (compactedContext === undefined) {
+      return [];
+    }
+
+    return [
+      {
+        createdAt: compactedContext.compactedAt,
+        eventId: compactedContext.compactionEventId,
+        kind: "progress",
+        summary: `Loaded compacted context artifact ${compactedContext.artifactId}.`
+      },
+      ...compactedContext.notes.map((note) => ({
+        createdAt: compactedContext.compactedAt,
+        kind: "observation" as const,
+        summary: note.message
+      }))
+    ];
   }
 
   private createResumedTask(
@@ -2494,7 +2835,13 @@ export class AgentRuntime {
           sessionId: state.sessionId,
           status: latestTask.status,
           taskId: latestTask.taskId
-        }
+        },
+        workingMemory: this.createResumedWorkingMemorySnapshot(
+          state,
+          latestTask,
+          events,
+          compactedContext
+        )
       }),
       cwd: state.cwd
     };
@@ -2722,10 +3069,10 @@ export class AgentRuntime {
       this.clearPendingApprovalsForTask(task.taskId);
     }
 
-    const nextTask = {
+    const nextTask = this.withUpdatedWorkingMemory({
       ...task,
       events: this.eventBus.getHistory(task.taskId)
-    };
+    });
     const persisted = this.persistSessionSnapshot(nextTask);
 
     if (!persisted.ok) {
@@ -2955,10 +3302,10 @@ export class AgentRuntime {
       return;
     }
 
-    this.activeTask = {
+    this.activeTask = this.withUpdatedWorkingMemory({
       ...this.activeTask,
       events: this.eventBus.getHistory(taskId)
-    };
+    });
   }
 
   private appendActiveTaskFileActivity(
@@ -2968,10 +3315,10 @@ export class AgentRuntime {
       return ok(undefined);
     }
 
-    this.activeTask = {
+    this.activeTask = this.withUpdatedWorkingMemory({
       ...this.activeTask,
       fileActivity: [...this.activeTask.fileActivity, ...records]
-    };
+    });
 
     return this.persistSessionSnapshot(this.activeTask);
   }
@@ -3515,6 +3862,143 @@ function createOneShotPrintTaskResult(
     warnings: state.warnings,
     events: state.events
   };
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+type WorkingMemoryCommandStatus = NonNullable<WorkingMemoryCommand["status"]>;
+
+function getWorkingMemoryCommandStatusFromEvent(
+  event: RuntimeEventRecord
+): WorkingMemoryCommandStatus {
+  switch (event.type) {
+    case "tool.call.requested":
+      return "planned";
+    case "tool.call.started":
+    case "validation.started":
+      return "started";
+    case "tool.call.failed":
+      return "failed";
+    case "validation.completed":
+      return getValidationCompletedWorkingMemoryStatus(event.payload);
+    case "tool.call.completed":
+    default:
+      return "completed";
+  }
+}
+
+function getValidationCompletedWorkingMemoryStatus(
+  payload: RuntimeEventPayload<"validation.completed">
+): WorkingMemoryCommandStatus {
+  if (payload.status === "blocked") {
+    return "blocked";
+  }
+
+  if (payload.status === "skipped") {
+    return "skipped";
+  }
+
+  if (payload.status === "failed" || (payload.exitCode ?? 0) !== 0) {
+    return "failed";
+  }
+
+  return "completed";
+}
+
+function getWorkingMemoryCommandStatusFromCompactedSummary(
+  command: string
+): WorkingMemoryCommandStatus | undefined {
+  const normalizedCommand = command.toLowerCase();
+
+  if (normalizedCommand.startsWith("tool.call.requested")) {
+    return "planned";
+  }
+
+  if (
+    normalizedCommand.startsWith("tool.call.started") ||
+    normalizedCommand.startsWith("validation.started")
+  ) {
+    return "started";
+  }
+
+  if (
+    normalizedCommand.startsWith("tool.call.failed") ||
+    normalizedCommand.startsWith("validation.completed failed")
+  ) {
+    return "failed";
+  }
+
+  if (normalizedCommand.startsWith("validation.completed blocked")) {
+    return "blocked";
+  }
+
+  if (normalizedCommand.startsWith("validation.completed skipped")) {
+    return "skipped";
+  }
+
+  if (
+    normalizedCommand.startsWith("tool.call.completed") ||
+    normalizedCommand.startsWith("validation.completed passed")
+  ) {
+    return "completed";
+  }
+
+  return undefined;
+}
+
+function collectWorkingMemorySourceEventIds(
+  events: readonly RuntimeEventRecord[],
+  commands: readonly WorkingMemoryCommand[],
+  observations: readonly WorkingMemoryObservation[]
+): string[] {
+  const contributingIds = [
+    ...commands.map((command) => command.eventId),
+    ...observations.map((observation) => observation.eventId)
+  ].filter((eventId): eventId is string => eventId !== undefined);
+  const fallbackIds = events.map((event) => event.eventId);
+  const ids = uniqueStrings(
+    contributingIds.length === 0 ? fallbackIds : contributingIds
+  );
+
+  return ids.slice(-MAX_WORKING_MEMORY_EVENT_IDS);
+}
+
+function summarizeRuntimeEventForWorkingMemory(
+  event: RuntimeEventRecord
+): string | null {
+  if (
+    "summary" in event.payload &&
+    typeof event.payload.summary === "string"
+  ) {
+    return event.payload.summary;
+  }
+
+  switch (event.type) {
+    case "task.started":
+      return `Task started in ${event.payload.phase} phase with status ${event.payload.status}.`;
+    case "task.waiting":
+      return `${event.payload.reason}: ${event.payload.message}`;
+    case "task.completed":
+    case "task.cancelled":
+    case "task.failed":
+      return `${event.payload.reason}: ${event.payload.message}`;
+    default:
+      return null;
+  }
+}
+
+function dedupeWorkingMemoryCommands(
+  commands: readonly WorkingMemoryCommand[]
+): WorkingMemoryCommand[] {
+  const latestByCommand = new Map<string, WorkingMemoryCommand>();
+
+  for (const command of commands) {
+    latestByCommand.set(command.command, command);
+  }
+
+  return Array.from(latestByCommand.values());
 }
 
 function isOneShotStopBoundary(state: PlannedExecutionFlow): boolean {
