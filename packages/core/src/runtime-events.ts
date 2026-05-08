@@ -2,6 +2,16 @@ import {
   SAFETY_RULE_TARGETS,
   type SpriteSafetyRuleTarget
 } from "@sprite/config";
+import {
+  DURABLE_MEMORY_TYPES,
+  MEMORY_CONFIDENCE_VALUES,
+  MEMORY_SENSITIVITY_STATUSES,
+  MEMORY_TYPES,
+  type DurableMemoryType,
+  type MemoryConfidence,
+  type MemorySensitivityStatus,
+  type MemoryType
+} from "@sprite/memory";
 import { SpriteError, err, type Result } from "@sprite/shared";
 import {
   FILE_ACTIVITY_KINDS,
@@ -125,25 +135,36 @@ const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "stdout"
 ]);
 const FORBIDDEN_POLICY_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
+  "accessToken",
+  "apiKey",
+  "api_key",
+  "authorization",
   "commandOutput",
   "content",
+  "credential",
+  "credentials",
   "diff",
   "env",
   "hunk",
   "newText",
   "oldText",
   "output",
+  "password",
   "patch",
+  "privateKey",
+  "private_key",
   "query",
   "rawCommandOutput",
   "rawContent",
   "rawOutput",
   "rawSnippet",
   "repositoryInstruction",
+  "secret",
   "snippet",
   "snippets",
   "stderr",
-  "stdout"
+  "stdout",
+  "token"
 ]);
 
 const RUNTIME_EVENT_TYPES = [
@@ -154,6 +175,8 @@ const RUNTIME_EVENT_TYPES = [
   "task.cancelled",
   "task.steering.received",
   "task.recovery.recorded",
+  "memory.candidate.created",
+  "memory.entry.saved",
   "memory.safety.evaluated",
   "session.resumed",
   "session.compacted",
@@ -236,6 +259,32 @@ export interface RuntimeEventPayloadMap {
     status: "recorded";
     summary: string;
     target: SpriteSafetyRuleTarget;
+  };
+  "memory.candidate.created": {
+    candidateId: string;
+    confidence: MemoryConfidence;
+    contentPreview: string;
+    memoryType: MemoryType;
+    provenance: string;
+    sensitivityStatus: MemorySensitivityStatus;
+    sourceEventIds: string[];
+    sourceTaskId?: string;
+    status: "recorded";
+    summary: string;
+  };
+  "memory.entry.saved": {
+    autoSaved: boolean;
+    candidateId: string;
+    confidence: MemoryConfidence;
+    contentPreview: string;
+    entryId: string;
+    memoryType: DurableMemoryType;
+    provenance: string;
+    sensitivityStatus: "non_sensitive";
+    sourceEventIds: string[];
+    sourceTaskId?: string;
+    status: "recorded";
+    summary: string;
   };
   "session.resumed": {
     currentPhase: RuntimeLoopPhase;
@@ -741,6 +790,20 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "memory.candidate.created": {
+      return validateMemoryCandidateCreatedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "memory.entry.saved": {
+      return validateMemoryEntrySavedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "policy.decision.recorded": {
       return validatePolicyDecisionEvent(
         context,
@@ -1047,6 +1110,261 @@ function validateMemorySafetyEvaluatedEvent(
     summary: summary.value,
     target: target.value
   });
+}
+
+function validateMemoryCandidateCreatedEvent(
+  context: RuntimeEventContext,
+  type: "memory.candidate.created",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"memory.candidate.created">, SpriteError> {
+  const validation = validateMemoryLifecyclePayload(type, payload, {
+    idField: "candidateId",
+    idPattern: /^memcand_[A-Za-z0-9][A-Za-z0-9_-]*$/,
+    memoryTypes: MEMORY_TYPES,
+    sensitivityStatuses: MEMORY_SENSITIVITY_STATUSES
+  });
+
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  return okRuntimeEvent(context, type, {
+    candidateId: validation.value.id,
+    confidence: validation.value.confidence,
+    contentPreview: validation.value.contentPreview,
+    memoryType: validation.value.memoryType as MemoryType,
+    provenance: validation.value.provenance,
+    sensitivityStatus:
+      validation.value.sensitivityStatus as MemorySensitivityStatus,
+    sourceEventIds: validation.value.sourceEventIds,
+    ...(validation.value.sourceTaskId === undefined
+      ? {}
+      : { sourceTaskId: validation.value.sourceTaskId }),
+    status: validation.value.status,
+    summary: validation.value.summary
+  });
+}
+
+function validateMemoryEntrySavedEvent(
+  context: RuntimeEventContext,
+  type: "memory.entry.saved",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"memory.entry.saved">, SpriteError> {
+  const validation = validateMemoryLifecyclePayload(type, payload, {
+    idField: "entryId",
+    idPattern: /^mem_[A-Za-z0-9][A-Za-z0-9_-]*$/,
+    memoryTypes: DURABLE_MEMORY_TYPES,
+    sensitivityStatuses: ["non_sensitive"] as const
+  });
+
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  const autoSaved = requirePayloadBoolean(type, payload, "autoSaved");
+  const candidateId = requirePayloadString(type, payload, "candidateId");
+
+  if (!autoSaved.ok) {
+    return err(autoSaved.error);
+  }
+
+  if (!candidateId.ok) {
+    return err(candidateId.error);
+  }
+
+  if (!/^memcand_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(candidateId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field 'candidateId' must use the memcand_ prefix.`
+      )
+    );
+  }
+
+  if (containsSecretLikeValue(candidateId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload candidateId must not include secret-looking values.`
+      )
+    );
+  }
+
+  return okRuntimeEvent(context, type, {
+    autoSaved: autoSaved.value,
+    candidateId: candidateId.value,
+    confidence: validation.value.confidence,
+    contentPreview: validation.value.contentPreview,
+    entryId: validation.value.id,
+    memoryType: validation.value.memoryType as DurableMemoryType,
+    provenance: validation.value.provenance,
+    sensitivityStatus: "non_sensitive",
+    sourceEventIds: validation.value.sourceEventIds,
+    ...(validation.value.sourceTaskId === undefined
+      ? {}
+      : { sourceTaskId: validation.value.sourceTaskId }),
+    status: validation.value.status,
+    summary: validation.value.summary
+  });
+}
+
+function validateMemoryLifecyclePayload(
+  type: "memory.candidate.created" | "memory.entry.saved",
+  payload: Record<string, unknown>,
+  options: {
+    idField: "candidateId" | "entryId";
+    idPattern: RegExp;
+    memoryTypes: readonly string[];
+    sensitivityStatuses: readonly string[];
+  }
+): Result<
+  {
+    confidence: MemoryConfidence;
+    contentPreview: string;
+    id: string;
+    memoryType: string;
+    provenance: string;
+    sensitivityStatus: string;
+    sourceEventIds: string[];
+    sourceTaskId?: string;
+    status: "recorded";
+    summary: string;
+  },
+  SpriteError
+> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const id = requirePayloadString(type, payload, options.idField);
+  const confidence = requirePayloadLiteral(
+    type,
+    payload,
+    "confidence",
+    MEMORY_CONFIDENCE_VALUES
+  );
+  const contentPreview = requirePayloadString(type, payload, "contentPreview");
+  const memoryType = requirePayloadLiteral(
+    type,
+    payload,
+    "memoryType",
+    options.memoryTypes
+  );
+  const provenance = requirePayloadString(type, payload, "provenance");
+  const sensitivityStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "sensitivityStatus",
+    options.sensitivityStatuses
+  );
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const sourceTaskId = optionalPayloadString(type, payload, "sourceTaskId");
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+
+  const checks = [
+    id,
+    confidence,
+    contentPreview,
+    memoryType,
+    provenance,
+    sensitivityStatus,
+    sourceEventIds,
+    sourceTaskId,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (!id.ok || !options.idPattern.test(id.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field '${options.idField}' has an invalid ID prefix.`
+      )
+    );
+  }
+
+  if (
+    !confidence.ok ||
+    !contentPreview.ok ||
+    !memoryType.ok ||
+    !provenance.ok ||
+    !sensitivityStatus.ok ||
+    !sourceEventIds.ok ||
+    !sourceTaskId.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    [options.idField, id.value],
+    ["contentPreview", contentPreview.value],
+    ["memoryType", memoryType.value],
+    ["provenance", provenance.value],
+    ["sensitivityStatus", sensitivityStatus.value],
+    ["summary", summary.value],
+    ...(sourceTaskId.value === undefined
+      ? []
+      : [["sourceTaskId", sourceTaskId.value] as const]),
+    ...sourceEventIds.value.map((eventId) => ["sourceEventIds", eventId] as const)
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      confidence: confidence.value,
+      contentPreview: contentPreview.value,
+      id: id.value,
+      memoryType: memoryType.value,
+      provenance: provenance.value,
+      sensitivityStatus: sensitivityStatus.value,
+      sourceEventIds: sourceEventIds.value,
+      ...(sourceTaskId.value === undefined
+        ? {}
+        : { sourceTaskId: sourceTaskId.value }),
+      status: status.value,
+      summary: summary.value
+    }
+  };
 }
 
 function validateSessionResumedEvent(
@@ -2747,6 +3065,25 @@ function requirePayloadLiteral<T extends string>(
   }
 
   return { ok: true, value: value.value as T };
+}
+
+function requirePayloadBoolean(
+  type: RuntimeEventType,
+  payload: Record<string, unknown>,
+  key: string
+): Result<boolean, SpriteError> {
+  const value = payload[key];
+
+  if (typeof value !== "boolean") {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' is missing required boolean payload field '${key}'.`
+      )
+    );
+  }
+
+  return { ok: true, value };
 }
 
 function isRuntimeEventType(value: string): value is RuntimeEventType {

@@ -404,6 +404,9 @@ function createRuntimeSelfModelSection({
         "Provider-driven tool execution is not connected in this MVP loop.",
         "Runtime tool registry is available through explicit runtime/package APIs.",
         "Risky commands and file edits remain policy-governed and may require approval.",
+        snapshot.memory.candidateStoreAvailable
+          ? "Memory candidate storage is available through runtime APIs."
+          : "Memory candidate storage is not available.",
         "Durable memory retrieval is not implemented.",
         `Provider streaming: ${snapshot.provider.supportsStreaming}.`,
         `Provider tool calls: ${snapshot.provider.supportsToolCalls}.`,
@@ -474,7 +477,6 @@ export function createRuntimeSelfModelSnapshot(
   const limitations = [
     "Provider-driven tool execution is not connected in this MVP loop.",
     "Durable memory retrieval is not implemented.",
-    "Memory candidate persistence is not implemented in Story 4.1.",
     skillEntries.length === 0
       ? "Skill registry integration is not loaded for this packet."
       : ""
@@ -492,9 +494,9 @@ export function createRuntimeSelfModelSnapshot(
     generatedAt: new Date().toISOString(),
     limitations,
     memory: {
-      candidateStoreAvailable: false,
+      candidateStoreAvailable: true,
       durableRetrievalAvailable: false,
-      providerName: "not-configured",
+      providerName: "local-artifact",
       safetyRulesCount: input.startup.safetyRules.length,
       workingMemoryAvailable: input.workingMemory !== undefined
     },

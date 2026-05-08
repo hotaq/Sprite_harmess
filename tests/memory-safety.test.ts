@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createMemoryCandidate,
-  evaluateSafetySensitiveContent
+  createMemoryEntryFromCandidate,
+  evaluateSafetySensitiveContent,
+  shouldAutoSaveMemoryCandidate
 } from "@sprite/memory";
 
 describe("memory safety evaluation", () => {
@@ -186,6 +188,165 @@ describe("memory safety evaluation", () => {
       sourceTaskId: "task_test",
       type: "procedural"
     });
+  });
+
+  it("creates bounded semantic memory candidates with sensitivity metadata and entry conversion", () => {
+    const result = createMemoryCandidate({
+      confidence: "high",
+      content: "Project shell commands should be run through rtk run.",
+      createdAt: "2026-05-08T10:00:00.000Z",
+      provenance: "user preference from story 4.2",
+      sourceEventIds: ["evt_user_preference"],
+      sourceTaskId: "task_story_4_2",
+      type: "semantic"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.candidate === null) {
+      return;
+    }
+
+    expect(result.value.candidate).toMatchObject({
+      confidence: "high",
+      content: "Project shell commands should be run through rtk run.",
+      contentPreview: "Project shell commands should be run through rtk run.",
+      createdAt: "2026-05-08T10:00:00.000Z",
+      provenance: "user preference from story 4.2",
+      schemaVersion: 1,
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: ["evt_user_preference"],
+      sourceTaskId: "task_story_4_2",
+      type: "semantic",
+      updatedAt: "2026-05-08T10:00:00.000Z"
+    });
+    expect(result.value.candidate.id).toEqual(
+      expect.stringMatching(/^memcand_/)
+    );
+    expect(shouldAutoSaveMemoryCandidate(result.value.candidate)).toBe(true);
+
+    const entry = createMemoryEntryFromCandidate(result.value.candidate, {
+      createdAt: "2026-05-08T10:01:00.000Z"
+    });
+
+    expect(entry.ok).toBe(true);
+    if (!entry.ok) {
+      return;
+    }
+
+    expect(entry.value).toMatchObject({
+      autoSaved: true,
+      candidateId: result.value.candidate.id,
+      confidence: "high",
+      content: "Project shell commands should be run through rtk run.",
+      contentPreview: "Project shell commands should be run through rtk run.",
+      createdAt: "2026-05-08T10:01:00.000Z",
+      provenance: "user preference from story 4.2",
+      schemaVersion: 1,
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: ["evt_user_preference"],
+      sourceTaskId: "task_story_4_2",
+      type: "semantic",
+      updatedAt: "2026-05-08T10:01:00.000Z"
+    });
+    expect(entry.value.id).toEqual(expect.stringMatching(/^mem_/));
+  });
+
+  it("blocks raw logs and large code chunks from memory candidates by default", () => {
+    const rawLog = Array.from(
+      { length: 6 },
+      (_, index) =>
+        `2026-05-08T10:00:0${index}.000Z ERROR failed request ${index}`
+    ).join("\n");
+    const logResult = createMemoryCandidate({
+      confidence: "high",
+      content: rawLog,
+      provenance: "raw command output",
+      sourceTaskId: "task_test",
+      type: "episodic"
+    });
+
+    expect(logResult.ok).toBe(true);
+    if (!logResult.ok) {
+      return;
+    }
+
+    expect(logResult.value.candidate).toBeNull();
+    expect(logResult.value.decision).toMatchObject({
+      action: "block",
+      matchedRuleIds: ["memory.candidate.raw_log"]
+    });
+
+    const codeResult = createMemoryCandidate({
+      confidence: "high",
+      content:
+        "```ts\nexport function rememberRuntimeMode() {\n  return process.env.RUNTIME_MODE;\n}\n```",
+      provenance: "large code snippet",
+      sourceTaskId: "task_test",
+      type: "semantic"
+    });
+
+    expect(codeResult.ok).toBe(true);
+    if (!codeResult.ok) {
+      return;
+    }
+
+    expect(codeResult.value.candidate).toBeNull();
+    expect(codeResult.value.decision).toMatchObject({
+      action: "block",
+      matchedRuleIds: ["memory.candidate.code_chunk"]
+    });
+    expect(JSON.stringify(codeResult.value)).not.toContain("RUNTIME_MODE");
+  });
+
+  it("does not auto-save redacted, low-confidence, or non-durable memory candidates", () => {
+    const redacted = createMemoryCandidate(
+      {
+        confidence: "high",
+        content: "Remember customer ticket TICKET-12345.",
+        provenance: "support note",
+        target: "memory_candidate",
+        type: "semantic"
+      },
+      {
+        rules: [
+          {
+            action: "redact",
+            id: "custom.ticket-id",
+            pattern: "TICKET-[0-9]+",
+            reason: "Ticket IDs are customer metadata.",
+            targets: ["memory_candidate"]
+          }
+        ]
+      }
+    );
+    const lowConfidence = createMemoryCandidate({
+      confidence: "low",
+      content: "Maybe the project prefers npm test.",
+      provenance: "uncertain note",
+      type: "semantic"
+    });
+    const working = createMemoryCandidate({
+      confidence: "high",
+      content: "Current task has three remaining checklist items.",
+      provenance: "working-memory snapshot",
+      type: "working"
+    });
+
+    expect(redacted.ok).toBe(true);
+    expect(lowConfidence.ok).toBe(true);
+    expect(working.ok).toBe(true);
+    if (!redacted.ok || !lowConfidence.ok || !working.ok) {
+      return;
+    }
+
+    expect(redacted.value.candidate?.sensitivityStatus).toBe("redacted");
+    expect(shouldAutoSaveMemoryCandidate(redacted.value.candidate!)).toBe(
+      false
+    );
+    expect(shouldAutoSaveMemoryCandidate(lowConfidence.value.candidate!)).toBe(
+      false
+    );
+    expect(shouldAutoSaveMemoryCandidate(working.value.candidate!)).toBe(false);
   });
 
   it("returns an audit-safe decision for direct safety-sensitive evaluation", () => {

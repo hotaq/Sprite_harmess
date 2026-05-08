@@ -7,7 +7,7 @@ import {
   type CompactedSessionContext
 } from "@sprite/core";
 import { SpriteError, err } from "@sprite/shared";
-import type { SessionStore } from "@sprite/storage";
+import type { MemoryStore, SessionStore } from "@sprite/storage";
 import {
   appendFileSync,
   existsSync,
@@ -50,6 +50,10 @@ function readJson(path: string): Record<string, unknown> {
 
 function getRuntimeSessionStore(runtime: AgentRuntime): SessionStore {
   return (runtime as unknown as { sessionStore: SessionStore }).sessionStore;
+}
+
+function getRuntimeMemoryStore(runtime: AgentRuntime): MemoryStore {
+  return (runtime as unknown as { memoryStore: MemoryStore }).memoryStore;
 }
 
 type ResumeSessionResult = {
@@ -139,6 +143,169 @@ describe("AgentRuntime session persistence", () => {
           goal: "persist this task"
         }
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists memory candidate and entry artifacts next to session audit events", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask("persist memory");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const recorded = runtime.recordMemoryCandidate({
+        confidence: "high",
+        content: "Runtime event validation is the audit spine.",
+        provenance: "story 4.2 implementation note",
+        sourceEventIds: [submitted.value.events[0].eventId],
+        type: "episodic"
+      });
+
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok) {
+        return;
+      }
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+
+      expect(persistedEvents.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting",
+        "memory.safety.evaluated",
+        "memory.candidate.created",
+        "memory.entry.saved"
+      ]);
+      expect(persistedEvents.every((event) => validateRuntimeEvent(event).ok))
+        .toBe(true);
+
+      const candidatePath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "candidates",
+        `${recorded.value.candidate?.id}.json`
+      );
+      const entriesPath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "entries.ndjson"
+      );
+
+      expect(existsSync(candidatePath)).toBe(true);
+      expect(readJson(candidatePath)).toMatchObject({
+        id: recorded.value.candidate?.id,
+        schemaVersion: 1,
+        sensitivityStatus: "non_sensitive",
+        sourceTaskId: submitted.value.taskId,
+        type: "episodic"
+      });
+      expect(readNdjson(entriesPath)).toHaveLength(1);
+      expect(JSON.stringify(persistedEvents)).not.toContain("rawContent");
+      expect(JSON.stringify(readJson(candidatePath))).not.toContain(
+        "OPENAI_API_KEY"
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists candidate audit events before attempting auto-save entry append", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "persist candidate before failed auto-save"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const memoryStore = getRuntimeMemoryStore(runtime);
+      memoryStore.appendEntry = (() =>
+        err(
+          new SpriteError(
+            "TEST_MEMORY_ENTRY_APPEND_FAILED",
+            "Entry append failed after candidate persistence."
+          )
+        )) satisfies MemoryStore["appendEntry"];
+
+      const recorded = runtime.recordMemoryCandidate({
+        confidence: "high",
+        content: "Candidate audits should not wait on entry persistence.",
+        provenance: "story 4.2 review fix",
+        sourceEventIds: [submitted.value.events[0].eventId],
+        type: "semantic"
+      });
+
+      expect(recorded.ok).toBe(false);
+      if (recorded.ok) {
+        return;
+      }
+
+      expect(recorded.error).toMatchObject({
+        code: "TEST_MEMORY_ENTRY_APPEND_FAILED"
+      });
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+
+      expect(persistedEvents.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting",
+        "memory.safety.evaluated",
+        "memory.candidate.created"
+      ]);
+
+      const candidateEvent = persistedEvents.find(
+        (event) => event.type === "memory.candidate.created"
+      );
+      const candidatePayload =
+        candidateEvent?.payload as { candidateId?: unknown } | undefined;
+      const candidateId = candidatePayload?.candidateId;
+
+      expect(candidateId).toEqual(expect.stringMatching(/^memcand_/));
+      if (typeof candidateId !== "string") {
+        return;
+      }
+
+      const candidatePath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "candidates",
+        `${candidateId}.json`
+      );
+      const entriesPath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "entries.ndjson"
+      );
+
+      expect(existsSync(candidatePath)).toBe(true);
+      expect(readNdjson(entriesPath)).toHaveLength(0);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

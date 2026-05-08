@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -102,6 +103,117 @@ describe("runtime event contract", () => {
       taskId: "task_test",
       correlationId: "corr_test"
     });
+  });
+
+  it("validates memory candidate and entry saved runtime events", () => {
+    const context = {
+      eventId: "evt_memory_candidate",
+      sessionId: "ses_memory",
+      taskId: "task_memory",
+      correlationId: "corr_memory",
+      createdAt: "2026-05-08T10:05:00.000Z"
+    };
+    const candidateEvent = createRuntimeEventRecord(
+      context,
+      "memory.candidate.created",
+      {
+        candidateId: "memcand_test",
+        confidence: "high",
+        contentPreview: "Project commands should use rtk run.",
+        memoryType: "semantic",
+        provenance: "user preference",
+        sensitivityStatus: "non_sensitive",
+        sourceEventIds: ["evt_source"],
+        sourceTaskId: "task_memory",
+        status: "recorded",
+        summary: "Semantic memory candidate created."
+      }
+    );
+    const entryEvent = createRuntimeEventRecord(
+      {
+        ...context,
+        eventId: "evt_memory_entry",
+        createdAt: "2026-05-08T10:06:00.000Z"
+      },
+      "memory.entry.saved",
+      {
+        autoSaved: true,
+        candidateId: "memcand_test",
+        confidence: "high",
+        contentPreview: "Project commands should use rtk run.",
+        entryId: "mem_test",
+        memoryType: "semantic",
+        provenance: "user preference",
+        sensitivityStatus: "non_sensitive",
+        sourceEventIds: ["evt_source"],
+        sourceTaskId: "task_memory",
+        status: "recorded",
+        summary: "Semantic memory entry saved."
+      }
+    );
+
+    expect(validateRuntimeEvent(candidateEvent).ok).toBe(true);
+    expect(validateRuntimeEvent(entryEvent).ok).toBe(true);
+  });
+
+  it("rejects memory runtime events that include raw content fields", () => {
+    const result = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_memory_candidate",
+      sessionId: "ses_memory",
+      taskId: "task_memory",
+      correlationId: "corr_memory",
+      createdAt: "2026-05-08T10:05:00.000Z",
+      type: "memory.candidate.created",
+      payload: {
+        candidateId: "memcand_test",
+        confidence: "high",
+        contentPreview: "Project commands should use rtk run.",
+        rawContent: "OPENAI_API_KEY=sk-test-secret",
+        memoryType: "semantic",
+        provenance: "user preference",
+        sensitivityStatus: "non_sensitive",
+        sourceEventIds: ["evt_source"],
+        sourceTaskId: "task_memory",
+        status: "recorded",
+        summary: "Semantic memory candidate created."
+      }
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects memory runtime events that include secret metadata fields", () => {
+    const basePayload = {
+      candidateId: "memcand_test",
+      confidence: "high",
+      contentPreview: "Project commands should use rtk run.",
+      memoryType: "semantic",
+      provenance: "user preference",
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: ["evt_source"],
+      sourceTaskId: "task_memory",
+      status: "recorded",
+      summary: "Semantic memory candidate created."
+    };
+
+    for (const fieldName of ["secret", "token"] as const) {
+      const result = validateRuntimeEvent({
+        schemaVersion: 1,
+        eventId: `evt_memory_candidate_${fieldName}`,
+        sessionId: "ses_memory",
+        taskId: "task_memory",
+        correlationId: "corr_memory",
+        createdAt: "2026-05-08T10:05:00.000Z",
+        type: "memory.candidate.created",
+        payload: {
+          ...basePayload,
+          [fieldName]: "redacted-placeholder"
+        }
+      });
+
+      expect(result.ok).toBe(false);
+    }
   });
 
   it("rejects malformed runtime events that do not satisfy the schema contract", () => {
@@ -1334,6 +1446,139 @@ describe("runtime event subscription", () => {
       },
       type: "memory.safety.evaluated"
     });
+    expect(JSON.stringify(history)).not.toContain("OPENAI_API_KEY=");
+    expect(JSON.stringify(history)).not.toContain("sk-test-secret");
+  });
+
+  it("records safe memory candidates and auto-saves durable entries with audit events", () => {
+    const { projectDir, rootDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: join(rootDir, "home")
+    });
+    const submitted = runtime.submitInteractiveTask(
+      "record durable memory candidate"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const recorded = runtime.recordMemoryCandidate({
+      confidence: "high",
+      content: "Project shell commands should be run through rtk run.",
+      provenance: "user preference",
+      sourceEventIds: [submitted.value.events[1].eventId],
+      type: "semantic"
+    });
+
+    expect(recorded.ok).toBe(true);
+    if (!recorded.ok) {
+      return;
+    }
+
+    expect(recorded.value).toMatchObject({
+      autoSaved: true,
+      entry: {
+        confidence: "high",
+        sensitivityStatus: "non_sensitive",
+        type: "semantic"
+      }
+    });
+    expect(recorded.value.candidate?.id).toEqual(
+      expect.stringMatching(/^memcand_/)
+    );
+    expect(recorded.value.entry?.id).toEqual(expect.stringMatching(/^mem_/));
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "memory.safety.evaluated",
+      "memory.candidate.created",
+      "memory.entry.saved"
+    ]);
+
+    const candidateEvent = history.find(
+      isRuntimeEventOfType("memory.candidate.created")
+    );
+    const entryEvent = history.find(isRuntimeEventOfType("memory.entry.saved"));
+
+    expect(candidateEvent?.payload).toMatchObject({
+      candidateId: recorded.value.candidate?.id,
+      confidence: "high",
+      contentPreview: "Project shell commands should be run through rtk run.",
+      memoryType: "semantic",
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: [submitted.value.events[1].eventId],
+      sourceTaskId: submitted.value.taskId,
+      status: "recorded"
+    });
+    expect(entryEvent?.payload).toMatchObject({
+      autoSaved: true,
+      candidateId: recorded.value.candidate?.id,
+      entryId: recorded.value.entry?.id,
+      memoryType: "semantic",
+      sensitivityStatus: "non_sensitive",
+      status: "recorded"
+    });
+    expect(candidateEvent?.payload).not.toHaveProperty("content");
+    expect(entryEvent?.payload).not.toHaveProperty("content");
+
+    const candidatePath = join(
+      projectDir,
+      ".sprite",
+      "memory",
+      "candidates",
+      `${recorded.value.candidate?.id}.json`
+    );
+    const entriesPath = join(projectDir, ".sprite", "memory", "entries.ndjson");
+
+    expect(existsSync(candidatePath)).toBe(true);
+    expect(readFileSync(candidatePath, "utf8")).toContain(
+      "Project shell commands should be run through rtk run."
+    );
+    expect(readFileSync(entriesPath, "utf8")).toContain(
+      recorded.value.entry?.id ?? "missing"
+    );
+  });
+
+  it("does not create candidate or saved-entry events for blocked memory candidates", () => {
+    const { projectDir, rootDir } = createTempRuntimeProject();
+    const runtime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir: join(rootDir, "home")
+    });
+    const submitted = runtime.submitInteractiveTask("block unsafe memory");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const recorded = runtime.recordMemoryCandidate({
+      confidence: "high",
+      content: "OPENAI_API_KEY=sk-test-secret",
+      provenance: "raw tool output",
+      type: "semantic"
+    });
+
+    expect(recorded).toMatchObject({
+      ok: true,
+      value: {
+        autoSaved: false,
+        candidate: null,
+        entry: null
+      }
+    });
+
+    const history = runtime.getEventHistory(submitted.value.taskId);
+    expect(history.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting",
+      "memory.safety.evaluated"
+    ]);
     expect(JSON.stringify(history)).not.toContain("OPENAI_API_KEY=");
     expect(JSON.stringify(history)).not.toContain("sk-test-secret");
   });

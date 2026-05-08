@@ -11,8 +11,12 @@ import {
 } from "@sprite/config";
 import {
   createMemoryCandidate,
+  createMemoryEntryFromCandidate,
+  shouldAutoSaveMemoryCandidate,
+  type MemoryCandidate,
   type MemoryCandidateEvaluation,
   type MemoryCandidateRequest,
+  type MemoryEntry,
   type SafetyEvaluationDecision
 } from "@sprite/memory";
 import {
@@ -41,6 +45,7 @@ import {
 } from "@sprite/shared";
 import {
   SESSION_STATE_SCHEMA_VERSION,
+  createLocalMemoryStore,
   createLocalSessionStore,
   createSessionId,
   readSessionForResume,
@@ -175,6 +180,13 @@ export interface RuntimeFileActivityRequest {
 }
 
 export type RuntimeMemoryCandidateRequest = MemoryCandidateRequest;
+
+export interface RuntimeMemoryCandidateRecordingResult {
+  autoSaved: boolean;
+  candidate: MemoryCandidate | null;
+  decision: SafetyEvaluationDecision;
+  entry: MemoryEntry | null;
+}
 
 interface RuntimeFileEditMetadata {
   affectedFiles: string[];
@@ -318,6 +330,7 @@ export class AgentRuntime {
   private readonly emittedEventIds = new Set<string>();
   private readonly pendingApprovals = new Map<string, PendingApprovalRecord>();
   private readonly restoredPendingApprovalCounts = new Map<string, number>();
+  private readonly memoryStore = createLocalMemoryStore();
   private readonly sessionStore = createLocalSessionStore();
   private readonly toolRegistry = createToolRegistry();
   private sessionCreatedAt: string | null = null;
@@ -1421,6 +1434,121 @@ export class AgentRuntime {
     return evaluation;
   }
 
+  recordMemoryCandidate(
+    request: RuntimeMemoryCandidateRequest
+  ): Result<RuntimeMemoryCandidateRecordingResult> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const evaluation = createMemoryCandidate(
+      {
+        ...request,
+        sourceTaskId: request.sourceTaskId ?? activeTask.value.taskId
+      },
+      {
+        rules: activeTask.value.request.startup.safetyRules
+      }
+    );
+
+    if (!evaluation.ok) {
+      return evaluation;
+    }
+
+    const events: RuntimeEventRecord[] = [
+      this.createMemorySafetyEvaluatedEvent(
+        activeTask.value,
+        evaluation.value.decision
+      )
+    ];
+    const candidate = evaluation.value.candidate;
+
+    if (candidate === null) {
+      const emitted = this.emitNewEvents(events);
+
+      if (!emitted.ok) {
+        return err(emitted.error);
+      }
+
+      this.refreshActiveTaskEvents(activeTask.value.taskId);
+      return ok({
+        autoSaved: false,
+        candidate: null,
+        decision: evaluation.value.decision,
+        entry: null
+      });
+    }
+
+    const candidateWritten = this.memoryStore.writeCandidate(
+      activeTask.value.request.cwd,
+      candidate
+    );
+
+    if (!candidateWritten.ok) {
+      return err(candidateWritten.error);
+    }
+
+    const candidateEmitted = this.emitNewEvents([
+      ...events,
+      this.createMemoryCandidateCreatedEvent(activeTask.value, candidate)
+    ]);
+
+    if (!candidateEmitted.ok) {
+      return err(candidateEmitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+
+    const latestTask = this.getMutableActiveTask();
+
+    if (!latestTask.ok) {
+      return latestTask;
+    }
+
+    const eventTask = latestTask.value;
+
+    let entry: MemoryEntry | null = null;
+    let autoSaved = false;
+
+    if (shouldAutoSaveMemoryCandidate(candidate)) {
+      const createdEntry = createMemoryEntryFromCandidate(candidate);
+
+      if (!createdEntry.ok) {
+        return err(createdEntry.error);
+      }
+
+      const entryWritten = this.memoryStore.appendEntry(
+        eventTask.request.cwd,
+        createdEntry.value
+      );
+
+      if (!entryWritten.ok) {
+        return err(entryWritten.error);
+      }
+
+      entry = createdEntry.value;
+      autoSaved = true;
+      const entryEmitted = this.emitNewEvents([
+        this.createMemoryEntrySavedEvent(eventTask, entry)
+      ]);
+
+      if (!entryEmitted.ok) {
+        return err(entryEmitted.error);
+      }
+
+      this.refreshActiveTaskEvents(eventTask.taskId);
+    }
+
+    return ok({
+      autoSaved,
+      candidate,
+      decision: evaluation.value.decision,
+      entry
+    });
+  }
+
   private executeRegisteredTool(
     cwd: string,
     request: RuntimeToolCallRequest
@@ -2351,6 +2479,68 @@ export class AgentRuntime {
         status: "recorded",
         summary: `Memory safety ${decision.action} decision recorded.`,
         target: decision.target
+      }
+    );
+  }
+
+  private createMemoryCandidateCreatedEvent(
+    task: PlannedExecutionFlow,
+    candidate: MemoryCandidate
+  ): RuntimeEventRecord<"memory.candidate.created"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "memory.candidate.created",
+      {
+        candidateId: candidate.id,
+        confidence: candidate.confidence,
+        contentPreview: candidate.contentPreview,
+        memoryType: candidate.type,
+        provenance: candidate.provenance,
+        sensitivityStatus: candidate.sensitivityStatus,
+        sourceEventIds: [...candidate.sourceEventIds],
+        ...(candidate.sourceTaskId === undefined
+          ? {}
+          : { sourceTaskId: candidate.sourceTaskId }),
+        status: "recorded",
+        summary: `${candidate.type} memory candidate created.`
+      }
+    );
+  }
+
+  private createMemoryEntrySavedEvent(
+    task: PlannedExecutionFlow,
+    entry: MemoryEntry
+  ): RuntimeEventRecord<"memory.entry.saved"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "memory.entry.saved",
+      {
+        autoSaved: entry.autoSaved,
+        candidateId: entry.candidateId,
+        confidence: entry.confidence,
+        contentPreview: entry.contentPreview,
+        entryId: entry.id,
+        memoryType: entry.type,
+        provenance: entry.provenance,
+        sensitivityStatus: entry.sensitivityStatus,
+        sourceEventIds: [...entry.sourceEventIds],
+        ...(entry.sourceTaskId === undefined
+          ? {}
+          : { sourceTaskId: entry.sourceTaskId }),
+        status: "recorded",
+        summary: `${entry.type} memory entry saved.`
       }
     );
   }

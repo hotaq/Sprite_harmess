@@ -1,6 +1,6 @@
 # Story 4.2: Store Episodic and Semantic Memory Candidates
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,66 +17,71 @@ so that the agent can remember what matters across sessions.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1, 2)
-  - [ ] Before touching implementation files, report the exact functions/contracts to add or modify.
-  - [ ] Run GitNexus impact analysis before editing any existing function, class, or method symbol.
-  - [ ] Do not start with CLI/TUI/RPC surfaces; Story 4.2 is a runtime + memory/storage slice.
+- [x] Confirm implementation function list before code edits (AC: 1, 2)
+  - [x] Before touching implementation files, report the exact functions/contracts to add or modify.
+  - [x] Run GitNexus impact analysis before editing any existing function, class, or method symbol.
+  - [x] Do not start with CLI/TUI/RPC surfaces; Story 4.2 is a runtime + memory/storage slice.
 
-- [ ] Add durable memory candidate and entry contracts (AC: 1, 2)
-  - [ ] Extend the existing `packages/memory/src/index.ts` candidate model rather than creating a duplicate memory package.
-  - [ ] Add explicit sensitivity status metadata to non-blocked candidates.
-  - [ ] Add stable IDs for saved candidate/entry artifacts using architecture ID prefixes (`mem_` for durable entries; use a clear candidate prefix if needed, do not hand-assemble IDs in adapters).
-  - [ ] Ensure candidate and entry metadata includes `schemaVersion`, `createdAt`/timestamp, `updatedAt` where persisted, `type`, `provenance`, `confidence`, `sourceTaskId`, sensitivity status, and evidence/source references.
-  - [ ] Limit Story 4.2 auto-save flow to episodic and semantic memory. Leave procedural, self-model, and working-memory persistence to later stories unless existing code requires shared type support.
+- [x] Add durable memory candidate and entry contracts (AC: 1, 2)
+  - [x] Extend the existing `packages/memory/src/index.ts` candidate model rather than creating a duplicate memory package.
+  - [x] Add explicit sensitivity status metadata to non-blocked candidates.
+  - [x] Add stable IDs for saved candidate/entry artifacts using architecture ID prefixes (`mem_` for durable entries; use a clear candidate prefix if needed, do not hand-assemble IDs in adapters).
+  - [x] Ensure candidate and entry metadata includes `schemaVersion`, `createdAt`/timestamp, `updatedAt` where persisted, `type`, `provenance`, `confidence`, `sourceTaskId`, sensitivity status, and evidence/source references.
+  - [x] Limit Story 4.2 auto-save flow to episodic and semantic memory. Leave procedural, self-model, and working-memory persistence to later stories unless existing code requires shared type support.
 
-- [ ] Harden candidate safety and boundedness rules (AC: 1)
-  - [ ] Preserve existing secret filtering and custom safety-rule behavior from `createMemoryCandidate()`.
-  - [ ] Exclude raw logs, raw command/tool output, private keys, tokens, credentials, `.env` values, and large code chunks by default.
-  - [ ] Add deterministic maximum content/preview limits and return structured errors or blocked decisions for oversized or raw-looking content.
-  - [ ] Store bounded summaries/previews, not raw transcripts or large code snippets.
-  - [ ] Ensure blocked memory content never appears in runtime events, persisted candidates, persisted entries, logs, summaries, or task context packets.
+- [x] Harden candidate safety and boundedness rules (AC: 1)
+  - [x] Preserve existing secret filtering and custom safety-rule behavior from `createMemoryCandidate()`.
+  - [x] Exclude raw logs, raw command/tool output, private keys, tokens, credentials, `.env` values, and large code chunks by default.
+  - [x] Add deterministic maximum content/preview limits and return structured errors or blocked decisions for oversized or raw-looking content.
+  - [x] Store bounded summaries/previews, not raw transcripts or large code snippets.
+  - [x] Ensure blocked memory content never appears in runtime events, persisted candidates, persisted entries, logs, summaries, or task context packets.
 
-- [ ] Implement candidate creation and auto-save policy (AC: 1, 2)
-  - [ ] Add a pure helper for candidate evaluation/creation that can be used by the runtime and later learning-review stories.
-  - [ ] Add a pure `shouldAutoSaveMemoryCandidate()` style policy helper: default allow only high-confidence, bounded, non-sensitive episodic/semantic candidates when policy allows memory save.
-  - [ ] Low-confidence, medium-confidence, sensitive, redacted, blocked, or unsupported-type candidates must not auto-save in this story.
-  - [ ] Do not implement Story 4.3 review/edit/reject/accept UI in this story; save only the candidate state needed for that later lifecycle.
+- [x] Implement candidate creation and auto-save policy (AC: 1, 2)
+  - [x] Add a pure helper for candidate evaluation/creation that can be used by the runtime and later learning-review stories.
+  - [x] Add a pure `shouldAutoSaveMemoryCandidate()` style policy helper: default allow only high-confidence, bounded, non-sensitive episodic/semantic candidates when policy allows memory save.
+  - [x] Low-confidence, medium-confidence, sensitive, redacted, blocked, or unsupported-type candidates must not auto-save in this story.
+  - [x] Do not implement Story 4.3 review/edit/reject/accept UI in this story; save only the candidate state needed for that later lifecycle.
 
-- [ ] Add local artifact storage for memory candidates and durable entries (AC: 1, 2)
-  - [ ] Store project-local memory candidates under `.sprite/memory/candidates/` or the nearest existing storage abstraction that maps to the architecture.
-  - [ ] Store durable memory entry metadata/content under `.sprite/memory/` using inspectable local artifacts; prefer append-oriented JSON records for machine state and keep Markdown memory human-readable if updated.
-  - [ ] Keep storage code in `packages/storage` when persistence is needed; keep memory classification/safety logic in `packages/memory`.
-  - [ ] Serialize writes through existing storage/runtime boundaries; do not let adapters write `.sprite` memory artifacts directly.
-  - [ ] Add schema validation/migration-friendly fields for any new persisted artifact shape.
+- [x] Add local artifact storage for memory candidates and durable entries (AC: 1, 2)
+  - [x] Store project-local memory candidates under `.sprite/memory/candidates/` or the nearest existing storage abstraction that maps to the architecture.
+  - [x] Store durable memory entry metadata/content under `.sprite/memory/` using inspectable local artifacts; prefer append-oriented JSON records for machine state and keep Markdown memory human-readable if updated.
+  - [x] Keep storage code in `packages/storage` when persistence is needed; keep memory classification/safety logic in `packages/memory`.
+  - [x] Serialize writes through existing storage/runtime boundaries; do not let adapters write `.sprite` memory artifacts directly.
+  - [x] Add schema validation/migration-friendly fields for any new persisted artifact shape.
 
-- [ ] Emit and validate runtime events (AC: 2)
-  - [ ] Add `memory.candidate.created` and `memory.entry.saved` to `packages/core/src/runtime-events.ts`.
-  - [ ] Event payloads must include IDs, type, confidence, provenance/source reference, source task, sensitivity status, status, and bounded summary/preview only.
-  - [ ] Event payloads must not include forbidden raw fields such as `rawContent`, `rawOutput`, `stdout`, `stderr`, `token`, `secret`, or large code chunks.
-  - [ ] Emit `memory.candidate.created` after a non-blocked candidate is created.
-  - [ ] Emit `memory.entry.saved` only after durable storage succeeds.
-  - [ ] Preserve event order so session replay can reconstruct candidate/entry state.
+- [x] Emit and validate runtime events (AC: 2)
+  - [x] Add `memory.candidate.created` and `memory.entry.saved` to `packages/core/src/runtime-events.ts`.
+  - [x] Event payloads must include IDs, type, confidence, provenance/source reference, source task, sensitivity status, status, and bounded summary/preview only.
+  - [x] Event payloads must not include forbidden raw fields such as `rawContent`, `rawOutput`, `stdout`, `stderr`, `token`, `secret`, or large code chunks.
+  - [x] Emit `memory.candidate.created` after a non-blocked candidate is created.
+  - [x] Emit `memory.entry.saved` only after durable storage succeeds.
+  - [x] Preserve event order so session replay can reconstruct candidate/entry state.
 
-- [ ] Wire runtime API without replay side effects (AC: 1, 2)
-  - [ ] Replace or complement `AgentRuntime.evaluateMemoryCandidateSafety()` with a runtime-owned candidate recording API that creates events and storage artifacts.
-  - [ ] Ensure resumed sessions do not replay candidate creation, memory saves, provider calls, tools, validations, approvals, or file edits.
-  - [ ] Update runtime self-model memory state so candidate-store availability becomes truthful when implemented.
-  - [ ] Keep working memory task/session scoped and never silently promote it as durable memory.
+- [x] Wire runtime API without replay side effects (AC: 1, 2)
+  - [x] Replace or complement `AgentRuntime.evaluateMemoryCandidateSafety()` with a runtime-owned candidate recording API that creates events and storage artifacts.
+  - [x] Ensure resumed sessions do not replay candidate creation, memory saves, provider calls, tools, validations, approvals, or file edits.
+  - [x] Update runtime self-model memory state so candidate-store availability becomes truthful when implemented.
+  - [x] Keep working memory task/session scoped and never silently promote it as durable memory.
 
-- [ ] Add red-phase and regression tests (AC: 1, 2)
-  - [ ] Memory unit tests: safe episodic/semantic candidate includes type, provenance, confidence, timestamp, source task, and sensitivity status.
-  - [ ] Memory unit tests: raw logs, secrets, credentials, private keys, tokens, and large code chunks are blocked or excluded by default.
-  - [ ] Policy tests: only high-confidence, bounded, non-sensitive episodic/semantic candidates auto-save.
-  - [ ] Runtime event tests: candidate creation emits `memory.candidate.created`; auto-save emits `memory.entry.saved` after storage succeeds.
-  - [ ] Runtime event tests: blocked/sensitive candidate emits only safety/audit information and never emits a saved entry.
-  - [ ] Persistence tests: memory candidates and saved entries survive session storage boundaries without raw secret leakage.
-  - [ ] Regression tests: Story 4.1 working memory remains task scoped and is not promoted to durable memory.
+- [x] Add red-phase and regression tests (AC: 1, 2)
+  - [x] Memory unit tests: safe episodic/semantic candidate includes type, provenance, confidence, timestamp, source task, and sensitivity status.
+  - [x] Memory unit tests: raw logs, secrets, credentials, private keys, tokens, and large code chunks are blocked or excluded by default.
+  - [x] Policy tests: only high-confidence, bounded, non-sensitive episodic/semantic candidates auto-save.
+  - [x] Runtime event tests: candidate creation emits `memory.candidate.created`; auto-save emits `memory.entry.saved` after storage succeeds.
+  - [x] Runtime event tests: blocked/sensitive candidate emits only safety/audit information and never emits a saved entry.
+  - [x] Persistence tests: memory candidates and saved entries survive session storage boundaries without raw secret leakage.
+  - [x] Regression tests: Story 4.1 working memory remains task scoped and is not promoted to durable memory.
 
-- [ ] Update story evidence and lifecycle status (AC: 1, 2)
-  - [ ] Record implementation notes, changed files, and validation evidence in this story file.
-  - [ ] Run targeted validation before review: `rtk run 'npm test -- --run tests/memory-safety.test.ts tests/runtime-events.test.ts tests/session-persistence.test.ts tests/task-context.test.ts'`.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when GitNexus tooling is available.
+- [x] Update story evidence and lifecycle status (AC: 1, 2)
+  - [x] Record implementation notes, changed files, and validation evidence in this story file.
+  - [x] Run targeted validation before review: `rtk run 'npm test -- --run tests/memory-safety.test.ts tests/runtime-events.test.ts tests/session-persistence.test.ts tests/task-context.test.ts'`.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when GitNexus tooling is available.
+
+### Review Findings
+
+- [x] [Review][Decision] Durable memory artifact/event atomicity needs an explicit policy. Resolved with the narrow audit-after-each-artifact-step policy for Story 4.2: `recordMemoryCandidate()` now emits `memory.safety.evaluated` + `memory.candidate.created` immediately after candidate artifact write succeeds and before any auto-save entry append is attempted. Regression coverage verifies an entry append failure still leaves the candidate audit event persisted next to the candidate artifact. Full cross-file transaction/rollback between `.sprite/memory` artifacts and session event append remains out of scope for this story. Evidence: `packages/core/src/agent-runtime.ts`, `tests/session-persistence.test.ts`.
+- [x] [Review][Patch] Memory runtime event validation does not reject extra `secret`/`token` payload fields. Resolved by extending forbidden policy payload fields with `secret`, `token`, and credential-like metadata keys, plus regression coverage that rejects memory events containing `secret` or `token` fields even when values are placeholder-safe. Evidence: `packages/core/src/runtime-events.ts`, `tests/runtime-events.test.ts`.
 
 ## Dev Notes
 
@@ -200,20 +205,57 @@ Before implementation, review and report this list to the user, then adjust if c
 - `packages/core/src/agent-runtime.ts` — current runtime safety evaluation method.
 - `tests/memory-safety.test.ts` and `tests/runtime-events.test.ts` — existing regression test locations.
 
+## Change Log
+
+- 2026-05-08: Implemented Story 4.2 durable memory candidate write path, auto-save policy, local memory artifacts, runtime events, and regression coverage.
+
 ## Dev Agent Record
 
 ### Agent Model Used
 
-TBD
+GPT-5.5
 
 ### Debug Log References
 
-TBD
+- `rtk run 'npx gitnexus analyze'` — refreshed GitNexus index before implementation impact checks.
+- `rtk run 'npx gitnexus impact --repo Sprite_harmess createMemoryCandidate'` — LOW risk.
+- `rtk run 'npx gitnexus impact --repo Sprite_harmess validateRuntimeEvent'` — CRITICAL risk; mitigated with event-contract tests and full regression suite.
+- `rtk run 'npx gitnexus impact --repo Sprite_harmess AgentRuntime --depth 2'` — CRITICAL risk; implementation was additive and validated through runtime/session tests.
+- `rtk run 'npx gitnexus impact --repo Sprite_harmess createRuntimeSelfModelSnapshot'` — HIGH risk; limited to truthful candidate-store metadata/content.
+- `rtk run 'npm test -- --run tests/memory-safety.test.ts tests/runtime-events.test.ts tests/session-persistence.test.ts tests/task-context.test.ts'` — PASS, 4 files / 102 tests.
+- `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` — PASS, full typecheck/lint, 15 test files / 225 tests, diff check clean.
+- `rtk run 'npx gitnexus status'` — repository index reported up-to-date at current commit; `gitnexus detect_changes` is not exposed by the installed local CLI, so run MCP detect-changes before commit if available.
+- `rtk run 'npx gitnexus impact recordMemoryCandidate --repo Sprite_harmess --direction upstream --include-tests'` — LOW risk; direct impact limited to memory runtime/session tests.
+- `rtk run 'npx gitnexus impact FORBIDDEN_POLICY_PAYLOAD_FIELDS --repo Sprite_harmess --direction upstream --include-tests'` — LOW risk.
+- `rtk run 'npx gitnexus impact validateMemoryLifecyclePayload --repo Sprite_harmess --direction upstream --include-tests'` — CRITICAL risk; mitigated with a narrow forbidden-field-set change rather than changing validator control flow.
+- `rtk run 'npm test -- --run tests/runtime-events.test.ts tests/session-persistence.test.ts'` — PASS, 2 files / 83 tests.
+- `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` — PASS after review fixes, full typecheck/lint, 15 test files / 227 tests, diff check clean.
 
 ### Completion Notes List
 
-TBD
+- Extended `createMemoryCandidate()` with schema version, stable candidate ID, bounded preview, sensitivity status, source event references, and updated timestamp while preserving existing custom safety-rule behavior.
+- Added default memory candidate boundary checks for raw logs, raw/large code chunks, and oversized content; blocked boundary decisions return audit-safe redacted previews.
+- Added `shouldAutoSaveMemoryCandidate()` and `createMemoryEntryFromCandidate()` so only high-confidence, non-sensitive episodic/semantic candidates auto-save.
+- Added `LocalMemoryStore` for `.sprite/memory/candidates/<candidateId>.json` and `.sprite/memory/entries.ndjson` with schema/ID/secret validation.
+- Added `memory.candidate.created` and `memory.entry.saved` runtime event contracts and validators with raw-field/secret-looking value rejection.
+- Added `AgentRuntime.recordMemoryCandidate()` to evaluate safety, persist candidates, auto-save eligible entries, emit audit events, and keep blocked candidates safety-only.
+- Updated `AgentRuntime.recordMemoryCandidate()` review behavior so candidate audit events persist immediately after candidate artifact writes and before auto-save entry append attempts.
+- Hardened memory runtime event validation against `secret`, `token`, and credential-like payload field names.
+- Kept `AgentRuntime.evaluateMemoryCandidateSafety()` backward-compatible for safety-only audit checks.
+- Updated runtime self-model to truthfully report local candidate-store availability while durable retrieval remains unavailable.
+- Added memory, runtime-event, session-persistence, and task-context tests covering safe candidates, auto-save, blocked candidates, event ordering, persistence artifacts, and Story 4.1 working-memory non-promotion.
 
 ### File List
 
-TBD
+- `_bmad-output/implementation-artifacts/4-2-store-episodic-and-semantic-memory-candidates.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/core/src/task-context.ts`
+- `packages/memory/src/index.ts`
+- `packages/storage/src/index.ts`
+- `packages/storage/src/memory-store.ts`
+- `tests/memory-safety.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/session-persistence.test.ts`
+- `tests/task-context.test.ts`

@@ -406,7 +406,7 @@ describe("task context packet assembly", () => {
     expect(selfModelSection).toMatchObject({
       metadata: expect.objectContaining({
         approvalPolicy: "policy-governed",
-        candidateStoreAvailable: false,
+        candidateStoreAvailable: true,
         durableRetrievalAvailable: false,
         fileEditApproval: "policy-governed",
         pendingApprovalCount: 0,
@@ -434,6 +434,9 @@ describe("task context packet assembly", () => {
     );
     expect(selfModelSection?.content).toContain(
       "Durable memory retrieval is not implemented"
+    );
+    expect(selfModelSection?.content).toContain(
+      "Memory candidate storage is available through runtime APIs"
     );
     expect(selfModelSection?.content).toContain(
       "Risky commands and file edits remain policy-governed"
