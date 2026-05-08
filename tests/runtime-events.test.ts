@@ -156,6 +156,37 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(entryEvent).ok).toBe(true);
   });
 
+  it("validates memory candidate reviewed runtime events", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_memory_reviewed",
+        sessionId: "ses_memory",
+        taskId: "task_memory",
+        correlationId: "corr_memory",
+        createdAt: "2026-05-08T10:07:00.000Z"
+      },
+      "memory.candidate.reviewed",
+      {
+        action: "accept",
+        candidateId: "memcand_test",
+        confidence: "medium",
+        contentPreview: "Project commands should use rtk run.",
+        entryId: "mem_test",
+        lifecycleStatus: "accepted",
+        memoryType: "semantic",
+        provenance: "user preference",
+        reason: "Accurate project preference.",
+        sensitivityStatus: "non_sensitive",
+        sourceEventIds: ["evt_source"],
+        sourceTaskId: "task_memory",
+        status: "accepted",
+        summary: "Semantic memory candidate accepted."
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+  });
+
   it("rejects memory runtime events that include raw content fields", () => {
     const result = validateRuntimeEvent({
       schemaVersion: 1,
@@ -214,6 +245,56 @@ describe("runtime event contract", () => {
 
       expect(result.ok).toBe(false);
     }
+  });
+
+  it("rejects memory candidate reviewed events with raw or secret-looking review fields", () => {
+    const basePayload = {
+      action: "reject",
+      candidateId: "memcand_test",
+      confidence: "medium",
+      contentPreview: "Project commands should use rtk run.",
+      lifecycleStatus: "rejected",
+      memoryType: "semantic",
+      provenance: "user preference",
+      reason: "Not worth keeping.",
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: ["evt_source"],
+      sourceTaskId: "task_memory",
+      status: "rejected",
+      summary: "Semantic memory candidate rejected."
+    };
+
+    const rawField = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_memory_reviewed_raw",
+      sessionId: "ses_memory",
+      taskId: "task_memory",
+      correlationId: "corr_memory",
+      createdAt: "2026-05-08T10:07:00.000Z",
+      type: "memory.candidate.reviewed",
+      payload: {
+        ...basePayload,
+        rawOutput: "OPENAI_API_KEY=sk-test-secret"
+      }
+    });
+
+    expect(rawField.ok).toBe(false);
+
+    const secretReason = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_memory_reviewed_secret",
+      sessionId: "ses_memory",
+      taskId: "task_memory",
+      correlationId: "corr_memory",
+      createdAt: "2026-05-08T10:08:00.000Z",
+      type: "memory.candidate.reviewed",
+      payload: {
+        ...basePayload,
+        reason: "OPENAI_API_KEY=sk-test-secret"
+      }
+    });
+
+    expect(secretReason.ok).toBe(false);
   });
 
   it("rejects malformed runtime events that do not satisfy the schema contract", () => {

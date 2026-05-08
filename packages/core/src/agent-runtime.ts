@@ -12,9 +12,13 @@ import {
 import {
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
+  reviewMemoryCandidate as applyMemoryCandidateReview,
   shouldAutoSaveMemoryCandidate,
+  summarizeMemoryCandidateForReview,
   type MemoryCandidate,
   type MemoryCandidateEvaluation,
+  type MemoryCandidateReviewRequest,
+  type MemoryCandidateReviewView,
   type MemoryCandidateRequest,
   type MemoryEntry,
   type SafetyEvaluationDecision
@@ -48,9 +52,11 @@ import {
   createLocalMemoryStore,
   createLocalSessionStore,
   createSessionId,
+  readMemoryEntries,
   readSessionForResume,
   type SessionSnapshotPlanStep,
-  type SessionStateSnapshot
+  type SessionStateSnapshot,
+  type StoredMemoryCandidate
 } from "@sprite/storage";
 import {
   createToolRegistry,
@@ -188,6 +194,17 @@ export interface RuntimeMemoryCandidateRecordingResult {
   entry: MemoryEntry | null;
 }
 
+export type RuntimeMemoryCandidateReviewRequest =
+  MemoryCandidateReviewRequest & {
+    candidateId: string;
+  };
+
+export interface RuntimeMemoryCandidateReviewResult {
+  candidate: MemoryCandidate;
+  entry: MemoryEntry | null;
+  view: MemoryCandidateReviewView;
+}
+
 interface RuntimeFileEditMetadata {
   affectedFiles: string[];
   editId: string;
@@ -314,14 +331,11 @@ const MAX_WORKING_MEMORY_EVENT_IDS = 12;
 function createCompactedContextWarnings(
   notes: readonly ContextAssemblyNote[]
 ): string[] {
-  return notes.map(
-    (note) => {
-      const fieldSuffix =
-        note.field === undefined ? "" : `/${note.field}`;
+  return notes.map((note) => {
+    const fieldSuffix = note.field === undefined ? "" : `/${note.field}`;
 
-      return `Recoverable compacted context note (${note.code}${fieldSuffix}): ${note.message}`;
-    }
-  );
+    return `Recoverable compacted context note (${note.code}${fieldSuffix}): ${note.message}`;
+  });
 }
 
 export class AgentRuntime {
@@ -432,6 +446,20 @@ export class AgentRuntime {
     }
 
     return ok(this.activeTask);
+  }
+
+  private getRuntimeCwd(): Result<string> {
+    if (this.activeTask !== null) {
+      return ok(this.activeTask.request.cwd);
+    }
+
+    const bootstrapState = this.getBootstrapState();
+
+    if (!bootstrapState.ok) {
+      return err(bootstrapState.error);
+    }
+
+    return ok(bootstrapState.value.startup.cwd);
   }
 
   subscribeToEvents(listener: RuntimeEventListener): () => void {
@@ -1511,6 +1539,7 @@ export class AgentRuntime {
 
     let entry: MemoryEntry | null = null;
     let autoSaved = false;
+    let persistedCandidate = candidate;
 
     if (shouldAutoSaveMemoryCandidate(candidate)) {
       const createdEntry = createMemoryEntryFromCandidate(candidate);
@@ -1530,6 +1559,24 @@ export class AgentRuntime {
 
       entry = createdEntry.value;
       autoSaved = true;
+      persistedCandidate = {
+        ...candidate,
+        acceptedEntryId: entry.id,
+        lifecycleStatus: "auto_saved",
+        recommendedAction: "accept",
+        reviewedAt: entry.createdAt,
+        updatedAt: entry.createdAt
+      };
+
+      const candidateUpdated = this.memoryStore.updateCandidate(
+        eventTask.request.cwd,
+        persistedCandidate
+      );
+
+      if (!candidateUpdated.ok) {
+        return err(candidateUpdated.error);
+      }
+
       const entryEmitted = this.emitNewEvents([
         this.createMemoryEntrySavedEvent(eventTask, entry)
       ]);
@@ -1543,9 +1590,170 @@ export class AgentRuntime {
 
     return ok({
       autoSaved,
-      candidate,
+      candidate: persistedCandidate,
       decision: evaluation.value.decision,
       entry
+    });
+  }
+
+  listMemoryCandidates(): Result<MemoryCandidateReviewView[]> {
+    const cwd = this.getRuntimeCwd();
+
+    if (!cwd.ok) {
+      return err(cwd.error);
+    }
+
+    const candidates = this.memoryStore.listCandidates(cwd.value);
+
+    if (!candidates.ok) {
+      return err(candidates.error);
+    }
+
+    return ok(
+      candidates.value.map((candidate) =>
+        summarizeMemoryCandidateForReview(toMemoryCandidate(candidate))
+      )
+    );
+  }
+
+  openMemoryCandidate(candidateId: string): Result<MemoryCandidateReviewView> {
+    const cwd = this.getRuntimeCwd();
+
+    if (!cwd.ok) {
+      return err(cwd.error);
+    }
+
+    const candidate = this.memoryStore.readCandidate(cwd.value, candidateId);
+
+    if (!candidate.ok) {
+      return err(candidate.error);
+    }
+
+    return ok(
+      summarizeMemoryCandidateForReview(toMemoryCandidate(candidate.value))
+    );
+  }
+
+  reviewMemoryCandidate(
+    request: RuntimeMemoryCandidateReviewRequest
+  ): Result<RuntimeMemoryCandidateReviewResult> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const candidateRead = this.memoryStore.readCandidate(
+      activeTask.value.request.cwd,
+      request.candidateId
+    );
+
+    if (!candidateRead.ok) {
+      return err(candidateRead.error);
+    }
+
+    const candidate = toMemoryCandidate(candidateRead.value);
+
+    if (
+      ["accepted", "auto_saved", "edited", "rejected"].includes(
+        candidate.lifecycleStatus
+      )
+    ) {
+      return err(
+        new SpriteError(
+          "MEMORY_CANDIDATE_ALREADY_REVIEWED",
+          "Memory candidate review already reached a terminal lifecycle state."
+        )
+      );
+    }
+
+    const reviewed = applyMemoryCandidateReview(candidate, request, {
+      rules: activeTask.value.request.startup.safetyRules
+    });
+
+    if (!reviewed.ok) {
+      return err(reviewed.error);
+    }
+
+    let entry: MemoryEntry | null = null;
+    let reviewedCandidate = reviewed.value.candidate;
+
+    if (request.action !== "reject") {
+      const createdEntry = createMemoryEntryFromCandidate(reviewedCandidate, {
+        autoSaved: false,
+        requireHighConfidence: false
+      });
+
+      if (!createdEntry.ok) {
+        return err(createdEntry.error);
+      }
+
+      const duplicateEntry = readMemoryEntries(activeTask.value.request.cwd);
+
+      if (!duplicateEntry.ok) {
+        return err(duplicateEntry.error);
+      }
+
+      if (
+        duplicateEntry.value.some(
+          (existingEntry) => existingEntry.candidateId === candidate.id
+        )
+      ) {
+        return err(
+          new SpriteError(
+            "MEMORY_CANDIDATE_ENTRY_ALREADY_EXISTS",
+            "Memory candidate already has a durable memory entry."
+          )
+        );
+      }
+
+      const entryWritten = this.memoryStore.appendEntry(
+        activeTask.value.request.cwd,
+        createdEntry.value
+      );
+
+      if (!entryWritten.ok) {
+        return err(entryWritten.error);
+      }
+
+      entry = createdEntry.value;
+      reviewedCandidate = {
+        ...reviewedCandidate,
+        acceptedEntryId: entry.id
+      };
+    }
+
+    const candidateUpdated = this.memoryStore.updateCandidate(
+      activeTask.value.request.cwd,
+      reviewedCandidate
+    );
+
+    if (!candidateUpdated.ok) {
+      return err(candidateUpdated.error);
+    }
+
+    const events: RuntimeEventRecord[] = [
+      ...(entry === null
+        ? []
+        : [this.createMemoryEntrySavedEvent(activeTask.value, entry)]),
+      this.createMemoryCandidateReviewedEvent(
+        activeTask.value,
+        reviewedCandidate,
+        request.action,
+        entry
+      )
+    ];
+    const emitted = this.emitNewEvents(events);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return ok({
+      candidate: reviewedCandidate,
+      entry,
+      view: summarizeMemoryCandidateForReview(reviewedCandidate)
     });
   }
 
@@ -2171,7 +2379,10 @@ export class AgentRuntime {
       toolCallRequest
     };
 
-    this.pendingApprovals.set(approvalRequest.approvalRequestId, approvalRecord);
+    this.pendingApprovals.set(
+      approvalRequest.approvalRequestId,
+      approvalRecord
+    );
 
     const nextActiveTask: PlannedExecutionFlow = this.withUpdatedWorkingMemory({
       ...task,
@@ -2545,6 +2756,44 @@ export class AgentRuntime {
     );
   }
 
+  private createMemoryCandidateReviewedEvent(
+    task: PlannedExecutionFlow,
+    candidate: MemoryCandidate,
+    action: RuntimeMemoryCandidateReviewRequest["action"],
+    entry: MemoryEntry | null
+  ): RuntimeEventRecord<"memory.candidate.reviewed"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "memory.candidate.reviewed",
+      {
+        action,
+        candidateId: candidate.id,
+        confidence: candidate.confidence,
+        contentPreview: candidate.contentPreview,
+        ...(entry === null ? {} : { entryId: entry.id }),
+        lifecycleStatus: candidate.lifecycleStatus,
+        memoryType: candidate.type,
+        provenance: candidate.provenance,
+        ...(candidate.reviewReason === undefined
+          ? {}
+          : { reason: candidate.reviewReason }),
+        sensitivityStatus: candidate.sensitivityStatus,
+        sourceEventIds: [...candidate.sourceEventIds],
+        ...(candidate.sourceTaskId === undefined
+          ? {}
+          : { sourceTaskId: candidate.sourceTaskId }),
+        status: candidate.lifecycleStatus,
+        summary: `${candidate.type} memory candidate ${candidate.lifecycleStatus}.`
+      }
+    );
+  }
+
   private createToolResultFileActivity(
     task: PlannedExecutionFlow,
     result: ToolExecutionResult,
@@ -2746,8 +2995,9 @@ export class AgentRuntime {
         .map((command) =>
           this.createWorkingMemoryCommandFromCompactedSummary(command)
         )
-        .filter((command): command is WorkingMemoryCommand => command !== null) ??
-      [];
+        .filter(
+          (command): command is WorkingMemoryCommand => command !== null
+        ) ?? [];
     const eventCommands = events
       .map((event) => this.createWorkingMemoryCommandFromEvent(event))
       .filter((command): command is WorkingMemoryCommand => command !== null);
@@ -2845,9 +3095,7 @@ export class AgentRuntime {
       blockers:
         task.waitingState === null
           ? []
-          : [
-              `${task.waitingState.reason}: ${task.waitingState.message}`
-            ],
+          : [`${task.waitingState.reason}: ${task.waitingState.message}`],
       commandsRun: dedupeWorkingMemoryCommands(eventCommands),
       currentGoal: task.request.task,
       currentPlan: task.steps.map((step) => step.summary),
@@ -4060,6 +4308,10 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 type WorkingMemoryCommandStatus = NonNullable<WorkingMemoryCommand["status"]>;
 
+function toMemoryCandidate(candidate: StoredMemoryCandidate): MemoryCandidate {
+  return candidate as unknown as MemoryCandidate;
+}
+
 function getWorkingMemoryCommandStatusFromEvent(
   event: RuntimeEventRecord
 ): WorkingMemoryCommandStatus {
@@ -4158,10 +4410,7 @@ function collectWorkingMemorySourceEventIds(
 function summarizeRuntimeEventForWorkingMemory(
   event: RuntimeEventRecord
 ): string | null {
-  if (
-    "summary" in event.payload &&
-    typeof event.payload.summary === "string"
-  ) {
+  if ("summary" in event.payload && typeof event.payload.summary === "string") {
     return event.payload.summary;
   }
 

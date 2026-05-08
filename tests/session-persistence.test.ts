@@ -188,8 +188,9 @@ describe("AgentRuntime session persistence", () => {
         "memory.candidate.created",
         "memory.entry.saved"
       ]);
-      expect(persistedEvents.every((event) => validateRuntimeEvent(event).ok))
-        .toBe(true);
+      expect(
+        persistedEvents.every((event) => validateRuntimeEvent(event).ok)
+      ).toBe(true);
 
       const candidatePath = join(
         projectDir,
@@ -281,8 +282,9 @@ describe("AgentRuntime session persistence", () => {
       const candidateEvent = persistedEvents.find(
         (event) => event.type === "memory.candidate.created"
       );
-      const candidatePayload =
-        candidateEvent?.payload as { candidateId?: unknown } | undefined;
+      const candidatePayload = candidateEvent?.payload as
+        | { candidateId?: unknown }
+        | undefined;
       const candidateId = candidatePayload?.candidateId;
 
       expect(candidateId).toEqual(expect.stringMatching(/^memcand_/));
@@ -306,6 +308,251 @@ describe("AgentRuntime session persistence", () => {
 
       expect(existsSync(candidatePath)).toBe(true);
       expect(readNdjson(entriesPath)).toHaveLength(0);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists, opens, accepts, and resumes reviewed memory candidates without replaying entries", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "review memory candidate"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const recorded = runtime.recordMemoryCandidate({
+        confidence: "medium",
+        content: "Runtime review APIs should create durable memory on accept.",
+        provenance: "story 4.3 runtime test",
+        sourceEventIds: [submitted.value.events[1].eventId],
+        type: "semantic"
+      });
+
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok || recorded.value.candidate === null) {
+        return;
+      }
+      expect(recorded.value.autoSaved).toBe(false);
+
+      const listed = runtime.listMemoryCandidates();
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) {
+        return;
+      }
+      expect(listed.value).toHaveLength(1);
+      expect(listed.value[0]).toMatchObject({
+        candidateId: recorded.value.candidate.id,
+        contentSummary:
+          "Runtime review APIs should create durable memory on accept.",
+        lifecycleStatus: "pending_review",
+        recommendedAction: "review"
+      });
+      expect(listed.value[0]).not.toHaveProperty("content");
+
+      const opened = runtime.openMemoryCandidate(recorded.value.candidate.id);
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) {
+        return;
+      }
+      expect(opened.value).toMatchObject({
+        candidateId: recorded.value.candidate.id,
+        sourceTaskId: submitted.value.taskId
+      });
+      expect(opened.value).not.toHaveProperty("content");
+
+      const reviewed = runtime.reviewMemoryCandidate({
+        action: "accept",
+        candidateId: recorded.value.candidate.id,
+        reason: "Safe and actionable.",
+        reviewedAt: "2026-05-08T13:15:00.000Z",
+        reviewedBy: "tester"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+      expect(reviewed.value).toMatchObject({
+        candidate: {
+          acceptedEntryId: expect.stringMatching(/^mem_/),
+          lifecycleStatus: "accepted",
+          reviewedBy: "tester",
+          reviewReason: "Safe and actionable."
+        },
+        entry: {
+          autoSaved: false,
+          candidateId: recorded.value.candidate.id,
+          type: "semantic"
+        }
+      });
+
+      const duplicate = runtime.reviewMemoryCandidate({
+        action: "accept",
+        candidateId: recorded.value.candidate.id,
+        reason: "Duplicate accept should be blocked."
+      });
+      expect(duplicate.ok).toBe(false);
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const entriesPath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "entries.ndjson"
+      );
+      const candidatePath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "candidates",
+        `${recorded.value.candidate.id}.json`
+      );
+
+      expect(readNdjson(entriesPath)).toHaveLength(1);
+      expect(readJson(candidatePath)).toMatchObject({
+        acceptedEntryId: reviewed.value.entry?.id,
+        lifecycleStatus: "accepted",
+        reviewReason: "Safe and actionable."
+      });
+
+      const eventsBeforeResume = readNdjson(eventsPath);
+      expect(eventsBeforeResume.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting",
+        "memory.safety.evaluated",
+        "memory.candidate.created",
+        "memory.entry.saved",
+        "memory.candidate.reviewed"
+      ]);
+      expect(
+        eventsBeforeResume.filter(
+          (event) => event.type === "memory.candidate.reviewed"
+        )
+      ).toHaveLength(1);
+      expect(JSON.stringify(eventsBeforeResume)).not.toContain("rawContent");
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, submitted.value.sessionId);
+      expect(resumed.ok).toBe(true);
+
+      const eventsAfterResume = readNdjson(eventsPath);
+      expect(readNdjson(entriesPath)).toHaveLength(1);
+      expect(
+        eventsAfterResume.filter(
+          (event) => event.type === "memory.candidate.reviewed"
+        )
+      ).toHaveLength(1);
+      expect(
+        eventsAfterResume.filter((event) => event.type === "memory.entry.saved")
+      ).toHaveLength(1);
+      expect(
+        eventsAfterResume.filter((event) => event.type === "session.resumed")
+      ).toHaveLength(1);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects or blocks unsafe edits without creating durable memory entries", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "reject and edit memory candidate"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const first = runtime.recordMemoryCandidate({
+        confidence: "medium",
+        content: "Candidate should be rejected by reviewer.",
+        provenance: "story 4.3 reject test",
+        type: "episodic"
+      });
+      const second = runtime.recordMemoryCandidate({
+        confidence: "medium",
+        content: "Candidate should be edited safely before accept.",
+        provenance: "story 4.3 edit test",
+        type: "semantic"
+      });
+
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(true);
+      if (
+        !first.ok ||
+        first.value.candidate === null ||
+        !second.ok ||
+        second.value.candidate === null
+      ) {
+        return;
+      }
+
+      const rejected = runtime.reviewMemoryCandidate({
+        action: "reject",
+        candidateId: first.value.candidate.id,
+        reason: "Not useful.",
+        reviewedAt: "2026-05-08T13:20:00.000Z",
+        reviewedBy: "tester"
+      });
+
+      expect(rejected.ok).toBe(true);
+      if (!rejected.ok) {
+        return;
+      }
+      expect(rejected.value).toMatchObject({
+        candidate: {
+          lifecycleStatus: "rejected",
+          reviewReason: "Not useful."
+        },
+        entry: null
+      });
+
+      const unsafeEdit = runtime.reviewMemoryCandidate({
+        action: "edit",
+        candidateId: second.value.candidate.id,
+        editedContent: "OPENAI_API_KEY=sk-test-secret",
+        reason: "Unsafe edit should be blocked."
+      });
+
+      expect(unsafeEdit.ok).toBe(false);
+      expect(JSON.stringify(unsafeEdit)).not.toContain("sk-test-secret");
+
+      const entriesPath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "entries.ndjson"
+      );
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const events = readNdjson(join(sessionDir, "events.ndjson"));
+
+      expect(readNdjson(entriesPath)).toHaveLength(0);
+      expect(
+        events.filter((event) => event.type === "memory.candidate.reviewed")
+      ).toHaveLength(1);
+      expect(JSON.stringify(events)).not.toContain("OPENAI_API_KEY=");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -1089,7 +1336,8 @@ describe("AgentRuntime session persistence", () => {
         },
         "validation.started",
         {
-          command: "rtk run npm test -- --run tests/session-persistence.test.ts",
+          command:
+            "rtk run npm test -- --run tests/session-persistence.test.ts",
           cwd: projectDir,
           status: "started",
           summary: "Prior validation was already started before resume.",
@@ -1133,14 +1381,10 @@ describe("AgentRuntime session persistence", () => {
         eventsAfterResume.filter((event) => event.type === "session.resumed")
       ).toHaveLength(1);
       expect(
-        eventsAfterResume.filter(
-          (event) => event.type === "file.edit.applied"
-        )
+        eventsAfterResume.filter((event) => event.type === "file.edit.applied")
       ).toHaveLength(1);
       expect(
-        eventsAfterResume.filter(
-          (event) => event.type === "validation.started"
-        )
+        eventsAfterResume.filter((event) => event.type === "validation.started")
       ).toHaveLength(1);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });

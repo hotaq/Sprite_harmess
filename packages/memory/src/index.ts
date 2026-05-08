@@ -26,6 +26,23 @@ export const MEMORY_SENSITIVITY_STATUSES = [
   "non_sensitive",
   "redacted"
 ] as const;
+export const MEMORY_CANDIDATE_LIFECYCLE_STATUSES = [
+  "pending_review",
+  "accepted",
+  "rejected",
+  "edited",
+  "auto_saved"
+] as const;
+export const MEMORY_CANDIDATE_RECOMMENDED_ACTIONS = [
+  "accept",
+  "review",
+  "reject"
+] as const;
+export const MEMORY_CANDIDATE_REVIEW_ACTIONS = [
+  "accept",
+  "reject",
+  "edit"
+] as const;
 export const DURABLE_MEMORY_TYPES = ["episodic", "semantic"] as const;
 export const MEMORY_CANDIDATE_SCHEMA_VERSION = 1 as const;
 export const MEMORY_ENTRY_SCHEMA_VERSION = 1 as const;
@@ -37,6 +54,12 @@ export type DurableMemoryType = (typeof DURABLE_MEMORY_TYPES)[number];
 export type MemoryConfidence = (typeof MEMORY_CONFIDENCE_VALUES)[number];
 export type MemorySensitivityStatus =
   (typeof MEMORY_SENSITIVITY_STATUSES)[number];
+export type MemoryCandidateLifecycleStatus =
+  (typeof MEMORY_CANDIDATE_LIFECYCLE_STATUSES)[number];
+export type MemoryCandidateRecommendedAction =
+  (typeof MEMORY_CANDIDATE_RECOMMENDED_ACTIONS)[number];
+export type MemoryCandidateReviewAction =
+  (typeof MEMORY_CANDIDATE_REVIEW_ACTIONS)[number];
 export type SafetyEvaluationAction = "allow" | "block" | "redact";
 
 export interface SafetySensitiveContentRequest {
@@ -69,12 +92,19 @@ export interface MemoryCandidateRequest {
 }
 
 export interface MemoryCandidate {
+  acceptedEntryId?: string;
   contentPreview: string;
   confidence: MemoryConfidence;
   content: string;
   createdAt: string;
   id: string;
+  lifecycleStatus: MemoryCandidateLifecycleStatus;
+  originalCandidateId?: string;
   provenance: string;
+  recommendedAction: MemoryCandidateRecommendedAction;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewReason?: string;
   safetyDecision: SafetyEvaluationDecision;
   schemaVersion: typeof MEMORY_CANDIDATE_SCHEMA_VERSION;
   sensitivityStatus: MemorySensitivityStatus;
@@ -119,6 +149,43 @@ export interface CreateMemoryEntryOptions {
   autoSaved?: boolean;
   createdAt?: string;
   entryId?: string;
+  requireHighConfidence?: boolean;
+}
+
+export interface MemoryCandidateReviewRequest {
+  acceptedEntryId?: string;
+  action: MemoryCandidateReviewAction;
+  editedContent?: string;
+  reason?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+}
+
+export interface MemoryCandidateReviewResult {
+  action: MemoryCandidateReviewAction;
+  candidate: MemoryCandidate;
+}
+
+export interface MemoryCandidateReviewView {
+  candidateId: string;
+  confidence: MemoryConfidence;
+  contentSummary: string;
+  createdAt: string;
+  lifecycleStatus: MemoryCandidateLifecycleStatus;
+  memoryType: MemoryType;
+  provenance: string;
+  recommendedAction: MemoryCandidateRecommendedAction;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewReason?: string;
+  sensitivityStatus: MemorySensitivityStatus;
+  sourceEventIds: string[];
+  sourceTaskId?: string;
+  updatedAt: string;
+}
+
+export interface MemoryCandidateEditOptions extends MemorySafetyOptions {
+  editedAt?: string;
 }
 
 interface SafetyEvaluationOutcome {
@@ -270,29 +337,35 @@ export function createMemoryCandidate(
       ? safetyEvaluation.value.redactedContent
       : request.content;
   const createdAt = request.createdAt ?? new Date().toISOString();
+  const candidate: MemoryCandidate = {
+    contentPreview: createSafePreview(candidateContent),
+    confidence: request.confidence,
+    content: candidateContent,
+    createdAt,
+    id: request.candidateId ?? createMemoryCandidateId(),
+    lifecycleStatus: "pending_review",
+    provenance: request.provenance,
+    recommendedAction: "review",
+    safetyDecision: safetyEvaluation.value.decision,
+    schemaVersion: MEMORY_CANDIDATE_SCHEMA_VERSION,
+    sensitivityStatus:
+      safetyEvaluation.value.decision.action === "redact"
+        ? "redacted"
+        : "non_sensitive",
+    sourceEventIds: [...(request.sourceEventIds ?? [])],
+    ...(request.sourceTaskId === undefined
+      ? {}
+      : { sourceTaskId: request.sourceTaskId }),
+    type: request.type,
+    updatedAt: createdAt
+  };
 
   return {
     ok: true,
     value: {
       candidate: {
-        contentPreview: createSafePreview(candidateContent),
-        confidence: request.confidence,
-        content: candidateContent,
-        createdAt,
-        id: request.candidateId ?? createMemoryCandidateId(),
-        provenance: request.provenance,
-        safetyDecision: safetyEvaluation.value.decision,
-        schemaVersion: MEMORY_CANDIDATE_SCHEMA_VERSION,
-        sensitivityStatus:
-          safetyEvaluation.value.decision.action === "redact"
-            ? "redacted"
-            : "non_sensitive",
-        sourceEventIds: [...(request.sourceEventIds ?? [])],
-        ...(request.sourceTaskId === undefined
-          ? {}
-          : { sourceTaskId: request.sourceTaskId }),
-        type: request.type,
-        updatedAt: createdAt
+        ...candidate,
+        recommendedAction: getMemoryCandidateRecommendedAction(candidate)
       },
       decision: safetyEvaluation.value.decision
     }
@@ -315,15 +388,222 @@ export function shouldAutoSaveMemoryCandidate(
   );
 }
 
+export function getMemoryCandidateLifecycleStatus(
+  candidate: Pick<MemoryCandidate, "lifecycleStatus">
+): MemoryCandidateLifecycleStatus {
+  return MEMORY_CANDIDATE_LIFECYCLE_STATUSES.includes(candidate.lifecycleStatus)
+    ? candidate.lifecycleStatus
+    : "pending_review";
+}
+
+export function getMemoryCandidateRecommendedAction(
+  candidate: Pick<
+    MemoryCandidate,
+    | "confidence"
+    | "lifecycleStatus"
+    | "safetyDecision"
+    | "sensitivityStatus"
+    | "type"
+  >
+): MemoryCandidateRecommendedAction {
+  const lifecycleStatus = getMemoryCandidateLifecycleStatus(candidate);
+
+  if (lifecycleStatus === "accepted" || lifecycleStatus === "auto_saved") {
+    return "accept";
+  }
+
+  if (lifecycleStatus === "rejected") {
+    return "reject";
+  }
+
+  if (
+    candidate.safetyDecision.action !== "allow" ||
+    candidate.sensitivityStatus !== "non_sensitive" ||
+    !isDurableMemoryType(candidate.type)
+  ) {
+    return "reject";
+  }
+
+  return candidate.confidence === "high" ? "accept" : "review";
+}
+
+export function summarizeMemoryCandidateForReview(
+  candidate: MemoryCandidate
+): MemoryCandidateReviewView {
+  const lifecycleStatus = getMemoryCandidateLifecycleStatus(candidate);
+
+  return {
+    candidateId: candidate.id,
+    confidence: candidate.confidence,
+    contentSummary: createSafePreview(candidate.contentPreview),
+    createdAt: candidate.createdAt,
+    lifecycleStatus,
+    memoryType: candidate.type,
+    provenance: createSafePreview(candidate.provenance),
+    recommendedAction: getMemoryCandidateRecommendedAction({
+      ...candidate,
+      lifecycleStatus
+    }),
+    ...(candidate.reviewedAt === undefined
+      ? {}
+      : { reviewedAt: candidate.reviewedAt }),
+    ...(candidate.reviewedBy === undefined
+      ? {}
+      : { reviewedBy: createSafePreview(candidate.reviewedBy) }),
+    ...(candidate.reviewReason === undefined
+      ? {}
+      : { reviewReason: createSafePreview(candidate.reviewReason) }),
+    sensitivityStatus: candidate.sensitivityStatus,
+    sourceEventIds: [...candidate.sourceEventIds],
+    ...(candidate.sourceTaskId === undefined
+      ? {}
+      : { sourceTaskId: candidate.sourceTaskId }),
+    updatedAt: candidate.updatedAt
+  };
+}
+
+export function validateMemoryCandidateEdit(
+  candidate: MemoryCandidate,
+  editedContent: string,
+  options: MemoryCandidateEditOptions = {}
+): Result<MemoryCandidateEvaluation, SpriteError> {
+  const evaluation = createMemoryCandidate(
+    {
+      candidateId: candidate.id,
+      confidence: candidate.confidence,
+      content: editedContent,
+      createdAt: candidate.createdAt,
+      provenance: candidate.provenance,
+      sourceEventIds: candidate.sourceEventIds,
+      ...(candidate.sourceTaskId === undefined
+        ? {}
+        : { sourceTaskId: candidate.sourceTaskId }),
+      type: candidate.type
+    },
+    { rules: options.rules }
+  );
+
+  if (!evaluation.ok || evaluation.value.candidate === null) {
+    return evaluation;
+  }
+
+  const editedAt = options.editedAt ?? new Date().toISOString();
+  const editedCandidate: MemoryCandidate = {
+    ...evaluation.value.candidate,
+    originalCandidateId: candidate.originalCandidateId ?? candidate.id,
+    updatedAt: editedAt
+  };
+
+  return {
+    ok: true,
+    value: {
+      candidate: {
+        ...editedCandidate,
+        recommendedAction: getMemoryCandidateRecommendedAction(editedCandidate)
+      },
+      decision: evaluation.value.decision
+    }
+  };
+}
+
+export function reviewMemoryCandidate(
+  candidate: MemoryCandidate,
+  request: MemoryCandidateReviewRequest,
+  options: MemorySafetyOptions = {}
+): Result<MemoryCandidateReviewResult, SpriteError> {
+  const validation = validateMemoryCandidateReviewRequest(request);
+
+  if (!validation.ok) {
+    return validation;
+  }
+
+  const reviewedAt = request.reviewedAt ?? new Date().toISOString();
+  const reviewReason = sanitizeOptionalReviewText(request.reason);
+
+  if (!reviewReason.ok) {
+    return reviewReason;
+  }
+
+  if (request.action === "reject") {
+    const rejectedCandidate = applyReviewMetadata(candidate, {
+      lifecycleStatus: "rejected",
+      recommendedAction: "reject",
+      reviewReason: reviewReason.value,
+      reviewedAt,
+      reviewedBy: request.reviewedBy
+    });
+
+    return {
+      ok: true,
+      value: {
+        action: request.action,
+        candidate: rejectedCandidate
+      }
+    };
+  }
+
+  const targetCandidateResult: Result<MemoryCandidateEvaluation, SpriteError> =
+    request.action === "edit"
+      ? validateMemoryCandidateEdit(candidate, request.editedContent ?? "", {
+          editedAt: reviewedAt,
+          rules: options.rules
+        })
+      : {
+          ok: true,
+          value: { candidate, decision: candidate.safetyDecision }
+        };
+
+  if (!targetCandidateResult.ok) {
+    return err(targetCandidateResult.error);
+  }
+
+  const targetCandidate = targetCandidateResult.value.candidate;
+
+  if (targetCandidate === null) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_EDIT_BLOCKED",
+        "Edited memory candidate failed safety validation."
+      )
+    );
+  }
+
+  if (!canBecomeDurableMemoryEntry(targetCandidate)) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_INELIGIBLE",
+        "Only safe non-sensitive episodic or semantic candidates can be accepted."
+      )
+    );
+  }
+
+  const reviewedCandidate = applyReviewMetadata(targetCandidate, {
+    acceptedEntryId: request.acceptedEntryId,
+    lifecycleStatus: request.action === "edit" ? "edited" : "accepted",
+    recommendedAction: "accept",
+    reviewReason: reviewReason.value,
+    reviewedAt,
+    reviewedBy: request.reviewedBy
+  });
+
+  return {
+    ok: true,
+    value: {
+      action: request.action,
+      candidate: reviewedCandidate
+    }
+  };
+}
+
 export function createMemoryEntryFromCandidate(
   candidate: MemoryCandidate,
   options: CreateMemoryEntryOptions = {}
 ): Result<MemoryEntry, SpriteError> {
-  if (!shouldAutoSaveMemoryCandidate(candidate)) {
+  if (!canCreateDurableMemoryEntry(candidate, options)) {
     return err(
       new SpriteError(
         "MEMORY_ENTRY_INELIGIBLE_CANDIDATE",
-        "Only high-confidence, non-sensitive episodic or semantic candidates can be converted to durable memory entries."
+        "Only safe non-sensitive episodic or semantic candidates can be converted to durable memory entries."
       )
     );
   }
@@ -359,6 +639,131 @@ export function createMemoryCandidateId(): string {
 
 export function createMemoryEntryId(): string {
   return `mem_${randomUUID()}`;
+}
+
+function canCreateDurableMemoryEntry(
+  candidate: MemoryCandidate,
+  options: CreateMemoryEntryOptions
+): boolean {
+  const requireHighConfidence = options.requireHighConfidence ?? true;
+
+  return (
+    canBecomeDurableMemoryEntry(candidate) &&
+    (!requireHighConfidence || candidate.confidence === "high")
+  );
+}
+
+function canBecomeDurableMemoryEntry(candidate: MemoryCandidate): boolean {
+  return (
+    candidate.safetyDecision.action === "allow" &&
+    candidate.sensitivityStatus === "non_sensitive" &&
+    isDurableMemoryType(candidate.type)
+  );
+}
+
+function validateMemoryCandidateReviewRequest(
+  request: MemoryCandidateReviewRequest
+): Result<void, SpriteError> {
+  if (!MEMORY_CANDIDATE_REVIEW_ACTIONS.includes(request.action)) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_INVALID_ACTION",
+        "Memory candidate review action is unsupported."
+      )
+    );
+  }
+
+  if (
+    request.reviewedAt !== undefined &&
+    Number.isNaN(Date.parse(request.reviewedAt))
+  ) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_INVALID_TIMESTAMP",
+        "Memory candidate review timestamp must be valid when provided."
+      )
+    );
+  }
+
+  if (request.action === "edit" && !isNonEmptyString(request.editedContent)) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_INVALID_EDIT",
+        "Edited memory candidate content must be a non-empty string."
+      )
+    );
+  }
+
+  if (
+    request.acceptedEntryId !== undefined &&
+    !/^mem_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(request.acceptedEntryId)
+  ) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_INVALID_ENTRY_ID",
+        "Accepted entry ID must use the mem_ prefix."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
+}
+
+function sanitizeOptionalReviewText(
+  value: string | undefined
+): Result<string | undefined, SpriteError> {
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (!isNonEmptyString(value)) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_INVALID_REASON",
+        "Memory candidate review reason must be non-empty when provided."
+      )
+    );
+  }
+
+  const preview = createSafePreview(value);
+
+  if (containsSecretLikeValue(preview) || preview === SECRET_REDACTION_MARKER) {
+    return err(
+      new SpriteError(
+        "MEMORY_CANDIDATE_REVIEW_UNSAFE_REASON",
+        "Memory candidate review reason must not contain secret-looking values."
+      )
+    );
+  }
+
+  return { ok: true, value: preview };
+}
+
+function applyReviewMetadata(
+  candidate: MemoryCandidate,
+  input: {
+    acceptedEntryId?: string;
+    lifecycleStatus: MemoryCandidateLifecycleStatus;
+    recommendedAction: MemoryCandidateRecommendedAction;
+    reviewReason?: string;
+    reviewedAt: string;
+    reviewedBy?: string;
+  }
+): MemoryCandidate {
+  return {
+    ...candidate,
+    ...(input.acceptedEntryId === undefined
+      ? {}
+      : { acceptedEntryId: input.acceptedEntryId }),
+    lifecycleStatus: input.lifecycleStatus,
+    recommendedAction: input.recommendedAction,
+    ...(input.reviewReason === undefined
+      ? {}
+      : { reviewReason: input.reviewReason }),
+    reviewedAt: input.reviewedAt,
+    ...(input.reviewedBy === undefined ? {} : { reviewedBy: input.reviewedBy }),
+    updatedAt: input.reviewedAt
+  };
 }
 
 function validateSafetyRequest(
@@ -479,7 +884,8 @@ function evaluateMemoryCandidateBoundary(
     return createBoundaryBlockDecision({
       content,
       matchedRuleId: "memory.candidate.large_content",
-      reason: "Memory candidates must be bounded and shorter than the configured content limit.",
+      reason:
+        "Memory candidates must be bounded and shorter than the configured content limit.",
       target
     });
   }
@@ -527,10 +933,11 @@ function containsFencedCodeBlock(content: string): boolean {
 function looksLikeLargeCodeChunk(content: string): boolean {
   const codeLikeLines = content
     .split(/\r?\n/)
-    .filter((line) =>
-      /^\s*(?:import|export|const|let|var|function|class|interface|type|if|for|while|return)\b/.test(
-        line
-      ) || /[{};]/.test(line)
+    .filter(
+      (line) =>
+        /^\s*(?:import|export|const|let|var|function|class|interface|type|if|for|while|return)\b/.test(
+          line
+        ) || /[{};]/.test(line)
     );
 
   return codeLikeLines.length >= 8;

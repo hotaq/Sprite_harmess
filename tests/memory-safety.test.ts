@@ -3,7 +3,11 @@ import {
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
   evaluateSafetySensitiveContent,
-  shouldAutoSaveMemoryCandidate
+  getMemoryCandidateLifecycleStatus,
+  reviewMemoryCandidate,
+  shouldAutoSaveMemoryCandidate,
+  summarizeMemoryCandidateForReview,
+  validateMemoryCandidateEdit
 } from "@sprite/memory";
 
 describe("memory safety evaluation", () => {
@@ -156,9 +160,7 @@ describe("memory safety evaluation", () => {
       target: "memory_candidate"
     });
     expect(result.value.candidate?.content).toBe("[REDACTED]");
-    expect(JSON.stringify(result.value)).not.toContain(
-      "Customer import notes"
-    );
+    expect(JSON.stringify(result.value)).not.toContain("Customer import notes");
   });
 
   it("allows safe candidates with provenance and confidence metadata", () => {
@@ -365,5 +367,128 @@ describe("memory safety evaluation", () => {
     expect(result.value.target).toBe("command_output");
     expect(JSON.stringify(result.value)).not.toContain("sk-test-secret");
     expect(JSON.stringify(result.value)).not.toContain("ANTHROPIC_API_KEY=");
+  });
+
+  it("derives lifecycle state and bounded review summaries for candidates", () => {
+    const result = createMemoryCandidate({
+      confidence: "medium",
+      content:
+        "Story 4.3 review flow should keep candidate previews bounded and safe.",
+      createdAt: "2026-05-08T12:00:00.000Z",
+      provenance: "story 4.3 design note",
+      sourceEventIds: ["evt_review_source"],
+      sourceTaskId: "task_story_4_3",
+      type: "semantic"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.candidate === null) {
+      return;
+    }
+
+    expect(getMemoryCandidateLifecycleStatus(result.value.candidate)).toBe(
+      "pending_review"
+    );
+    expect(result.value.candidate).toMatchObject({
+      lifecycleStatus: "pending_review",
+      recommendedAction: "review"
+    });
+
+    const summary = summarizeMemoryCandidateForReview(result.value.candidate);
+
+    expect(summary).toMatchObject({
+      candidateId: result.value.candidate.id,
+      confidence: "medium",
+      contentSummary:
+        "Story 4.3 review flow should keep candidate previews bounded and safe.",
+      lifecycleStatus: "pending_review",
+      memoryType: "semantic",
+      provenance: "story 4.3 design note",
+      recommendedAction: "review",
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: ["evt_review_source"],
+      sourceTaskId: "task_story_4_3"
+    });
+    expect(summary).not.toHaveProperty("content");
+    expect(JSON.stringify(summary)).not.toContain("rawContent");
+  });
+
+  it("validates accept, reject, and edit review actions without bypassing safety", () => {
+    const result = createMemoryCandidate({
+      confidence: "medium",
+      content: "Manual review can promote a safe semantic candidate.",
+      createdAt: "2026-05-08T12:05:00.000Z",
+      provenance: "manual review test",
+      sourceTaskId: "task_story_4_3",
+      type: "semantic"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.candidate === null) {
+      return;
+    }
+
+    const accepted = reviewMemoryCandidate(result.value.candidate, {
+      action: "accept",
+      reviewedAt: "2026-05-08T12:06:00.000Z",
+      reviewedBy: "tester",
+      reason: "Accurate project preference."
+    });
+
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) {
+      return;
+    }
+    expect(accepted.value.candidate).toMatchObject({
+      lifecycleStatus: "accepted",
+      reviewedAt: "2026-05-08T12:06:00.000Z",
+      reviewedBy: "tester",
+      reviewReason: "Accurate project preference."
+    });
+
+    const rejected = reviewMemoryCandidate(result.value.candidate, {
+      action: "reject",
+      reviewedAt: "2026-05-08T12:07:00.000Z",
+      reviewedBy: "tester",
+      reason: "Too vague."
+    });
+
+    expect(rejected.ok).toBe(true);
+    if (!rejected.ok) {
+      return;
+    }
+    expect(rejected.value.candidate).toMatchObject({
+      lifecycleStatus: "rejected",
+      reviewReason: "Too vague."
+    });
+
+    const safeEdit = validateMemoryCandidateEdit(
+      result.value.candidate,
+      "Manual review can promote a safe semantic candidate after user approval."
+    );
+
+    expect(safeEdit.ok).toBe(true);
+    if (!safeEdit.ok || safeEdit.value.candidate === null) {
+      return;
+    }
+    expect(safeEdit.value.candidate).toMatchObject({
+      content:
+        "Manual review can promote a safe semantic candidate after user approval.",
+      lifecycleStatus: "pending_review",
+      type: "semantic"
+    });
+
+    const unsafeEdit = validateMemoryCandidateEdit(
+      result.value.candidate,
+      "OPENAI_API_KEY=sk-test-secret"
+    );
+
+    expect(unsafeEdit.ok).toBe(true);
+    if (!unsafeEdit.ok) {
+      return;
+    }
+    expect(unsafeEdit.value.candidate).toBeNull();
+    expect(JSON.stringify(unsafeEdit.value)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(unsafeEdit.value)).not.toContain("OPENAI_API_KEY=");
   });
 });

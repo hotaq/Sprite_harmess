@@ -4,10 +4,14 @@ import {
 } from "@sprite/config";
 import {
   DURABLE_MEMORY_TYPES,
+  MEMORY_CANDIDATE_LIFECYCLE_STATUSES,
+  MEMORY_CANDIDATE_REVIEW_ACTIONS,
   MEMORY_CONFIDENCE_VALUES,
   MEMORY_SENSITIVITY_STATUSES,
   MEMORY_TYPES,
   type DurableMemoryType,
+  type MemoryCandidateLifecycleStatus,
+  type MemoryCandidateReviewAction,
   type MemoryConfidence,
   type MemorySensitivityStatus,
   type MemoryType
@@ -176,6 +180,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.steering.received",
   "task.recovery.recorded",
   "memory.candidate.created",
+  "memory.candidate.reviewed",
   "memory.entry.saved",
   "memory.safety.evaluated",
   "session.resumed",
@@ -270,6 +275,22 @@ export interface RuntimeEventPayloadMap {
     sourceEventIds: string[];
     sourceTaskId?: string;
     status: "recorded";
+    summary: string;
+  };
+  "memory.candidate.reviewed": {
+    action: MemoryCandidateReviewAction;
+    candidateId: string;
+    confidence: MemoryConfidence;
+    contentPreview: string;
+    entryId?: string;
+    lifecycleStatus: MemoryCandidateLifecycleStatus;
+    memoryType: MemoryType;
+    provenance: string;
+    reason?: string;
+    sensitivityStatus: MemorySensitivityStatus;
+    sourceEventIds: string[];
+    sourceTaskId?: string;
+    status: MemoryCandidateLifecycleStatus;
     summary: string;
   };
   "memory.entry.saved": {
@@ -797,6 +818,13 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "memory.candidate.reviewed": {
+      return validateMemoryCandidateReviewedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "memory.entry.saved": {
       return validateMemoryEntrySavedEvent(
         context,
@@ -1134,14 +1162,213 @@ function validateMemoryCandidateCreatedEvent(
     contentPreview: validation.value.contentPreview,
     memoryType: validation.value.memoryType as MemoryType,
     provenance: validation.value.provenance,
-    sensitivityStatus:
-      validation.value.sensitivityStatus as MemorySensitivityStatus,
+    sensitivityStatus: validation.value
+      .sensitivityStatus as MemorySensitivityStatus,
     sourceEventIds: validation.value.sourceEventIds,
     ...(validation.value.sourceTaskId === undefined
       ? {}
       : { sourceTaskId: validation.value.sourceTaskId }),
     status: validation.value.status,
     summary: validation.value.summary
+  });
+}
+
+function validateMemoryCandidateReviewedEvent(
+  context: RuntimeEventContext,
+  type: "memory.candidate.reviewed",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"memory.candidate.reviewed">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const action = requirePayloadLiteral(
+    type,
+    payload,
+    "action",
+    MEMORY_CANDIDATE_REVIEW_ACTIONS
+  );
+  const candidateId = requirePayloadString(type, payload, "candidateId");
+  const confidence = requirePayloadLiteral(
+    type,
+    payload,
+    "confidence",
+    MEMORY_CONFIDENCE_VALUES
+  );
+  const contentPreview = requirePayloadString(type, payload, "contentPreview");
+  const entryId = optionalPayloadString(type, payload, "entryId");
+  const lifecycleStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "lifecycleStatus",
+    MEMORY_CANDIDATE_LIFECYCLE_STATUSES
+  );
+  const memoryType = requirePayloadLiteral(
+    type,
+    payload,
+    "memoryType",
+    MEMORY_TYPES
+  );
+  const provenance = requirePayloadString(type, payload, "provenance");
+  const reason = optionalPayloadString(type, payload, "reason");
+  const sensitivityStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "sensitivityStatus",
+    MEMORY_SENSITIVITY_STATUSES
+  );
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const sourceTaskId = optionalPayloadString(type, payload, "sourceTaskId");
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    MEMORY_CANDIDATE_LIFECYCLE_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const checks = [
+    action,
+    candidateId,
+    confidence,
+    contentPreview,
+    entryId,
+    lifecycleStatus,
+    memoryType,
+    provenance,
+    reason,
+    sensitivityStatus,
+    sourceEventIds,
+    sourceTaskId,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !candidateId.ok ||
+    !/^memcand_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(candidateId.value)
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field 'candidateId' must use the memcand_ prefix.`
+      )
+    );
+  }
+
+  if (
+    entryId.ok &&
+    entryId.value !== undefined &&
+    !/^mem_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(entryId.value)
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload field 'entryId' must use the mem_ prefix.`
+      )
+    );
+  }
+
+  if (
+    !action.ok ||
+    !confidence.ok ||
+    !contentPreview.ok ||
+    !entryId.ok ||
+    !lifecycleStatus.ok ||
+    !memoryType.ok ||
+    !provenance.ok ||
+    !reason.ok ||
+    !sensitivityStatus.ok ||
+    !sourceEventIds.ok ||
+    !sourceTaskId.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (status.value !== lifecycleStatus.value) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' status must match lifecycleStatus.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    ["action", action.value],
+    ["candidateId", candidateId.value],
+    ["contentPreview", contentPreview.value],
+    ...(entryId.value === undefined
+      ? []
+      : [["entryId", entryId.value] as const]),
+    ["lifecycleStatus", lifecycleStatus.value],
+    ["memoryType", memoryType.value],
+    ["provenance", provenance.value],
+    ...(reason.value === undefined ? [] : [["reason", reason.value] as const]),
+    ["sensitivityStatus", sensitivityStatus.value],
+    ...(sourceTaskId.value === undefined
+      ? []
+      : [["sourceTaskId", sourceTaskId.value] as const]),
+    ["status", status.value],
+    ["summary", summary.value],
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    )
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    action: action.value,
+    candidateId: candidateId.value,
+    confidence: confidence.value,
+    contentPreview: contentPreview.value,
+    ...(entryId.value === undefined ? {} : { entryId: entryId.value }),
+    lifecycleStatus: lifecycleStatus.value,
+    memoryType: memoryType.value,
+    provenance: provenance.value,
+    ...(reason.value === undefined ? {} : { reason: reason.value }),
+    sensitivityStatus: sensitivityStatus.value,
+    sourceEventIds: sourceEventIds.value,
+    ...(sourceTaskId.value === undefined
+      ? {}
+      : { sourceTaskId: sourceTaskId.value }),
+    status: status.value,
+    summary: summary.value
   });
 }
 
@@ -1334,7 +1561,9 @@ function validateMemoryLifecyclePayload(
     ...(sourceTaskId.value === undefined
       ? []
       : [["sourceTaskId", sourceTaskId.value] as const]),
-    ...sourceEventIds.value.map((eventId) => ["sourceEventIds", eventId] as const)
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    )
   ] as const;
 
   for (const [field, value] of secretCheckedFields) {

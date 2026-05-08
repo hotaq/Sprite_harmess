@@ -1,6 +1,6 @@
 # Story 4.3: Review, Edit, Reject, or Accept Memory Candidates
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -20,66 +20,66 @@ so that memory remains accurate, safe, and under my control.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-5)
-  - [ ] Before touching implementation files, report exact functions/contracts to add or modify.
-  - [ ] Run GitNexus impact analysis before editing any existing function, class, or method symbol.
-  - [ ] Treat this story as a trust-boundary story; do not implement a loose CRUD path that bypasses safety checks.
+- [x] Confirm implementation function list before code edits (AC: 1-5)
+  - [x] Before touching implementation files, report exact functions/contracts to add or modify.
+  - [x] Run GitNexus impact analysis before editing any existing function, class, or method symbol.
+  - [x] Treat this story as a trust-boundary story; do not implement a loose CRUD path that bypasses safety checks.
 
-- [ ] Add candidate lifecycle and review contracts in `packages/memory` (AC: 1-4)
-  - [ ] Extend the existing memory candidate model rather than creating a duplicate review model.
-  - [ ] Add lifecycle status support for at least `pending_review`, `accepted`, `rejected`, `edited`, and `auto_saved`.
-  - [ ] Add recommended action support for at least `accept`, `review`, and `reject`.
-  - [ ] Add review metadata fields such as `reviewedAt`, `reviewedBy`, `reviewReason`, `acceptedEntryId`, and edit provenance as needed.
-  - [ ] Backfill/derive safe defaults for Story 4.2 candidate artifacts that do not yet have lifecycle fields.
-  - [ ] Keep `episodic` and `semantic` as the only durable accept targets in this story.
+- [x] Add candidate lifecycle and review contracts in `packages/memory` (AC: 1-4)
+  - [x] Extend the existing memory candidate model rather than creating a duplicate review model.
+  - [x] Add lifecycle status support for at least `pending_review`, `accepted`, `rejected`, `edited`, and `auto_saved`.
+  - [x] Add recommended action support for at least `accept`, `review`, and `reject`.
+  - [x] Add review metadata fields such as `reviewedAt`, `reviewedBy`, `reviewReason`, `acceptedEntryId`, and edit provenance as needed.
+  - [x] Backfill/derive safe defaults for Story 4.2 candidate artifacts that do not yet have lifecycle fields.
+  - [x] Keep `episodic` and `semantic` as the only durable accept targets in this story.
 
-- [ ] Add safe candidate read/list/update storage APIs in `packages/storage` (AC: 1-4)
-  - [ ] Extend `LocalMemoryStore` with candidate list/read/update methods using `.sprite/memory/candidates/`.
-  - [ ] Preserve path-boundary checks and ID validation; candidate ID must stay under the candidates directory.
-  - [ ] Use atomic candidate updates via temp file + rename.
-  - [ ] Never let CLI/runtime callers provide arbitrary candidate artifact paths.
-  - [ ] Keep `entries.ndjson` append-oriented for durable entries and prevent duplicate entry creation for already accepted/auto-saved candidates.
-  - [ ] Ensure storage validation rejects secret-looking values and unsafe serialized artifacts.
+- [x] Add safe candidate read/list/update storage APIs in `packages/storage` (AC: 1-4)
+  - [x] Extend `LocalMemoryStore` with candidate list/read/update methods using `.sprite/memory/candidates/`.
+  - [x] Preserve path-boundary checks and ID validation; candidate ID must stay under the candidates directory.
+  - [x] Use atomic candidate updates via temp file + rename.
+  - [x] Never let CLI/runtime callers provide arbitrary candidate artifact paths.
+  - [x] Keep `entries.ndjson` append-oriented for durable entries and prevent duplicate entry creation for already accepted/auto-saved candidates.
+  - [x] Ensure storage validation rejects secret-looking values and unsafe serialized artifacts.
 
-- [ ] Add pure review helpers in `packages/memory` (AC: 2-5)
-  - [ ] Add helper(s) to produce bounded review summaries for list/open responses.
-  - [ ] Add helper(s) to validate review actions: accept, reject, edit.
-  - [ ] On edit, rerun the same safety/boundedness checks used by `createMemoryCandidate()`.
-  - [ ] Ensure edited content cannot preserve raw logs, raw tool output, secrets, tokens, credentials, private keys, or large code chunks.
-  - [ ] Ensure accept rejects blocked, sensitive, redacted, unsupported, or malformed candidates unless the edit produces a safe non-sensitive durable candidate.
+- [x] Add pure review helpers in `packages/memory` (AC: 2-5)
+  - [x] Add helper(s) to produce bounded review summaries for list/open responses.
+  - [x] Add helper(s) to validate review actions: accept, reject, edit.
+  - [x] On edit, rerun the same safety/boundedness checks used by `createMemoryCandidate()`.
+  - [x] Ensure edited content cannot preserve raw logs, raw tool output, secrets, tokens, credentials, private keys, or large code chunks.
+  - [x] Ensure accept rejects blocked, sensitive, redacted, unsupported, or malformed candidates unless the edit produces a safe non-sensitive durable candidate.
 
-- [ ] Add runtime candidate review APIs in `packages/core` (AC: 1-5)
-  - [ ] Add `AgentRuntime` method(s) to list/open memory candidates with safe bounded output.
-  - [ ] Add `AgentRuntime.reviewMemoryCandidate()` or equivalent for accept/reject/edit actions.
-  - [ ] Reuse runtime-owned storage and event boundaries; do not mutate `.sprite/memory` from adapters.
-  - [ ] Preserve audit ordering: lifecycle decision must be persisted and evented only after the candidate state/entry operation succeeds.
-  - [ ] Ensure resumed sessions do not replay candidate review actions, duplicate durable entries, or re-emit review events.
+- [x] Add runtime candidate review APIs in `packages/core` (AC: 1-5)
+  - [x] Add `AgentRuntime` method(s) to list/open memory candidates with safe bounded output.
+  - [x] Add `AgentRuntime.reviewMemoryCandidate()` or equivalent for accept/reject/edit actions.
+  - [x] Reuse runtime-owned storage and event boundaries; do not mutate `.sprite/memory` from adapters.
+  - [x] Preserve audit ordering: lifecycle decision must be persisted and evented only after the candidate state/entry operation succeeds.
+  - [x] Ensure resumed sessions do not replay candidate review actions, duplicate durable entries, or re-emit review events.
 
-- [ ] Add runtime event contract for review decisions (AC: 2-5)
-  - [ ] Add one stable event type, preferably `memory.candidate.reviewed`, unless implementation evidence proves separate event types are safer.
-  - [ ] Event payload must include candidate ID, action/decision, lifecycle status, type, confidence, provenance, source task, source event IDs, sensitivity status, bounded content preview, optional durable entry ID, and safe summary/reason.
-  - [ ] Event payload must not include raw content, before/after edit diffs, raw output, stdout/stderr, tokens, secrets, credentials, private keys, or large code chunks.
-  - [ ] Add strict validator coverage in `packages/core/src/runtime-events.ts` and `tests/runtime-events.test.ts`.
+- [x] Add runtime event contract for review decisions (AC: 2-5)
+  - [x] Add one stable event type, preferably `memory.candidate.reviewed`, unless implementation evidence proves separate event types are safer.
+  - [x] Event payload must include candidate ID, action/decision, lifecycle status, type, confidence, provenance, source task, source event IDs, sensitivity status, bounded content preview, optional durable entry ID, and safe summary/reason.
+  - [x] Event payload must not include raw content, before/after edit diffs, raw output, stdout/stderr, tokens, secrets, credentials, private keys, or large code chunks.
+  - [x] Add strict validator coverage in `packages/core/src/runtime-events.ts` and `tests/runtime-events.test.ts`.
 
-- [ ] Add minimal user-facing list/open/review surface (AC: 1-4)
-  - [ ] Prefer runtime APIs first, then add a thin CLI surface only if needed to satisfy "user lists or opens candidates".
-  - [ ] If CLI is added, keep it thin in `packages/cli/src/index.ts` and use `AgentRuntime`/storage APIs rather than reading files directly.
-  - [ ] If CLI is added, support safe text output and JSON output; neither may leak secrets or raw content.
-  - [ ] Do not add TUI, RPC, vector retrieval, MemPalace integration, or learning-review generation in this story.
+- [x] Add minimal user-facing list/open/review surface (AC: 1-4)
+  - [x] Prefer runtime APIs first, then add a thin CLI surface only if needed to satisfy "user lists or opens candidates".
+  - [x] If CLI is added, keep it thin in `packages/cli/src/index.ts` and use `AgentRuntime`/storage APIs rather than reading files directly.
+  - [x] If CLI is added, support safe text output and JSON output; neither may leak secrets or raw content.
+  - [x] Do not add TUI, RPC, vector retrieval, MemPalace integration, or learning-review generation in this story.
 
-- [ ] Add regression tests (AC: 1-5)
-  - [ ] Memory tests: lifecycle/default recommended action, accept/reject/edit validation, edited content safety rejection.
-  - [ ] Storage tests: list/read/update candidates, path boundary protection, atomic update shape, duplicate durable entry prevention.
-  - [ ] Runtime event tests: valid `memory.candidate.reviewed`, reject raw/secret fields, reject secret-like summary/reason/preview.
-  - [ ] Runtime tests: list/open candidates returns bounded redacted summaries; accept creates entry and audit event; reject creates no entry; edit reruns safety and blocks unsafe content.
-  - [ ] Session persistence tests: candidate review actions persist next to session audit history and resume does not replay review side effects.
-  - [ ] CLI smoke tests if CLI commands are added.
+- [x] Add regression tests (AC: 1-5)
+  - [x] Memory tests: lifecycle/default recommended action, accept/reject/edit validation, edited content safety rejection.
+  - [x] Storage tests: list/read/update candidates, path boundary protection, atomic update shape, duplicate durable entry prevention.
+  - [x] Runtime event tests: valid `memory.candidate.reviewed`, reject raw/secret fields, reject secret-like summary/reason/preview.
+  - [x] Runtime tests: list/open candidates returns bounded redacted summaries; accept creates entry and audit event; reject creates no entry; edit reruns safety and blocks unsafe content.
+  - [x] Session persistence tests: candidate review actions persist next to session audit history and resume does not replay review side effects.
+  - [x] CLI smoke tests if CLI commands are added.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-5)
-  - [ ] Record implementation notes, changed files, validation evidence, and remaining transaction limitations in this story file.
-  - [ ] Run targeted validation before review: memory, storage, runtime-events, session-persistence, and CLI tests if touched.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-5)
+  - [x] Record implementation notes, changed files, validation evidence, and remaining transaction limitations in this story file.
+  - [x] Run targeted validation before review: memory, storage, runtime-events, session-persistence, and CLI tests if touched.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
 
 ## Dev Notes
 
@@ -224,20 +224,44 @@ Avoid:
 - `packages/core/src/runtime-events.ts` — runtime event contracts and validators.
 - `packages/sandbox/src/approval-service.ts` — existing approve/deny/edit action pattern for comparison only.
 
+## Change Log
+
+- 2026-05-08: Implemented memory candidate lifecycle/review contracts, safe storage APIs, runtime list/open/review APIs, `memory.candidate.reviewed` audit events, and regression coverage for accept/reject/edit safety.
+
 ## Dev Agent Record
 
 ### Agent Model Used
 
-TBD
+GPT-5.5 Codex
 
 ### Debug Log References
 
-TBD
+- Reported implementation function/contract list before code edits.
+- Ran GitNexus impact analysis for edited symbols: `createMemoryCandidate`, `createMemoryEntryFromCandidate`, `LocalMemoryStore`, `recordMemoryCandidate`, `validateRuntimeEvent`, and related runtime/CLI surfaces. Highest noted risk was `validateRuntimeEvent` (CRITICAL central validator), mitigated with a localized `memory.candidate.reviewed` branch and strict tests.
+- RED phase: targeted Story 4.3 tests failed as expected before implementation (missing memory helpers, storage methods, event contract, runtime APIs).
+- GREEN phase targeted validation: `rtk run 'npm test -- --run tests/memory-safety.test.ts tests/memory-store.test.ts tests/runtime-events.test.ts tests/session-persistence.test.ts'` → 4 files passed, 99 tests passed.
+- Full validation: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` → typecheck passed, 16 files passed, 235 tests passed, diff check passed.
+- GitNexus fallback change check: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'` → indexed successfully, status up-to-date at commit `412d314`.
 
 ### Completion Notes List
 
-TBD
+- Extended `MemoryCandidate` with lifecycle status, recommended action, review metadata, accepted entry linkage, and edit provenance while reusing existing candidate creation/safety boundaries.
+- Added pure review helpers for safe list/open summaries, accept/reject/edit validation, and edit re-evaluation through `createMemoryCandidate()`.
+- Added storage-owned candidate list/read/update APIs constrained to `.sprite/memory/candidates/`, with atomic updates, ID/path validation, lifecycle default backfill, and secret-looking artifact rejection.
+- Added `AgentRuntime.listMemoryCandidates()`, `openMemoryCandidate()`, and `reviewMemoryCandidate()`; accept/edit create durable entries only for safe episodic/semantic candidates and block duplicate durable entries.
+- Added `memory.candidate.reviewed` as the stable audit event for review decisions, with strict validation against raw fields, secret-looking values, unsafe summaries/reasons, and invalid IDs.
+- Did not add CLI commands in this story; runtime APIs satisfy the minimal user-facing surface while avoiding adapter-owned memory mutation.
+- Remaining limitation: cross-file transaction rollback is still intentionally out of scope; entry append, candidate update, and session event append are ordered and validated but not wrapped in a general transaction engine.
 
 ### File List
 
-TBD
+- `_bmad-output/implementation-artifacts/4-3-review-edit-reject-or-accept-memory-candidates.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/memory/src/index.ts`
+- `packages/storage/src/memory-store.ts`
+- `tests/memory-safety.test.ts`
+- `tests/memory-store.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/session-persistence.test.ts`
