@@ -558,6 +558,140 @@ describe("AgentRuntime session persistence", () => {
     }
   });
 
+  it("blocks unsafe reviewer metadata before durable memory side effects", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "block unsafe reviewer metadata"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const recorded = runtime.recordMemoryCandidate({
+        confidence: "medium",
+        content: "Reviewer metadata must be safe before accepting memory.",
+        provenance: "story 4.3 reviewer metadata test",
+        type: "semantic"
+      });
+
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok || recorded.value.candidate === null) {
+        return;
+      }
+
+      const reviewed = runtime.reviewMemoryCandidate({
+        action: "accept",
+        candidateId: recorded.value.candidate.id,
+        reason: "Safe reason.",
+        reviewedBy: "OPENAI_API_KEY=sk-test-secret"
+      });
+
+      expect(reviewed.ok).toBe(false);
+      expect(JSON.stringify(reviewed)).not.toContain("sk-test-secret");
+
+      const entriesPath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "entries.ndjson"
+      );
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const events = readNdjson(join(sessionDir, "events.ndjson"));
+
+      expect(readNdjson(entriesPath)).toHaveLength(0);
+      expect(
+        events.filter((event) => event.type === "memory.candidate.reviewed")
+      ).toHaveLength(0);
+      expect(JSON.stringify(events)).not.toContain("OPENAI_API_KEY=");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("derives auto-saved lifecycle views for pre-lifecycle candidate artifacts", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "derive legacy auto saved memory candidate"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const recorded = runtime.recordMemoryCandidate({
+        confidence: "high",
+        content: "Legacy candidates with entries should display as auto-saved.",
+        provenance: "story 4.3 legacy candidate test",
+        type: "semantic"
+      });
+
+      expect(recorded.ok).toBe(true);
+      if (
+        !recorded.ok ||
+        recorded.value.candidate === null ||
+        recorded.value.entry === null
+      ) {
+        return;
+      }
+
+      const candidatePath = join(
+        projectDir,
+        ".sprite",
+        "memory",
+        "candidates",
+        `${recorded.value.candidate.id}.json`
+      );
+      const legacyCandidate = readJson(candidatePath);
+      delete legacyCandidate.acceptedEntryId;
+      delete legacyCandidate.lifecycleStatus;
+      delete legacyCandidate.recommendedAction;
+      delete legacyCandidate.reviewedAt;
+      writeFileSync(
+        candidatePath,
+        `${JSON.stringify(legacyCandidate, null, 2)}\n`
+      );
+
+      const listed = runtime.listMemoryCandidates();
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) {
+        return;
+      }
+      expect(listed.value[0]).toMatchObject({
+        acceptedEntryId: recorded.value.entry.id,
+        candidateId: recorded.value.candidate.id,
+        lifecycleStatus: "auto_saved",
+        recommendedAction: "accept"
+      });
+
+      const opened = runtime.openMemoryCandidate(recorded.value.candidate.id);
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) {
+        return;
+      }
+      expect(opened.value).toMatchObject({
+        acceptedEntryId: recorded.value.entry.id,
+        lifecycleStatus: "auto_saved",
+        recommendedAction: "accept"
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("appends initial task events as one batch before publishing subscribers", () => {
     const { homeDir, projectDir, rootDir } = createTempWorkspace();
 

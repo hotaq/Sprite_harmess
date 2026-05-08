@@ -297,6 +297,60 @@ describe("runtime event contract", () => {
     expect(secretReason.ok).toBe(false);
   });
 
+  it("rejects memory candidate reviewed events with inconsistent action and lifecycle status", () => {
+    const basePayload = {
+      candidateId: "memcand_test",
+      confidence: "medium",
+      contentPreview: "Project commands should use rtk run.",
+      memoryType: "semantic",
+      provenance: "user preference",
+      sensitivityStatus: "non_sensitive",
+      sourceEventIds: ["evt_source"],
+      sourceTaskId: "task_memory",
+      summary: "Semantic memory candidate reviewed."
+    };
+    const cases = [
+      {
+        action: "accept",
+        lifecycleStatus: "pending_review",
+        status: "pending_review"
+      },
+      {
+        action: "accept",
+        lifecycleStatus: "auto_saved",
+        status: "auto_saved"
+      },
+      {
+        action: "reject",
+        lifecycleStatus: "accepted",
+        status: "accepted"
+      },
+      {
+        action: "edit",
+        lifecycleStatus: "accepted",
+        status: "accepted"
+      }
+    ] as const;
+
+    for (const item of cases) {
+      const result = validateRuntimeEvent({
+        schemaVersion: 1,
+        eventId: `evt_memory_reviewed_${item.action}_${item.lifecycleStatus}`,
+        sessionId: "ses_memory",
+        taskId: "task_memory",
+        correlationId: "corr_memory",
+        createdAt: "2026-05-08T10:09:00.000Z",
+        type: "memory.candidate.reviewed",
+        payload: {
+          ...basePayload,
+          ...item
+        }
+      });
+
+      expect(result.ok).toBe(false);
+    }
+  });
+
   it("rejects malformed runtime events that do not satisfy the schema contract", () => {
     const result = validateRuntimeEvent({
       schemaVersion: 2,

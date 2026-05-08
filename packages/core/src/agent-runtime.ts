@@ -56,7 +56,8 @@ import {
   readSessionForResume,
   type SessionSnapshotPlanStep,
   type SessionStateSnapshot,
-  type StoredMemoryCandidate
+  type StoredMemoryCandidate,
+  type StoredMemoryEntry
 } from "@sprite/storage";
 import {
   createToolRegistry,
@@ -1608,10 +1609,20 @@ export class AgentRuntime {
     if (!candidates.ok) {
       return err(candidates.error);
     }
+    const entries = readMemoryEntries(cwd.value);
+
+    if (!entries.ok) {
+      return err(entries.error);
+    }
 
     return ok(
       candidates.value.map((candidate) =>
-        summarizeMemoryCandidateForReview(toMemoryCandidate(candidate))
+        summarizeMemoryCandidateForReview(
+          deriveMemoryCandidateReviewState(
+            toMemoryCandidate(candidate),
+            entries.value
+          )
+        )
       )
     );
   }
@@ -1628,9 +1639,19 @@ export class AgentRuntime {
     if (!candidate.ok) {
       return err(candidate.error);
     }
+    const entries = readMemoryEntries(cwd.value);
+
+    if (!entries.ok) {
+      return err(entries.error);
+    }
 
     return ok(
-      summarizeMemoryCandidateForReview(toMemoryCandidate(candidate.value))
+      summarizeMemoryCandidateForReview(
+        deriveMemoryCandidateReviewState(
+          toMemoryCandidate(candidate.value),
+          entries.value
+        )
+      )
     );
   }
 
@@ -4310,6 +4331,32 @@ type WorkingMemoryCommandStatus = NonNullable<WorkingMemoryCommand["status"]>;
 
 function toMemoryCandidate(candidate: StoredMemoryCandidate): MemoryCandidate {
   return candidate as unknown as MemoryCandidate;
+}
+
+function deriveMemoryCandidateReviewState(
+  candidate: MemoryCandidate,
+  entries: readonly StoredMemoryEntry[]
+): MemoryCandidate {
+  if (candidate.lifecycleStatus !== "pending_review") {
+    return candidate;
+  }
+
+  const acceptedEntry = entries.find(
+    (entry) => entry.candidateId === candidate.id
+  );
+
+  if (acceptedEntry === undefined) {
+    return candidate;
+  }
+
+  return {
+    ...candidate,
+    acceptedEntryId: acceptedEntry.id,
+    lifecycleStatus: "auto_saved",
+    recommendedAction: "accept",
+    reviewedAt: acceptedEntry.createdAt,
+    updatedAt: candidate.updatedAt
+  };
 }
 
 function getWorkingMemoryCommandStatusFromEvent(

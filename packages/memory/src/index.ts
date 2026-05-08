@@ -167,6 +167,7 @@ export interface MemoryCandidateReviewResult {
 }
 
 export interface MemoryCandidateReviewView {
+  acceptedEntryId?: string;
   candidateId: string;
   confidence: MemoryConfidence;
   contentSummary: string;
@@ -433,6 +434,9 @@ export function summarizeMemoryCandidateForReview(
   const lifecycleStatus = getMemoryCandidateLifecycleStatus(candidate);
 
   return {
+    ...(candidate.acceptedEntryId === undefined
+      ? {}
+      : { acceptedEntryId: candidate.acceptedEntryId }),
     candidateId: candidate.id,
     confidence: candidate.confidence,
     contentSummary: createSafePreview(candidate.contentPreview),
@@ -523,6 +527,11 @@ export function reviewMemoryCandidate(
   if (!reviewReason.ok) {
     return reviewReason;
   }
+  const reviewedBy = sanitizeOptionalReviewText(request.reviewedBy);
+
+  if (!reviewedBy.ok) {
+    return err(reviewedBy.error);
+  }
 
   if (request.action === "reject") {
     const rejectedCandidate = applyReviewMetadata(candidate, {
@@ -530,7 +539,7 @@ export function reviewMemoryCandidate(
       recommendedAction: "reject",
       reviewReason: reviewReason.value,
       reviewedAt,
-      reviewedBy: request.reviewedBy
+      reviewedBy: reviewedBy.value
     });
 
     return {
@@ -583,7 +592,7 @@ export function reviewMemoryCandidate(
     recommendedAction: "accept",
     reviewReason: reviewReason.value,
     reviewedAt,
-    reviewedBy: request.reviewedBy
+    reviewedBy: reviewedBy.value
   });
 
   return {

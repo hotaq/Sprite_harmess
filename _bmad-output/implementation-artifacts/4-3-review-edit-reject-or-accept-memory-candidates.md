@@ -1,6 +1,6 @@
 # Story 4.3: Review, Edit, Reject, or Accept Memory Candidates
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -80,6 +80,12 @@ so that memory remains accurate, safe, and under my control.
   - [x] Run targeted validation before review: memory, storage, runtime-events, session-persistence, and CLI tests if touched.
   - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
   - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+
+### Review Findings
+
+- [x] [Review][Patch] Sanitize `reviewedBy` before durable entry side effects [packages/memory/src/index.ts:580] — `reviewMemoryCandidate()` sanitizes `reason` but passes caller-provided `reviewedBy` into the reviewed candidate unchanged. Runtime then appends a durable entry before `updateCandidate()` validates the serialized candidate. If `reviewedBy` contains a secret-looking value, `appendEntry()` can persist a durable entry and then `updateCandidate()` rejects the candidate artifact, leaving a side effect without the review audit event. This violates AC5's "nothing unsafe is emitted or persisted" failure boundary. Resolved 2026-05-08: `reviewedBy` now uses the same safe review-text validation before accept/edit/reject side effects.
+- [x] [Review][Patch] Tighten `memory.candidate.reviewed` action/lifecycle validation [packages/core/src/runtime-events.ts:1216] — The validator accepts every lifecycle status, including `pending_review` and `auto_saved`, for a reviewed event and only checks that `status === lifecycleStatus`. It does not enforce action/status consistency such as `accept -> accepted`, `reject -> rejected`, or `edit -> edited`. Invalid reviewed audit events can therefore pass validation despite contradicting the review decision contract in AC2-AC5. Resolved 2026-05-08: validator now enforces `accept -> accepted`, `reject -> rejected`, and `edit -> edited`.
+- [x] [Review][Patch] Derive `auto_saved` lifecycle for existing Story 4.2 artifacts [packages/core/src/agent-runtime.ts:1606] — `listMemoryCandidates()` and `openMemoryCandidate()` summarize candidates from candidate artifacts only, while storage defaulting sets missing lifecycle fields to `pending_review`. Existing Story 4.2 high-confidence candidates that already have durable entries in `entries.ndjson` will still display as pending review/recommended accept instead of `auto_saved`, so backfill/default behavior does not accurately reflect candidate lifecycle state. Resolved 2026-05-08: runtime list/open now derives `auto_saved` views from existing durable entries for legacy candidate artifacts.
 
 ## Dev Notes
 
@@ -227,6 +233,7 @@ Avoid:
 ## Change Log
 
 - 2026-05-08: Implemented memory candidate lifecycle/review contracts, safe storage APIs, runtime list/open/review APIs, `memory.candidate.reviewed` audit events, and regression coverage for accept/reject/edit safety.
+- 2026-05-08: Addressed code review findings for safe reviewer metadata, reviewed-event action/status consistency, and legacy auto-saved candidate views.
 
 ## Dev Agent Record
 
@@ -242,6 +249,9 @@ GPT-5.5 Codex
 - GREEN phase targeted validation: `rtk run 'npm test -- --run tests/memory-safety.test.ts tests/memory-store.test.ts tests/runtime-events.test.ts tests/session-persistence.test.ts'` → 4 files passed, 99 tests passed.
 - Full validation: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` → typecheck passed, 16 files passed, 235 tests passed, diff check passed.
 - GitNexus fallback change check: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'` → indexed successfully, status up-to-date at commit `412d314`.
+- Code review follow-up RED phase: `rtk run 'npm test -- --run tests/runtime-events.test.ts tests/session-persistence.test.ts'` failed on unsafe `reviewedBy` side effects, inconsistent reviewed-event action/status acceptance, and legacy auto-saved lifecycle derivation.
+- Code review follow-up targeted validation: `rtk run 'npm test -- --run tests/runtime-events.test.ts tests/session-persistence.test.ts'` → 2 files passed, 90 tests passed.
+- Code review follow-up full validation: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` → typecheck passed, 16 files passed, 238 tests passed, diff check passed.
 
 ### Completion Notes List
 
@@ -250,6 +260,7 @@ GPT-5.5 Codex
 - Added storage-owned candidate list/read/update APIs constrained to `.sprite/memory/candidates/`, with atomic updates, ID/path validation, lifecycle default backfill, and secret-looking artifact rejection.
 - Added `AgentRuntime.listMemoryCandidates()`, `openMemoryCandidate()`, and `reviewMemoryCandidate()`; accept/edit create durable entries only for safe episodic/semantic candidates and block duplicate durable entries.
 - Added `memory.candidate.reviewed` as the stable audit event for review decisions, with strict validation against raw fields, secret-looking values, unsafe summaries/reasons, and invalid IDs.
+- Resolved review follow-ups by sanitizing `reviewedBy` before durable entry side effects, enforcing reviewed-event action/status consistency, and deriving `auto_saved` views for legacy candidates that already have durable entries.
 - Did not add CLI commands in this story; runtime APIs satisfy the minimal user-facing surface while avoiding adapter-owned memory mutation.
 - Remaining limitation: cross-file transaction rollback is still intentionally out of scope; entry append, candidate update, and session event append are ordered and validated but not wrapped in a general transaction engine.
 

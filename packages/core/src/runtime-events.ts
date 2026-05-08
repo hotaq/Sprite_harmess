@@ -1319,6 +1319,20 @@ function validateMemoryCandidateReviewedEvent(
     );
   }
 
+  if (
+    !isMemoryCandidateReviewLifecycleConsistent(
+      action.value,
+      lifecycleStatus.value
+    )
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' action must match lifecycleStatus.`
+      )
+    );
+  }
+
   const secretCheckedFields = [
     ["action", action.value],
     ["candidateId", candidateId.value],
@@ -1370,6 +1384,20 @@ function validateMemoryCandidateReviewedEvent(
     status: status.value,
     summary: summary.value
   });
+}
+
+function isMemoryCandidateReviewLifecycleConsistent(
+  action: MemoryCandidateReviewAction,
+  lifecycleStatus: MemoryCandidateLifecycleStatus
+): boolean {
+  switch (action) {
+    case "accept":
+      return lifecycleStatus === "accepted";
+    case "reject":
+      return lifecycleStatus === "rejected";
+    case "edit":
+      return lifecycleStatus === "edited";
+  }
 }
 
 function validateMemoryEntrySavedEvent(
