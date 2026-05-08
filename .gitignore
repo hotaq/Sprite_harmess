@@ -47,6 +47,9 @@ Thumbs.db
 # _bmad/
 # _bmad-output/
 .gitnexus
+
+# Track repo-owned Codex orchestration surfaces, but ignore local runtime state.
+!.codex/
 .codex/*
 !.codex/agents/
 !.codex/agents/**
