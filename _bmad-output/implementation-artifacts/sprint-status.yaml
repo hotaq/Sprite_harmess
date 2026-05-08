@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-05-08T16:54:54+0700
+# last_updated: 2026-05-08T17:11:26+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-05-08T16:54:54+0700
+last_updated: 2026-05-08T17:11:26+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -75,7 +75,7 @@ development_status:
   epic-3-retrospective: done
   epic-4: in-progress
   4-1-maintain-working-memory-and-runtime-self-model-during-a-task: done
-  4-2-store-episodic-and-semantic-memory-candidates: backlog
+  4-2-store-episodic-and-semantic-memory-candidates: ready-for-dev
   4-3-review-edit-reject-or-accept-memory-candidates: backlog
   4-4-generate-post-task-learning-review: backlog
   4-5-show-prior-memory-or-lesson-influence-during-a-later-task: backlog
