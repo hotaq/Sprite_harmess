@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_INFLUENCE_SCHEMA_VERSION,
+  PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION,
   RETROSPECTIVE_REVIEW_SCHEMA_VERSION,
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
   evaluateSafetySensitiveContent,
   evaluateRetrospectiveEligibility,
   generateLearningReview,
+  generateProceduralLearningOutputs,
   generateRetrospectiveReview,
   getMemoryCandidateLifecycleStatus,
   reviewMemoryCandidate,
@@ -18,6 +20,7 @@ import {
   validateLearningReview,
   validateMemoryCandidateEdit,
   validateMemoryInfluenceRecord,
+  validateProceduralLearningOutput,
   validateRetrospectiveReview
 } from "@sprite/memory";
 
@@ -586,6 +589,18 @@ describe("memory safety evaluation", () => {
     expect(compact.value.skillSignals).toEqual([
       expect.objectContaining({ id: "skillsig_validation" })
     ]);
+    expect(compact.value.proceduralOutputs).toEqual([
+      expect.objectContaining({
+        memoryType: "procedural",
+        promotionStatus: "not_promoted",
+        sourceSkillSignalId: "skillsig_validation",
+        sourceTaskId: "task_learning",
+        status: "candidate"
+      })
+    ]);
+    expect(compact.value.proceduralOutputs[0]?.knownRisks.length).toBeGreaterThan(
+      0
+    );
 
     const summary = summarizeLearningReviewForEvent(compact.value);
 
@@ -593,6 +608,9 @@ describe("memory safety evaluation", () => {
       factCount: compact.value.facts.length,
       memoryCandidateIds: ["memcand_learning"],
       mode: "compact",
+      proceduralOutputIds: compact.value.proceduralOutputs.map(
+        (output) => output.id
+      ),
       skillSignalIds: ["skillsig_validation"]
     });
 
@@ -623,6 +641,80 @@ describe("memory safety evaluation", () => {
     expect(full.value).toHaveProperty("mistakes");
     expect(full.value).toHaveProperty("missedAssumptions");
     expect(full.value).toHaveProperty("testGaps");
+  });
+
+  it("generates safe candidate-first procedural learning outputs from skill signals", () => {
+    const generated = generateProceduralLearningOutputs({
+      commandsRun: [
+        {
+          command: "npm test -- --run tests/runtime-loop.test.ts",
+          eventId: "evt_validation_completed",
+          status: "passed"
+        }
+      ],
+      correlationId: "corr_learning",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      sessionId: "ses_learning",
+      skillSignals: [
+        {
+          evidenceEventIds: ["evt_validation_completed"],
+          id: "skillsig_validation",
+          signal: "Validation workflow succeeded.",
+          triggerReason: "A repeatable validation command passed."
+        }
+      ],
+      taskGoal: "Generate a procedural learning output",
+      taskId: "task_learning",
+      validationResults: [
+        {
+          command: "npm test -- --run tests/runtime-loop.test.ts",
+          eventId: "evt_validation_completed",
+          name: "targeted validation",
+          status: "passed"
+        }
+      ]
+    });
+
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) {
+      return;
+    }
+    const output = generated.value[0];
+
+    expect(output).toBeDefined();
+    if (output === undefined) {
+      return;
+    }
+    expect(generated.value).toEqual([
+      expect.objectContaining({
+        schemaVersion: PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION,
+        memoryType: "procedural",
+        promotionStatus: "not_promoted",
+        sourceSessionId: "ses_learning",
+        sourceSkillSignalId: "skillsig_validation",
+        sourceTaskId: "task_learning",
+        status: "candidate",
+        triggerReason: "A repeatable validation command passed."
+      })
+    ]);
+    expect(output.evidenceEventIds).toEqual(["evt_validation_completed"]);
+    expect(output.knownRisks.length).toBeGreaterThan(0);
+    expect(output.toolSequence).toEqual([
+      "npm test -- --run tests/runtime-loop.test.ts"
+    ]);
+
+    const invalid = validateProceduralLearningOutput({
+      ...output,
+      knownRisks: ["OPENAI_API_KEY=sk-test-secret"]
+    });
+
+    expect(invalid.ok).toBe(false);
+    expect(
+      validateProceduralLearningOutput({
+        ...output,
+        rawOutput: "provider stdout"
+      } as unknown as Parameters<typeof validateProceduralLearningOutput>[0]).ok
+    ).toBe(false);
   });
 
   it("redacts or rejects unsafe learning review material", () => {
@@ -1048,6 +1140,42 @@ describe("memory safety evaluation", () => {
         status: "contradicted"
       }).ok
     ).toBe(true);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        influenceSummary:
+          "The plan reused a prior procedural validation workflow signal.",
+        preview: "Validation workflow succeeded.",
+        sourceId: "procout_task_learning_skillsig_validation",
+        sourceSessionId: "ses_learning",
+        sourceTaskId: "task_learning",
+        sourceType: "procedural_learning_output",
+        status: "used"
+      }).ok
+    ).toBe(true);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        influenceSummary: "The plan reused a prior procedural signal.",
+        preview: "Validation workflow succeeded.",
+        sourceId: "mem_not_procedural",
+        sourceSessionId: "ses_learning",
+        sourceTaskId: "task_learning",
+        sourceType: "procedural_learning_output",
+        status: "used"
+      }).ok
+    ).toBe(false);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        influenceSummary: "The plan reused a prior procedural signal.",
+        preview: "Validation workflow succeeded.",
+        sourceId: "procout_task_learning_skillsig_validation",
+        sourceTaskId: undefined,
+        sourceType: "procedural_learning_output",
+        status: "used"
+      }).ok
+    ).toBe(false);
     expect(
       validateMemoryInfluenceRecord({
         ...baseRecord,

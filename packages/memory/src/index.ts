@@ -48,6 +48,11 @@ export const MEMORY_CANDIDATE_SCHEMA_VERSION = 1 as const;
 export const MEMORY_ENTRY_SCHEMA_VERSION = 1 as const;
 export const LEARNING_REVIEW_SCHEMA_VERSION = 1 as const;
 export const LEARNING_REVIEW_MODES = ["compact", "full"] as const;
+export const PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION = 1 as const;
+export const PROCEDURAL_LEARNING_OUTPUT_STATUSES = ["candidate"] as const;
+export const PROCEDURAL_LEARNING_PROMOTION_STATUSES = [
+  "not_promoted"
+] as const;
 export const MEMORY_INFLUENCE_SCHEMA_VERSION = 1 as const;
 export const RETROSPECTIVE_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MEMORY_INFLUENCE_STATUSES = [
@@ -57,7 +62,8 @@ export const MEMORY_INFLUENCE_STATUSES = [
 ] as const;
 export const MEMORY_INFLUENCE_SOURCE_TYPES = [
   "memory_entry",
-  "learning_review_lesson"
+  "learning_review_lesson",
+  "procedural_learning_output"
 ] as const;
 export const RETROSPECTIVE_TERMINAL_STATUSES = [
   "cancelled",
@@ -90,6 +96,10 @@ export type MemoryCandidateReviewAction =
   (typeof MEMORY_CANDIDATE_REVIEW_ACTIONS)[number];
 export type SafetyEvaluationAction = "allow" | "block" | "redact";
 export type LearningReviewMode = (typeof LEARNING_REVIEW_MODES)[number];
+export type ProceduralLearningOutputStatus =
+  (typeof PROCEDURAL_LEARNING_OUTPUT_STATUSES)[number];
+export type ProceduralLearningPromotionStatus =
+  (typeof PROCEDURAL_LEARNING_PROMOTION_STATUSES)[number];
 export type MemoryInfluenceStatus =
   (typeof MEMORY_INFLUENCE_STATUSES)[number];
 export type MemoryInfluenceSourceType =
@@ -212,6 +222,24 @@ export interface LearningReviewSkillSignal {
   triggerReason: string;
 }
 
+export interface ProceduralLearningOutput {
+  createdAt: string;
+  evidenceEventIds: string[];
+  id: string;
+  knownRisks: string[];
+  memoryType: "procedural";
+  promotionStatus: ProceduralLearningPromotionStatus;
+  schemaVersion: typeof PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION;
+  sourceCorrelationId: string;
+  sourceSessionId: string;
+  sourceSkillSignalId: string;
+  sourceTaskId: string;
+  status: ProceduralLearningOutputStatus;
+  toolSequence: string[];
+  triggerReason: string;
+  workflowSummary: string;
+}
+
 export interface LearningReview {
   correlationId: string;
   createdAt: string;
@@ -222,6 +250,7 @@ export interface LearningReview {
   missedAssumptions: LearningReviewSectionItem[];
   mistakes: LearningReviewSectionItem[];
   mode: LearningReviewMode;
+  proceduralOutputs: ProceduralLearningOutput[];
   schemaVersion: typeof LEARNING_REVIEW_SCHEMA_VERSION;
   sessionId: string;
   skillSignals: LearningReviewSkillSignal[];
@@ -249,6 +278,7 @@ export interface LearningReviewGenerationRequest {
   filesRead?: readonly string[];
   memoryCandidates?: readonly LearningReviewMemoryCandidateReference[];
   mode?: LearningReviewMode;
+  proceduralOutputs?: readonly ProceduralLearningOutput[];
   sessionId: string;
   skillSignals?: readonly LearningReviewSkillSignal[];
   taskGoal: string;
@@ -265,9 +295,21 @@ export interface LearningReviewEventSummary {
   missedAssumptionCount: number;
   mistakeCount: number;
   mode: LearningReviewMode;
+  proceduralOutputIds: string[];
   skillSignalIds: string[];
   summary: string;
   testGapCount: number;
+}
+
+export interface ProceduralLearningGenerationRequest {
+  commandsRun?: readonly LearningReviewCommandEvidence[];
+  correlationId: string;
+  createdAt?: string;
+  sessionId: string;
+  skillSignals: readonly LearningReviewSkillSignal[];
+  taskGoal: string;
+  taskId: string;
+  validationResults?: readonly LearningReviewValidationResult[];
 }
 
 export interface RetrospectiveReviewEventInput
@@ -966,6 +1008,24 @@ export function generateLearningReview(
     request.skillSignals ?? [],
     mode
   );
+  const proceduralOutputs =
+    request.proceduralOutputs === undefined
+      ? generateProceduralLearningOutputs({
+          commandsRun,
+          correlationId: request.correlationId,
+          createdAt,
+          sessionId: request.sessionId,
+          skillSignals,
+          taskGoal: request.taskGoal,
+          taskId: request.taskId,
+          validationResults
+        })
+      : normalizeProceduralLearningOutputs(request.proceduralOutputs, mode);
+
+  if (!proceduralOutputs.ok) {
+    return err(proceduralOutputs.error);
+  }
+
   const filesRead = normalizeLearningStrings(request.filesRead ?? [], mode);
   const filesChanged = normalizeLearningStrings(
     request.filesChanged ?? [],
@@ -1094,6 +1154,14 @@ export function generateLearningReview(
               "Repeated or validated workflow behavior was captured as a skill signal only.",
               skillSignals.flatMap((signal) => signal.evidenceEventIds)
             )
+          ]),
+      ...(proceduralOutputs.value.length === 0
+        ? []
+        : [
+            createLearningItem(
+              "Procedural learning remains candidate-first until skill promotion is approved.",
+              proceduralOutputs.value.flatMap((output) => output.evidenceEventIds)
+            )
           ])
     ],
     mode
@@ -1117,6 +1185,7 @@ export function generateLearningReview(
     missedAssumptions,
     mistakes,
     mode,
+    proceduralOutputs: proceduralOutputs.value,
     schemaVersion: LEARNING_REVIEW_SCHEMA_VERSION,
     sessionId: createSafePreview(request.sessionId),
     skillSignals,
@@ -1145,6 +1214,7 @@ export function summarizeLearningReviewForEvent(
     missedAssumptionCount: review.missedAssumptions.length,
     mistakeCount: review.mistakes.length,
     mode: review.mode,
+    proceduralOutputIds: review.proceduralOutputs.map((output) => output.id),
     skillSignalIds: review.skillSignals.map((signal) => signal.id),
     summary: createSafePreview(review.summary),
     testGapCount: review.testGaps.length
@@ -1206,6 +1276,23 @@ export function validateLearningReview(
     );
   }
 
+  if (!Array.isArray(review.proceduralOutputs)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUTS",
+        "Learning review proceduralOutputs must be an array."
+      )
+    );
+  }
+
+  for (const output of review.proceduralOutputs) {
+    const validation = validateProceduralLearningOutput(output);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+  }
+
   const forbiddenField = findForbiddenLearningReviewField(
     review as unknown,
     new WeakSet()
@@ -1235,6 +1322,230 @@ export function validateLearningReview(
   }
 
   return { ok: true, value: review };
+}
+
+export function generateProceduralLearningOutputs(
+  request: ProceduralLearningGenerationRequest
+): Result<ProceduralLearningOutput[], SpriteError> {
+  const createdAt = request.createdAt ?? new Date().toISOString();
+  const commandsRun = normalizeLearningCommands(request.commandsRun ?? []);
+  const validationResults = normalizeLearningValidations(
+    request.validationResults ?? []
+  );
+  const outputs = request.skillSignals.map((signal) => {
+    const evidenceEventIds = uniqueStrings(
+      signal.evidenceEventIds.map((eventId) => createSafePreview(eventId))
+    );
+    const matchingCommands = commandsRun.filter((command) =>
+      evidenceEventIds.includes(command.eventId)
+    );
+    const toolSequence =
+      matchingCommands.length === 0
+        ? evidenceEventIds.map((eventId) => `event:${eventId}`)
+        : matchingCommands.map((command) => command.command);
+    const failedValidationCount = validationResults.filter(
+      (result) => result.status !== "passed"
+    ).length;
+    const knownRisks = [
+      "Do not promote this procedural output without explicit user approval.",
+      ...(failedValidationCount === 0
+        ? [
+            "Re-run the supporting validation command before reusing this workflow in a different task."
+          ]
+        : [
+            "Prior validation was not fully green; inspect validation evidence before reuse."
+          ])
+    ];
+    const output: ProceduralLearningOutput = {
+      createdAt,
+      evidenceEventIds,
+      id: `procout_${safeProceduralIdPart(request.taskId)}_${safeProceduralIdPart(signal.id)}`,
+      knownRisks,
+      memoryType: "procedural",
+      promotionStatus: "not_promoted",
+      schemaVersion: PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION,
+      sourceCorrelationId: createSafePreview(request.correlationId),
+      sourceSessionId: createSafePreview(request.sessionId),
+      sourceSkillSignalId: createSafePreview(signal.id),
+      sourceTaskId: createSafePreview(request.taskId),
+      status: "candidate",
+      toolSequence,
+      triggerReason: createSafePreview(signal.triggerReason, 240),
+      workflowSummary: createSafePreview(signal.signal, 240)
+    };
+
+    return output;
+  });
+
+  return normalizeProceduralLearningOutputs(outputs, "full");
+}
+
+export function normalizeProceduralLearningOutputs(
+  outputs: readonly ProceduralLearningOutput[],
+  mode: LearningReviewMode = "compact"
+): Result<ProceduralLearningOutput[], SpriteError> {
+  const normalized: ProceduralLearningOutput[] = [];
+
+  for (const output of outputs.slice(0, mode === "compact" ? 5 : 20)) {
+    const validation = validateProceduralLearningOutput(output);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+
+    normalized.push({
+      ...validation.value,
+      evidenceEventIds: uniqueStrings(
+        validation.value.evidenceEventIds.map((eventId) =>
+          createSafePreview(eventId)
+        )
+      ),
+      id: createSafePreview(validation.value.id),
+      knownRisks: normalizeLearningStrings(validation.value.knownRisks, mode),
+      sourceCorrelationId: createSafePreview(
+        validation.value.sourceCorrelationId
+      ),
+      sourceSessionId: createSafePreview(validation.value.sourceSessionId),
+      sourceSkillSignalId: createSafePreview(
+        validation.value.sourceSkillSignalId
+      ),
+      sourceTaskId: createSafePreview(validation.value.sourceTaskId),
+      toolSequence: normalizeLearningStrings(
+        validation.value.toolSequence,
+        mode
+      ),
+      triggerReason: createSafePreview(
+        validation.value.triggerReason,
+        mode === "compact" ? 160 : 320
+      ),
+      workflowSummary: createSafePreview(
+        validation.value.workflowSummary,
+        mode === "compact" ? 160 : 320
+      )
+    });
+  }
+
+  return { ok: true, value: normalized };
+}
+
+export function summarizeProceduralLearningOutputsForEvent(
+  outputs: readonly ProceduralLearningOutput[]
+): string[] {
+  return outputs.map((output) => createSafePreview(output.id));
+}
+
+export function validateProceduralLearningOutput(
+  output: ProceduralLearningOutput
+): Result<ProceduralLearningOutput, SpriteError> {
+  if (
+    output.schemaVersion !== PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION ||
+    !PROCEDURAL_LEARNING_OUTPUT_STATUSES.includes(output.status) ||
+    !PROCEDURAL_LEARNING_PROMOTION_STATUSES.includes(output.promotionStatus) ||
+    output.memoryType !== "procedural"
+  ) {
+    return err(
+      new SpriteError(
+        "PROCEDURAL_LEARNING_OUTPUT_INVALID_SCHEMA",
+        "Procedural learning output schema, status, promotion status, or memory type is unsupported."
+      )
+    );
+  }
+
+  if (!/^procout_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(output.id)) {
+    return err(
+      new SpriteError(
+        "PROCEDURAL_LEARNING_OUTPUT_INVALID_ID",
+        "Procedural learning output id must use the procout_ prefix."
+      )
+    );
+  }
+
+  if (Number.isNaN(Date.parse(output.createdAt))) {
+    return err(
+      new SpriteError(
+        "PROCEDURAL_LEARNING_OUTPUT_INVALID_TIMESTAMP",
+        "Procedural learning output createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["id", output.id],
+    ["sourceCorrelationId", output.sourceCorrelationId],
+    ["sourceSessionId", output.sourceSessionId],
+    ["sourceSkillSignalId", output.sourceSkillSignalId],
+    ["sourceTaskId", output.sourceTaskId],
+    ["triggerReason", output.triggerReason],
+    ["workflowSummary", output.workflowSummary]
+  ] as const) {
+    if (!isNonEmptyString(value) || containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "PROCEDURAL_LEARNING_OUTPUT_UNSAFE_FIELD",
+          `Procedural learning output ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  for (const [field, values] of [
+    ["evidenceEventIds", output.evidenceEventIds],
+    ["knownRisks", output.knownRisks],
+    ["toolSequence", output.toolSequence]
+  ] as const) {
+    if (
+      !Array.isArray(values) ||
+      values.length === 0 ||
+      values.some(
+        (value) => !isNonEmptyString(value) || containsSecretLikeValue(value)
+      )
+    ) {
+      return err(
+        new SpriteError(
+          "PROCEDURAL_LEARNING_OUTPUT_MISSING_EVIDENCE",
+          `Procedural learning output ${field} must include non-empty safe values.`
+        )
+      );
+    }
+  }
+
+  const forbiddenField = findForbiddenLearningReviewField(
+    output as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "PROCEDURAL_LEARNING_OUTPUT_UNSAFE_FIELD",
+        `Procedural learning output must not include raw or secret-bearing field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findSecretLearningReviewString(
+    output as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "PROCEDURAL_LEARNING_OUTPUT_UNSAFE_VALUE",
+        "Procedural learning output must not include secret-looking values."
+      )
+    );
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...output,
+      evidenceEventIds: uniqueStrings(output.evidenceEventIds),
+      knownRisks: uniqueStrings(output.knownRisks),
+      toolSequence: uniqueStrings(output.toolSequence)
+    }
+  };
 }
 
 export function evaluateRetrospectiveEligibility(
@@ -1689,6 +2000,29 @@ export function validateMemoryInfluenceRecord(
         "Memory influence source type is unsupported."
       )
     );
+  }
+
+  if (record.sourceType === "procedural_learning_output") {
+    if (!/^procout_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(record.sourceId)) {
+      return err(
+        new SpriteError(
+          "MEMORY_INFLUENCE_INVALID_SOURCE_ID",
+          "Procedural memory influence sourceId must reference a procout_ procedural output."
+        )
+      );
+    }
+
+    if (
+      !isNonEmptyString(record.sourceSessionId) ||
+      !isNonEmptyString(record.sourceTaskId)
+    ) {
+      return err(
+        new SpriteError(
+          "MEMORY_INFLUENCE_MISSING_SOURCE_REFERENCE",
+          "Procedural memory influence records require sourceSessionId and sourceTaskId."
+        )
+      );
+    }
   }
 
   const requiredStrings = [
@@ -2409,6 +2743,12 @@ function safeRetrospectiveIdPart(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "_");
 
   return sanitized.length === 0 ? "task" : sanitized;
+}
+
+function safeProceduralIdPart(value: string): string {
+  const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "_");
+
+  return sanitized.length === 0 ? "signal" : sanitized;
 }
 
 function normalizeLearningMemoryCandidates(

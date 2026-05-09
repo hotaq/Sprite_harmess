@@ -400,6 +400,172 @@ describe("local session store", () => {
     }
   });
 
+  it("validates skill-linked procedural outputs before writing learning reviews", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const valid = store.writeLearningReview(sessionId, {
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:01:00.000Z",
+        evidence: {
+          commandsRun: [
+            {
+              command: "npm test -- --run tests/runtime-loop.test.ts",
+              eventId: "evt_validation_completed",
+              status: "passed"
+            }
+          ],
+          eventIds: ["evt_validation_completed", "evt_completed"],
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          taskId: "task_learning_procedural",
+          userCorrections: [],
+          validationResults: [
+            {
+              command: "npm test -- --run tests/runtime-loop.test.ts",
+              eventId: "evt_validation_completed",
+              name: "targeted validation",
+              status: "passed"
+            }
+          ]
+        },
+        facts: [
+          {
+            evidenceEventIds: ["evt_completed"],
+            summary: "Completed procedural learning output storage."
+          }
+        ],
+        lessons: [],
+        memoryCandidates: [],
+        missedAssumptions: [],
+        mistakes: [],
+        mode: "compact",
+        proceduralOutputs: [
+          {
+            createdAt: "2026-05-09T12:01:00.000Z",
+            evidenceEventIds: ["evt_validation_completed"],
+            id: "procout_task_learning_procedural_skillsig_validation",
+            knownRisks: ["Only reuse after validation command support exists."],
+            memoryType: "procedural",
+            promotionStatus: "not_promoted",
+            schemaVersion: 1,
+            sourceCorrelationId: "corr_learning",
+            sourceSessionId: sessionId,
+            sourceSkillSignalId: "skillsig_validation",
+            sourceTaskId: "task_learning_procedural",
+            status: "candidate",
+            toolSequence: ["npm test -- --run tests/runtime-loop.test.ts"],
+            triggerReason: "A repeatable validation command passed.",
+            workflowSummary: "Run targeted validation before marking done."
+          }
+        ],
+        schemaVersion: 1 as const,
+        sessionId,
+        skillSignals: [
+          {
+            evidenceEventIds: ["evt_validation_completed"],
+            id: "skillsig_validation",
+            signal: "Validation workflow succeeded.",
+            triggerReason: "A repeatable validation command passed."
+          }
+        ],
+        summary: "Learning review for completed task.",
+        taskId: "task_learning_procedural",
+        terminalStatus: "completed" as const,
+        testGaps: []
+      });
+
+      expect(valid.ok).toBe(true);
+      if (!valid.ok) {
+        return;
+      }
+      expect(readJson(valid.value.artifactPath)).toMatchObject({
+        proceduralOutputs: [
+          {
+            id: "procout_task_learning_procedural_skillsig_validation",
+            memoryType: "procedural",
+            promotionStatus: "not_promoted",
+            sourceTaskId: "task_learning_procedural",
+            status: "candidate"
+          }
+        ]
+      });
+
+      const unsafe = store.writeLearningReview(sessionId, {
+        schemaVersion: 1,
+        sessionId,
+        taskId: "task_learning_procedural_secret",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:01:00.000Z",
+        terminalStatus: "completed",
+        mode: "compact",
+        summary: "Learning review for completed task.",
+        evidence: {
+          commandsRun: [],
+          eventIds: ["evt_completed"],
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          taskId: "task_learning_procedural_secret",
+          userCorrections: [],
+          validationResults: []
+        },
+        facts: [],
+        lessons: [],
+        memoryCandidates: [],
+        missedAssumptions: [],
+        mistakes: [],
+        proceduralOutputs: [
+          {
+            createdAt: "2026-05-09T12:01:00.000Z",
+            evidenceEventIds: [],
+            id: "procout_task_learning_procedural_secret_skillsig_validation",
+            knownRisks: ["OPENAI_API_KEY=sk-test-secret"],
+            memoryType: "procedural",
+            promotionStatus: "not_promoted",
+            schemaVersion: 1,
+            sourceCorrelationId: "corr_learning",
+            sourceSessionId: sessionId,
+            sourceSkillSignalId: "skillsig_validation",
+            sourceTaskId: "task_learning_procedural_secret",
+            status: "candidate",
+            toolSequence: [],
+            triggerReason: "A repeatable validation command passed.",
+            workflowSummary: "Run targeted validation before marking done."
+          }
+        ],
+        skillSignals: [],
+        testGaps: []
+      });
+
+      expect(unsafe.ok).toBe(false);
+      expect(
+        existsSync(
+          join(
+            ensured.value.learningReviewsDir,
+            "task_learning_procedural_secret.json"
+          )
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("reads prior learning review lessons as safe bounded influence candidates", () => {
     const projectDir = createTempProject();
 

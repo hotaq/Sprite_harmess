@@ -276,6 +276,7 @@ export interface RuntimeEventPayloadMap {
     missedAssumptionCount: number;
     mistakeCount: number;
     mode: LearningReviewMode;
+    proceduralOutputIds: string[];
     skillSignalIds: string[];
     status: "recorded";
     summary: string;
@@ -1285,6 +1286,11 @@ function validateLearningReviewCreatedEvent(
   );
   const mistakeCount = requireNonNegativeInteger(type, payload, "mistakeCount");
   const mode = requirePayloadLiteral(type, payload, "mode", LEARNING_REVIEW_MODES);
+  const proceduralOutputIds = requirePayloadStringArray(
+    type,
+    payload,
+    "proceduralOutputIds"
+  );
   const skillSignalIds = requirePayloadStringArray(
     type,
     payload,
@@ -1304,6 +1310,7 @@ function validateLearningReviewCreatedEvent(
     missedAssumptionCount,
     mistakeCount,
     mode,
+    proceduralOutputIds,
     skillSignalIds,
     status,
     summary,
@@ -1324,6 +1331,7 @@ function validateLearningReviewCreatedEvent(
     !missedAssumptionCount.ok ||
     !mistakeCount.ok ||
     !mode.ok ||
+    !proceduralOutputIds.ok ||
     !skillSignalIds.ok ||
     !status.ok ||
     !summary.ok ||
@@ -1368,6 +1376,17 @@ function validateLearningReviewCreatedEvent(
     }
   }
 
+  for (const outputId of proceduralOutputIds.value) {
+    if (!/^procout_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(outputId)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' proceduralOutputIds must use procout_ identifiers.`
+        )
+      );
+    }
+  }
+
   const secretCheckedFields = [
     ["artifactPath", artifactPath.value],
     ["mode", mode.value],
@@ -1378,6 +1397,9 @@ function validateLearningReviewCreatedEvent(
     ),
     ...memoryCandidateIds.value.map(
       (candidateId) => ["memoryCandidateIds", candidateId] as const
+    ),
+    ...proceduralOutputIds.value.map(
+      (outputId) => ["proceduralOutputIds", outputId] as const
     ),
     ...skillSignalIds.value.map(
       (signalId) => ["skillSignalIds", signalId] as const
@@ -1404,6 +1426,7 @@ function validateLearningReviewCreatedEvent(
     missedAssumptionCount: missedAssumptionCount.value,
     mistakeCount: mistakeCount.value,
     mode: mode.value,
+    proceduralOutputIds: proceduralOutputIds.value,
     skillSignalIds: skillSignalIds.value,
     status: status.value,
     summary: summary.value,
@@ -1980,6 +2003,29 @@ function validateMemoryInfluenceRecordedEvent(
         `Runtime event '${type}' payload sourceId must be a safe identifier.`
       )
     );
+  }
+
+  if (sourceType.value === "procedural_learning_output") {
+    if (!/^procout_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceId.value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' procedural sourceId must reference a procout_ procedural output.`
+        )
+      );
+    }
+
+    if (
+      sourceSessionId.value === undefined ||
+      sourceTaskId.value === undefined
+    ) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' procedural influence requires sourceSessionId and sourceTaskId.`
+        )
+      );
+    }
   }
 
   if (status.value === "used" && influenceSummary.value === undefined) {

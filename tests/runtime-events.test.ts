@@ -207,6 +207,7 @@ describe("runtime event contract", () => {
         missedAssumptionCount: 0,
         mistakeCount: 0,
         mode: "compact",
+        proceduralOutputIds: ["procout_task_learning_skillsig_validation"],
         skillSignalIds: ["skillsig_validation"],
         status: "recorded",
         summary: "Learning review for completed task.",
@@ -356,10 +357,30 @@ describe("runtime event contract", () => {
         status: "contradicted"
       }
     );
+    const procedural = createRuntimeEventRecord(
+      {
+        ...context,
+        eventId: "evt_memory_influence_procedural"
+      },
+      "memory.influence.recorded",
+      {
+        ...basePayload,
+        influenceSummary:
+          "The plan reused the prior validation workflow skill signal.",
+        preview: "Validation workflow succeeded.",
+        sourceEventIds: ["evt_learning_review_created"],
+        sourceId: "procout_task_learning_skillsig_validation",
+        sourceSessionId: "ses_prior",
+        sourceTaskId: "task_learning",
+        sourceType: "procedural_learning_output",
+        status: "used"
+      }
+    );
 
     expect(validateRuntimeEvent(used).ok).toBe(true);
     expect(validateRuntimeEvent(ignored).ok).toBe(true);
     expect(validateRuntimeEvent(contradicted).ok).toBe(true);
+    expect(validateRuntimeEvent(procedural).ok).toBe(true);
   });
 
   it("rejects unsafe or incomplete memory influence recorded events", () => {
@@ -417,6 +438,36 @@ describe("runtime event contract", () => {
         }
       }).ok
     ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_memory_influence_bad_procedural_source",
+        payload: {
+          ...baseEvent.payload,
+          influenceSummary: "The plan reused a prior procedural signal.",
+          sourceId: "mem_not_procedural",
+          sourceSessionId: "ses_prior",
+          sourceTaskId: "task_learning",
+          sourceType: "procedural_learning_output",
+          status: "used"
+        }
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_memory_influence_missing_procedural_task",
+        payload: {
+          ...baseEvent.payload,
+          influenceSummary: "The plan reused a prior procedural signal.",
+          sourceId: "procout_task_learning_skillsig_validation",
+          sourceSessionId: "ses_prior",
+          sourceTaskId: undefined,
+          sourceType: "procedural_learning_output",
+          status: "used"
+        }
+      }).ok
+    ).toBe(false);
   });
 
   it("rejects learning review created events with raw or secret-looking fields", () => {
@@ -430,6 +481,7 @@ describe("runtime event contract", () => {
       missedAssumptionCount: 0,
       mistakeCount: 0,
       mode: "compact",
+      proceduralOutputIds: ["procout_task_learning_skillsig_validation"],
       skillSignalIds: ["skillsig_validation"],
       status: "recorded",
       summary: "Learning review for completed task.",
@@ -480,6 +532,7 @@ describe("runtime event contract", () => {
       missedAssumptionCount: 0,
       mistakeCount: 0,
       mode: "compact",
+      proceduralOutputIds: [],
       skillSignalIds: [],
       status: "recorded",
       summary: "Learning review for completed task.",

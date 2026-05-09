@@ -28,6 +28,9 @@ const RETROSPECTIVE_TERMINAL_STATUSES = [
   "failed",
   "max-iterations"
 ] as const;
+const PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION = 1 as const;
+const PROCEDURAL_LEARNING_OUTPUT_STATUSES = ["candidate"] as const;
+const PROCEDURAL_LEARNING_PROMOTION_STATUSES = ["not_promoted"] as const;
 export const SESSION_SNAPSHOT_TASK_STATUSES = [
   "planned",
   "waiting-for-input",
@@ -161,6 +164,7 @@ export interface StoredLearningReviewArtifact {
   missedAssumptions: readonly object[];
   mistakes: readonly object[];
   mode: string;
+  proceduralOutputs?: readonly object[];
   schemaVersion: typeof SESSION_STATE_SCHEMA_VERSION;
   sessionId: string;
   skillSignals: readonly object[];
@@ -1132,6 +1136,26 @@ function validateStoredLearningReviewArtifact(
     );
   }
 
+  if (
+    review.proceduralOutputs !== undefined &&
+    !Array.isArray(review.proceduralOutputs)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+        "Learning review proceduralOutputs must be an array."
+      )
+    );
+  }
+
+  for (const output of review.proceduralOutputs ?? []) {
+    const validation = validateStoredProceduralLearningOutputArtifact(output);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+  }
+
   const forbiddenField = findForbiddenLearningReviewArtifactField(
     review as unknown,
     new WeakSet()
@@ -1347,6 +1371,110 @@ function validateStoredRetrospectiveReviewArtifact(
   }
 
   return okSession(review);
+}
+
+function validateStoredProceduralLearningOutputArtifact(
+  output: object
+): Result<object, SpriteError> {
+  if (!isPlainRecord(output)) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+        "Procedural learning output must be a plain object."
+      )
+    );
+  }
+
+  if (
+    output.schemaVersion !== PROCEDURAL_LEARNING_OUTPUT_SCHEMA_VERSION ||
+    output.memoryType !== "procedural" ||
+    output.status !== PROCEDURAL_LEARNING_OUTPUT_STATUSES[0] ||
+    output.promotionStatus !== PROCEDURAL_LEARNING_PROMOTION_STATUSES[0]
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+        "Procedural learning output schema, type, status, or promotion status is unsupported."
+      )
+    );
+  }
+
+  if (
+    typeof output.id !== "string" ||
+    !/^procout_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(output.id)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+        "Procedural learning output id must use the procout_ prefix."
+      )
+    );
+  }
+
+  if (
+    typeof output.createdAt !== "string" ||
+    Number.isNaN(Date.parse(output.createdAt))
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+        "Procedural learning output createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  for (const field of [
+    "id",
+    "sourceCorrelationId",
+    "sourceSessionId",
+    "sourceSkillSignalId",
+    "sourceTaskId",
+    "triggerReason",
+    "workflowSummary"
+  ] as const) {
+    const value = output[field];
+
+    if (
+      typeof value !== "string" ||
+      value.trim().length === 0 ||
+      containsSecretLikeValue(value)
+    ) {
+      return err(
+        new SpriteError(
+          "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+          `Procedural learning output ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  for (const field of [
+    "evidenceEventIds",
+    "knownRisks",
+    "toolSequence"
+  ] as const) {
+    const values = output[field];
+
+    if (
+      !Array.isArray(values) ||
+      values.length === 0 ||
+      values.some(
+        (value) =>
+          typeof value !== "string" ||
+          value.trim().length === 0 ||
+          containsSecretLikeValue(value)
+      )
+    ) {
+      return err(
+        new SpriteError(
+          "SESSION_LEARNING_REVIEW_INVALID_PROCEDURAL_OUTPUT",
+          `Procedural learning output ${field} must include non-empty safe values.`
+        )
+      );
+    }
+  }
+
+  return okSession(output);
 }
 
 function findForbiddenLearningReviewArtifactField(

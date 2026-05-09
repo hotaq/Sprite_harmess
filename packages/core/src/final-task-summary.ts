@@ -1,4 +1,5 @@
 import type { ResolvedProviderState } from "@sprite/providers";
+import type { MemoryInfluenceSourceType } from "@sprite/memory";
 import { groupFileActivity } from "./file-activity.js";
 import type { RuntimeEventRecord, RuntimeEventType } from "./runtime-events.js";
 import type { PlannedExecutionFlow } from "./task-state.js";
@@ -26,7 +27,7 @@ export interface FinalTaskSummaryMemoryInfluence {
   sourceId: string;
   sourceSessionId?: string;
   sourceTaskId?: string;
-  sourceType: "memory_entry" | "learning_review_lesson";
+  sourceType: MemoryInfluenceSourceType;
   status: "used" | "ignored" | "contradicted";
   summary?: string;
 }

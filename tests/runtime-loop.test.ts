@@ -450,11 +450,24 @@ describe("AgentRuntime interactive task flow", () => {
         sourceType: "learning_review_lesson",
         status: "contradicted"
       });
+      const procedural = runtime.recordMemoryInfluence({
+        evidenceEventIds: [submitted.value.events[1]?.eventId ?? "evt_waiting"],
+        influenceSummary:
+          "Used the prior procedural validation workflow signal.",
+        preview: "Validation workflow succeeded.",
+        sourceEventIds: ["evt_learning_review_created"],
+        sourceId: "procout_task_learning_skillsig_validation",
+        sourceSessionId: "ses_prior",
+        sourceTaskId: "task_learning",
+        sourceType: "procedural_learning_output",
+        status: "used"
+      });
 
       expect(used.ok).toBe(true);
       expect(ignored.ok).toBe(true);
       expect(contradicted.ok).toBe(true);
-      if (!used.ok || !ignored.ok || !contradicted.ok) {
+      expect(procedural.ok).toBe(true);
+      if (!used.ok || !ignored.ok || !contradicted.ok || !procedural.ok) {
         return;
       }
 
@@ -473,7 +486,8 @@ describe("AgentRuntime interactive task flow", () => {
       expect(influenceEvents.map((event) => event.payload.status)).toEqual([
         "used",
         "ignored",
-        "contradicted"
+        "contradicted",
+        "used"
       ]);
       expect(finalSummary.memoryInfluences).toEqual([
         expect.objectContaining({
@@ -492,6 +506,12 @@ describe("AgentRuntime interactive task flow", () => {
           sourceId: "lesson_story_4_4",
           sourceType: "learning_review_lesson",
           status: "contradicted"
+        }),
+        expect.objectContaining({
+          sourceId: "procout_task_learning_skillsig_validation",
+          sourceType: "procedural_learning_output",
+          status: "used",
+          summary: "Used the prior procedural validation workflow signal."
         })
       ]);
       expect(finalSummary.importantEvents).toEqual(
@@ -865,6 +885,119 @@ describe("AgentRuntime interactive task flow", () => {
       expect(JSON.stringify(review)).not.toContain("rawOutput");
       expect(JSON.stringify(review)).not.toContain("stdout");
       expect(JSON.stringify(review)).not.toContain("stderr");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores skill-linked procedural outputs in completed-task learning reviews", async () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      writeFileSync(
+        join(projectDir, "package.json"),
+        JSON.stringify(
+          {
+            scripts: {
+              check: "node -e \"process.stdout.write('ok')\""
+            }
+          },
+          null,
+          2
+        )
+      );
+      mkdirSync(join(projectDir, ".sprite"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".sprite", "config.json"),
+        JSON.stringify(
+          {
+            validation: {
+              commands: [
+                {
+                  args: ["run", "check"],
+                  command: "npm",
+                  name: "check",
+                  timeoutMs: 30_000
+                }
+              ]
+            }
+          },
+          null,
+          2
+        )
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete procedural learning review task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const validation = await runtime.runConfiguredValidationCommands();
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(validation.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+
+      const completed = runtime.completeActiveTask(
+        "Task completed with procedural validation evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const learningEvent = completed.value.events.find(
+        (event) => event.type === "learning.review.created"
+      );
+
+      expect(learningEvent?.payload).toMatchObject({
+        proceduralOutputIds: expect.arrayContaining([
+          expect.stringMatching(/^procout_/)
+        ]),
+        skillSignalIds: expect.arrayContaining([
+          expect.stringMatching(/^skillsig_/)
+        ]),
+        status: "recorded"
+      });
+
+      if (learningEvent?.type !== "learning.review.created") {
+        return;
+      }
+
+      const review = JSON.parse(
+        readFileSync(join(projectDir, learningEvent.payload.artifactPath), "utf8")
+      ) as {
+        proceduralOutputs: Array<{
+          knownRisks: string[];
+          memoryType: string;
+          promotionStatus: string;
+          sourceTaskId: string;
+          status: string;
+        }>;
+      };
+
+      expect(review.proceduralOutputs).toEqual([
+        expect.objectContaining({
+          memoryType: "procedural",
+          promotionStatus: "not_promoted",
+          sourceTaskId: completed.value.taskId,
+          status: "candidate"
+        })
+      ]);
+      expect(review.proceduralOutputs[0]?.knownRisks.length).toBeGreaterThan(0);
+      expect(existsSync(join(projectDir, ".sprite", "skills"))).toBe(false);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

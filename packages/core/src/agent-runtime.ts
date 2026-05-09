@@ -3996,6 +3996,7 @@ export class AgentRuntime {
         missedAssumptionCount: eventSummary.missedAssumptionCount,
         mistakeCount: eventSummary.mistakeCount,
         mode: eventSummary.mode,
+        proceduralOutputIds: eventSummary.proceduralOutputIds,
         skillSignalIds: eventSummary.skillSignalIds,
         status: "recorded",
         summary: eventSummary.summary,
