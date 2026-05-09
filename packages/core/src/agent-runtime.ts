@@ -136,6 +136,11 @@ import {
   type SessionInspectionView
 } from "./session-inspection.js";
 import {
+  invokeSkill,
+  type InvokedSkillContext,
+  type SkillInvocationRequest
+} from "./skill-registry.js";
+import {
   updateTaskContextWorkingMemory,
   type TaskContextPacket,
   type TaskContextMemoryInput,
@@ -159,6 +164,7 @@ export interface RuntimeStartupOptions extends ConfigLoaderOptions {
   env?: NodeJS.ProcessEnv;
   learningReviewMode?: LearningReviewMode;
   providerOverride?: ProviderRuntimeOverride;
+  skillReferences?: readonly string[];
 }
 
 export type OneShotPrintOutputFormat = SpriteOutputFormat;
@@ -185,6 +191,12 @@ export interface OneShotPrintTaskResult {
   finalSummary: FinalTaskSummary;
   warnings: string[];
   events: RuntimeEventRecord[];
+}
+
+interface LoadedManualSkillContext {
+  entries: InvokedSkillContext[];
+  events: RuntimeEventRecord[];
+  warnings: string[];
 }
 
 export interface SessionResumeResult {
@@ -463,7 +475,6 @@ export class AgentRuntime {
     const correlationId = this.nextId("corr");
     const createdAt = this.now();
     const startedEventId = this.nextEventId();
-    const waitingEventId = this.nextEventId();
     const memoryEntries = this.loadMemoryInfluenceContextEntries(
       task,
       resolvedBootstrapState.startup.cwd
@@ -473,6 +484,13 @@ export class AgentRuntime {
       return err(memoryEntries.error);
     }
 
+    const manualSkills = this.loadManualSkillContextEntries({
+      correlationId,
+      createdAt,
+      cwd: resolvedBootstrapState.startup.cwd,
+      taskId
+    });
+    const waitingEventId = this.nextEventId();
     const request = createTaskRequest(task, resolvedBootstrapState, {
       memoryEntries: memoryEntries.value,
       sessionState: {
@@ -485,6 +503,7 @@ export class AgentRuntime {
         status: "planned",
         taskId
       },
+      skillEntries: manualSkills.entries,
       workingMemory: this.createInitialWorkingMemorySnapshot({
         createdAt,
         startedEventId,
@@ -505,10 +524,23 @@ export class AgentRuntime {
       waitingEventId,
       [
         ...resolvedBootstrapState.warnings,
-        "Interactive task planning is available; repository inspection tools are available through runtime/package APIs, while provider-driven tool use starts in later stories."
+        "Interactive task planning is available; repository inspection tools are available through runtime/package APIs, while provider-driven tool use starts in later stories.",
+        ...manualSkills.warnings
       ]
     );
-    return this.setActiveTask(taskState);
+    const taskEvents =
+      taskState.events.length === 0
+        ? manualSkills.events
+        : [
+            taskState.events[0],
+            ...manualSkills.events,
+            ...taskState.events.slice(1)
+          ];
+
+    return this.setActiveTask({
+      ...taskState,
+      events: taskEvents
+    });
   }
 
   getActiveTask(): Result<PlannedExecutionFlow> {
@@ -531,6 +563,91 @@ export class AgentRuntime {
     }
 
     return ok(bootstrapState.value.startup.cwd);
+  }
+
+  private loadManualSkillContextEntries(input: {
+    correlationId: string;
+    createdAt: string;
+    cwd: string;
+    taskId: string;
+  }): LoadedManualSkillContext {
+    const references = this.options.skillReferences ?? [];
+    const entries: InvokedSkillContext[] = [];
+    const events: RuntimeEventRecord[] = [];
+    const warnings: string[] = [];
+
+    for (const reference of references) {
+      const request: SkillInvocationRequest = {
+        cwd: input.cwd,
+        ...(this.options.homeDir === undefined
+          ? {}
+          : { homeDir: this.options.homeDir }),
+        reference
+      };
+      const result = invokeSkill(request);
+
+      if (result.ok) {
+        entries.push(result.skill);
+        events.push(
+          createRuntimeEventRecord(
+            {
+              correlationId: input.correlationId,
+              createdAt: input.createdAt,
+              eventId: this.nextEventId(),
+              sessionId: this.sessionId,
+              taskId: input.taskId
+            },
+            "skill.invoked",
+            {
+              contentLength: result.skill.contentLength,
+              contentTruncated: result.skill.contentTruncated,
+              invocationMode: result.skill.invocationMode,
+              invokedBy: result.skill.invokedBy,
+              name: result.skill.name,
+              skillId: result.skill.id,
+              source: result.skill.source,
+              status: "loaded",
+              summary: `Manual skill ${result.skill.name} was loaded into task context.`
+            }
+          )
+        );
+        continue;
+      }
+
+      warnings.push(
+        `Manual skill '${result.error.reference}' could not be loaded (${result.error.code}): ${result.error.message}`
+      );
+      events.push(
+        createRuntimeEventRecord(
+          {
+            correlationId: input.correlationId,
+            createdAt: input.createdAt,
+            eventId: this.nextEventId(),
+            sessionId: this.sessionId,
+            taskId: input.taskId
+          },
+          "skill.invocation.failed",
+          {
+            code: result.error.code,
+            invocationMode: result.error.invocationMode,
+            invokedBy: result.error.invokedBy,
+            recoverable: result.error.recoverable,
+            reference: result.error.reference,
+            ...(result.error.source === undefined
+              ? {}
+              : { source: result.error.source }),
+            status: "failed",
+            summary: `Manual skill ${result.error.reference} could not be loaded; task continued without it.`
+          }
+        )
+      );
+    }
+
+    return {
+      entries,
+      events,
+      warnings
+    };
   }
 
   private loadMemoryInfluenceContextEntries(

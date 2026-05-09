@@ -167,7 +167,11 @@ export interface WorkingMemorySnapshot {
 }
 
 export interface TaskContextSkillInput {
+  content?: string;
+  contentTruncated?: boolean;
   description?: string;
+  id?: string;
+  invocationMode?: "manual";
   name: string;
   source?: string;
 }
@@ -209,9 +213,11 @@ export interface RuntimeSelfModelSnapshot {
     validationCommandCount: number;
   };
   skills: {
+    invocationModes: readonly string[];
     loaded: boolean;
     names: readonly string[];
     source: string;
+    sources: readonly string[];
   };
   tools: {
     available: boolean;
@@ -405,16 +411,19 @@ function createRuntimeSelfModelSection({
       [
         `Output format: ${snapshot.sandbox.outputFormat}.`,
         `Sandbox mode: ${snapshot.sandbox.mode}.`,
-        `Provider: ${snapshot.provider.configured ? snapshot.provider.providerName : "not configured"}.`,
-        `Provider model: ${snapshot.provider.model ?? "not configured"}.`,
-        `Provider auth: ${snapshot.provider.auth}.`,
+        ...(snapshot.skills.loaded
+          ? [`Loaded manual skills: ${snapshot.skills.names.join(", ")}.`]
+          : []),
         "Provider-driven tool execution is not connected in this MVP loop.",
-        "Runtime tool registry is available through explicit runtime/package APIs.",
-        "Risky commands and file edits remain policy-governed and may require approval.",
+        "Durable memory retrieval is local, deterministic, and bounded.",
         snapshot.memory.candidateStoreAvailable
           ? "Memory candidate storage is available through runtime APIs."
           : "Memory candidate storage is not available.",
-        "Durable memory retrieval is local, deterministic, and bounded.",
+        "Risky commands and file edits remain policy-governed and may require approval.",
+        `Provider: ${snapshot.provider.configured ? snapshot.provider.providerName : "not configured"}.`,
+        `Provider model: ${snapshot.provider.model ?? "not configured"}.`,
+        `Provider auth: ${snapshot.provider.auth}.`,
+        "Runtime tool registry is available through explicit runtime/package APIs.",
         `Provider streaming: ${snapshot.provider.supportsStreaming}.`,
         `Provider tool calls: ${snapshot.provider.supportsToolCalls}.`,
         `Context schema: ${snapshot.context.packetSchemaVersion}.`,
@@ -422,9 +431,6 @@ function createRuntimeSelfModelSection({
         snapshot.memory.workingMemoryAvailable
           ? "Working memory is available for this task/session."
           : "Working memory is not available for this packet.",
-        snapshot.skills.loaded
-          ? `Loaded skills: ${snapshot.skills.names.join(", ")}.`
-          : "Skill registry integration is not loaded for this packet.",
         `Configured validation commands: ${snapshot.sandbox.validationCommandCount}.`
       ].join(" "),
       options.sectionContentMaxLength
@@ -456,8 +462,10 @@ function createRuntimeSelfModelSection({
       riskyCommandApproval: snapshot.sandbox.riskyCommandApproval,
       safetyRulesCount: snapshot.memory.safetyRulesCount,
       sandboxMode: snapshot.sandbox.mode,
+      skillInvocationModes: snapshot.skills.invocationModes,
       skillNames: snapshot.skills.names,
       skillRegistryLoaded: snapshot.skills.loaded,
+      skillSources: snapshot.skills.sources,
       toolNames: snapshot.tools.names,
       toolExecutionEnabled: false,
       toolsAvailable: snapshot.tools.available,
@@ -530,9 +538,15 @@ export function createRuntimeSelfModelSnapshot(
       validationCommandCount: input.startup.validationCommands.length
     },
     skills: {
+      invocationModes: uniqueContextValues(
+        skillEntries.map((entry) => entry.invocationMode ?? "manual")
+      ),
       loaded: skillEntries.length > 0,
       names: skillEntries.map((entry) => entry.name),
-      source: skillEntries.length > 0 ? "provided" : "not-loaded"
+      source: skillEntries.length > 0 ? "manual" : "not-loaded",
+      sources: uniqueContextValues(
+        skillEntries.map((entry) => entry.source ?? "unknown")
+      )
     },
     tools: {
       available: true,
@@ -1116,13 +1130,11 @@ function createSkillsSection({
         skillCount: 0
       },
       priority,
-      reason:
-        "Manual skill registry integration is not implemented yet; no skills were loaded.",
+      reason: "No manual skills were invoked for this packet.",
       redacted: false,
       source: "skills",
       status: "skipped",
-      summary:
-        "Skills source is represented as skipped until the skill registry is implemented.",
+      summary: "No procedural skill guidance is loaded for this packet.",
       title: "Skills",
       trust: "procedural"
     };
@@ -1131,36 +1143,62 @@ function createSkillsSection({
   return {
     content: createSafePreviewSection(
       entries
-        .map((entry) =>
-          [entry.name, entry.description, entry.source]
-            .filter((value): value is string => value !== undefined)
-            .join(" - ")
-        )
+        .map(formatSkillContextEntry)
         .join("\n"),
       options.sectionContentMaxLength
     ),
     metadata: {
+      ids: entries.flatMap((entry) =>
+        entry.id === undefined ? [] : [entry.id]
+      ),
+      invocationModes: uniqueContextValues(
+        entries.map((entry) => entry.invocationMode ?? "manual")
+      ),
       names: entries.map((entry) => entry.name),
+      sources: uniqueContextValues(
+        entries.map((entry) => entry.source ?? "unknown")
+      ),
+      truncatedCount: entries.filter((entry) => entry.contentTruncated === true)
+        .length,
       skillCount: entries.length
     },
     priority,
     redacted: entries.some((entry) =>
-      [entry.name, entry.description, entry.source].some(
+      [entry.name, entry.description, entry.source, entry.content, entry.id].some(
         (value) => value !== undefined && containsSecretLikeValue(value)
       )
     ),
     source: "skills",
     status: entries.some((entry) =>
-      [entry.name, entry.description, entry.source].some(
+      [entry.name, entry.description, entry.source, entry.content, entry.id].some(
         (value) => value !== undefined && containsSecretLikeValue(value)
       )
     )
       ? "redacted"
       : "included",
-    summary: "Available procedural skill summaries are included.",
+    summary: "Manually invoked procedural skill guidance is included.",
     title: "Skills",
     trust: "procedural"
   };
+}
+
+function formatSkillContextEntry(entry: TaskContextSkillInput): string {
+  const source = entry.source === undefined ? "unknown" : entry.source;
+  const description =
+    entry.description === undefined ? "" : `\nDescription: ${entry.description}`;
+  const content =
+    entry.content === undefined || entry.content.trim().length === 0
+      ? "\nContent: No bounded skill body was provided."
+      : `\nContent:\n${entry.content}${entry.contentTruncated === true ? "\n[Skill content truncated.]" : ""}`;
+
+  return [
+    `Manually invoked skill: ${entry.name} (${source}).`,
+    "Authority: procedural guidance only and does not grant tool approval.",
+    description.trimStart(),
+    content.trimStart()
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
 
 function createSafePreviewSection(value: string, maxLength: number): string {
@@ -1278,6 +1316,10 @@ function formatWorkingMemoryLabelFallback(): string {
 
 function formatContextList(label: string, values: readonly string[]): string {
   return values.length === 0 ? "" : `${label}: ${values.join(" | ")}.`;
+}
+
+function uniqueContextValues(values: readonly string[]): string[] {
+  return [...new Set(values)].filter((value) => value.length > 0);
 }
 
 function formatBoundedContextList(

@@ -126,6 +126,17 @@ const RECOVERY_DECISIONS = [
   "stop"
 ] as const;
 const MEMORY_SAFETY_ACTIONS = ["allow", "block", "redact"] as const;
+const SKILL_INVOCATION_MODES = ["manual"] as const;
+const SKILL_INVOCATION_SOURCES = ["project", "global"] as const;
+const SKILL_INVOCATION_ERROR_CODES = [
+  "SKILL_AMBIGUOUS",
+  "SKILL_BLOCKED_BY_POLICY",
+  "SKILL_CONTENT_UNREADABLE",
+  "SKILL_CONTENT_UNSAFE",
+  "SKILL_NOT_FOUND",
+  "SKILL_PATH_ESCAPE",
+  "SKILL_UNAVAILABLE"
+] as const;
 const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "commandOutput",
   "content",
@@ -194,6 +205,8 @@ const RUNTIME_EVENT_TYPES = [
   "memory.entry.saved",
   "memory.influence.recorded",
   "memory.safety.evaluated",
+  "skill.invoked",
+  "skill.invocation.failed",
   "session.resumed",
   "session.compacted",
   "policy.decision.recorded",
@@ -358,6 +371,27 @@ export interface RuntimeEventPayloadMap {
     sourceTaskId?: string;
     sourceType: MemoryInfluenceSourceType;
     status: MemoryInfluenceStatus;
+    summary: string;
+  };
+  "skill.invoked": {
+    contentLength: number;
+    contentTruncated: boolean;
+    invocationMode: (typeof SKILL_INVOCATION_MODES)[number];
+    invokedBy: "user";
+    name: string;
+    skillId: string;
+    source: (typeof SKILL_INVOCATION_SOURCES)[number];
+    status: "loaded";
+    summary: string;
+  };
+  "skill.invocation.failed": {
+    code: (typeof SKILL_INVOCATION_ERROR_CODES)[number];
+    invocationMode: (typeof SKILL_INVOCATION_MODES)[number];
+    invokedBy: "user";
+    recoverable: true;
+    reference: string;
+    source?: (typeof SKILL_INVOCATION_SOURCES)[number];
+    status: "failed";
     summary: string;
   };
   "session.resumed": {
@@ -901,6 +935,16 @@ export function validateRuntimeEvent(
     }
     case "memory.influence.recorded": {
       return validateMemoryInfluenceRecordedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "skill.invoked": {
+      return validateSkillInvokedEvent(context, eventType.value, event.payload);
+    }
+    case "skill.invocation.failed": {
+      return validateSkillInvocationFailedEvent(
         context,
         eventType.value,
         event.payload
@@ -2102,6 +2146,249 @@ function validateMemoryInfluenceRecordedEvent(
       ? {}
       : { sourceTaskId: sourceTaskId.value }),
     sourceType: sourceType.value,
+    status: status.value,
+    summary: summary.value
+  });
+}
+
+function validateSkillInvokedEvent(
+  context: RuntimeEventContext,
+  type: "skill.invoked",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.invoked">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw skill field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const contentLength = requireNonNegativeInteger(type, payload, "contentLength");
+  const contentTruncated = requirePayloadBoolean(
+    type,
+    payload,
+    "contentTruncated"
+  );
+  const invocationMode = requirePayloadLiteral(
+    type,
+    payload,
+    "invocationMode",
+    SKILL_INVOCATION_MODES
+  );
+  const invokedBy = requirePayloadLiteral(type, payload, "invokedBy", [
+    "user"
+  ] as const);
+  const name = requirePayloadString(type, payload, "name");
+  const skillId = requirePayloadString(type, payload, "skillId");
+  const source = requirePayloadLiteral(
+    type,
+    payload,
+    "source",
+    SKILL_INVOCATION_SOURCES
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "loaded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const checks = [
+    contentLength,
+    contentTruncated,
+    invocationMode,
+    invokedBy,
+    name,
+    skillId,
+    source,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !contentLength.ok ||
+    !contentTruncated.ok ||
+    !invocationMode.ok ||
+    !invokedBy.ok ||
+    !name.ok ||
+    !skillId.ok ||
+    !source.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (!/^skill_[A-Za-z0-9][A-Za-z0-9_]*$/.test(skillId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload skillId must use the skill_ prefix.`
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["invocationMode", invocationMode.value],
+    ["invokedBy", invokedBy.value],
+    ["name", name.value],
+    ["skillId", skillId.value],
+    ["source", source.value],
+    ["status", status.value],
+    ["summary", summary.value]
+  ] as const) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    contentLength: contentLength.value,
+    contentTruncated: contentTruncated.value,
+    invocationMode: invocationMode.value,
+    invokedBy: invokedBy.value,
+    name: name.value,
+    skillId: skillId.value,
+    source: source.value,
+    status: status.value,
+    summary: summary.value
+  });
+}
+
+function validateSkillInvocationFailedEvent(
+  context: RuntimeEventContext,
+  type: "skill.invocation.failed",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.invocation.failed">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw skill field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const code = requirePayloadLiteral(
+    type,
+    payload,
+    "code",
+    SKILL_INVOCATION_ERROR_CODES
+  );
+  const invocationMode = requirePayloadLiteral(
+    type,
+    payload,
+    "invocationMode",
+    SKILL_INVOCATION_MODES
+  );
+  const invokedBy = requirePayloadLiteral(type, payload, "invokedBy", [
+    "user"
+  ] as const);
+  const recoverable = requirePayloadBoolean(type, payload, "recoverable");
+  const reference = requirePayloadString(type, payload, "reference");
+  const source = optionalPayloadLiteral(
+    type,
+    payload,
+    "source",
+    SKILL_INVOCATION_SOURCES
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "failed"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const checks = [
+    code,
+    invocationMode,
+    invokedBy,
+    recoverable,
+    reference,
+    source,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !code.ok ||
+    !invocationMode.ok ||
+    !invokedBy.ok ||
+    !recoverable.ok ||
+    !reference.ok ||
+    !source.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (!recoverable.value) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload recoverable must be true.`
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["code", code.value],
+    ["invocationMode", invocationMode.value],
+    ["invokedBy", invokedBy.value],
+    ["reference", reference.value],
+    ...(source.value === undefined ? [] : [["source", source.value] as const]),
+    ["status", status.value],
+    ["summary", summary.value]
+  ] as const) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    code: code.value,
+    invocationMode: invocationMode.value,
+    invokedBy: invokedBy.value,
+    recoverable: recoverable.value,
+    reference: reference.value,
+    ...(source.value === undefined ? {} : { source: source.value }),
     status: status.value,
     summary: summary.value
   });

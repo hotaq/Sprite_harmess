@@ -105,6 +105,60 @@ describe("runtime event contract", () => {
     });
   });
 
+  it("validates manual skill invocation events without raw skill content", () => {
+    const context = {
+      eventId: "evt_skill_invoked",
+      sessionId: "session_test",
+      taskId: "task_test",
+      correlationId: "corr_test",
+      createdAt: "2026-04-23T12:40:00.000Z"
+    };
+    const invoked = createRuntimeEventRecord(context, "skill.invoked", {
+      contentLength: 74,
+      contentTruncated: false,
+      invocationMode: "manual",
+      invokedBy: "user",
+      name: "project-review",
+      skillId: "skill_project_project_review_review_skill_md",
+      source: "project",
+      status: "loaded",
+      summary: "Manual skill project-review was loaded into task context."
+    });
+    const failed = createRuntimeEventRecord(
+      { ...context, eventId: "evt_skill_failed" },
+      "skill.invocation.failed",
+      {
+        code: "SKILL_NOT_FOUND",
+        invocationMode: "manual",
+        invokedBy: "user",
+        recoverable: true,
+        reference: "missing-skill",
+        status: "failed",
+        summary:
+          "Manual skill missing-skill could not be loaded; task continued without it."
+      }
+    );
+    const rawContent = validateRuntimeEvent({
+      ...invoked,
+      payload: {
+        ...invoked.payload,
+        content: "Raw skill body must not be accepted."
+      }
+    });
+    const secretSummary = validateRuntimeEvent({
+      ...failed,
+      payload: {
+        ...failed.payload,
+        summary: "OPENAI_API_KEY=sk-test-secret"
+      }
+    });
+
+    expect(validateRuntimeEvent(invoked).ok).toBe(true);
+    expect(validateRuntimeEvent(failed).ok).toBe(true);
+    expect(rawContent.ok).toBe(false);
+    expect(secretSummary.ok).toBe(false);
+  });
+
   it("validates memory candidate and entry saved runtime events", () => {
     const context = {
       eventId: "evt_memory_candidate",

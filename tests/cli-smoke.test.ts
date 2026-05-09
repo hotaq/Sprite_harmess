@@ -297,6 +297,125 @@ description: Path redaction should protect CLI output.
     }
   });
 
+  it("loads a manually invoked skill into one-shot task context", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      writeRaw(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+activationHint: Use when the user asks for review.
+---
+
+# Project review workflow
+Check regressions before committing.
+`
+      );
+
+      const result = spawnSync(
+        "node",
+        [
+          cliPath,
+          "--skill",
+          "project-review",
+          "--print",
+          "review current changes",
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      const output = parseJsonOutput(result.stdout);
+      const contextPacket = output.contextPacket as {
+        sections: Array<{
+          content?: string;
+          metadata: Record<string, unknown>;
+          source: string;
+          status: string;
+        }>;
+      };
+      const events = output.events as Array<{ payload: unknown; type: string }>;
+      const skillsSection = contextPacket.sections.find(
+        (section) => section.source === "skills"
+      );
+
+      expect(skillsSection).toMatchObject({
+        status: "included",
+        metadata: expect.objectContaining({
+          names: ["project-review"],
+          invocationModes: ["manual"]
+        })
+      });
+      expect(skillsSection?.content).toContain("Check regressions");
+      expect(events.map((event) => event.type)).toContain("skill.invoked");
+      expect(JSON.stringify(events)).not.toContain("Check regressions");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("continues one-shot tasks when manual skill invocation fails recoverably", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const result = spawnSync(
+        "node",
+        [
+          cliPath,
+          "--skill",
+          "missing-skill",
+          "--print",
+          "continue without a skill",
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      const output = parseJsonOutput(result.stdout);
+      const warnings = output.warnings as string[];
+      const events = output.events as Array<{
+        payload: { code?: string; recoverable?: boolean };
+        type: string;
+      }>;
+      const contextPacket = output.contextPacket as {
+        sections: Array<{ source: string; status: string }>;
+      };
+      const skillsSection = contextPacket.sections.find(
+        (section) => section.source === "skills"
+      );
+
+      expect(warnings.join("\n")).toContain("SKILL_NOT_FOUND");
+      expect(skillsSection).toMatchObject({ status: "skipped" });
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "skill.invocation.failed",
+            payload: expect.objectContaining({
+              code: "SKILL_NOT_FOUND",
+              recoverable: true
+            })
+          })
+        ])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("shows merged startup config when global and project config exist", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

@@ -91,6 +91,10 @@ function parseRecentEventLimit(value: string | undefined): number | undefined {
   return parsed;
 }
 
+function collectSkillReference(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
 function renderOneShotText(result: OneShotPrintTaskResult): string {
   const providerLabel =
     result.provider === null
@@ -477,6 +481,11 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     .version(version)
     .option("--cancel", "cancel the task after runtime planning")
     .option("--steer <message>", "record steering input after runtime planning")
+    .option(
+      "--skill <name>",
+      "manually load a project/global skill for the task",
+      collectSkillReference
+    )
     .option("-p, --print <task>", "run a one-shot non-interactive task")
     .option("--output <format>", "print output format: text, json, or ndjson")
     .argument("[task...]", "optional interactive task")
@@ -486,11 +495,17 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         steer?: string;
         print?: string;
         output?: string;
+        skill?: string[];
       }>();
+      const runtimeOptions = {
+        homeDir: process.env.HOME ?? process.env.USERPROFILE,
+        skillReferences: options.skill ?? []
+      };
 
       if (options.print !== undefined) {
         const outputFormat = parseOutputFormat(options.output);
         const resolvedOutputFormat = resolveOneShotPrintOutputFormat({
+          ...runtimeOptions,
           outputFormat
         });
 
@@ -499,6 +514,7 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         }
 
         const result = runOneShotPrintTask(options.print, {
+          ...runtimeOptions,
           outputFormat,
           onEvent:
             resolvedOutputFormat.value === "ndjson"
@@ -532,6 +548,7 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         io,
         createInteractiveTaskMessage(task.join(" "), {
           cancel: options.cancel,
+          ...runtimeOptions,
           steer: options.steer
         })
       );

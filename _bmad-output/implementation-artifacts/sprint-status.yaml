@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-05-09T23:37:29+0700
+# last_updated: 2026-05-10T00:01:20+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-05-09T23:37:29+0700
+last_updated: 2026-05-10T00:01:20+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -84,7 +84,7 @@ development_status:
   epic-4-retrospective: done
   epic-5: in-progress
   5-1-list-available-skills-from-manual-skill-registry: done
-  5-2-manually-invoke-a-skill-during-a-task: ready-for-dev
+  5-2-manually-invoke-a-skill-during-a-task: review
   5-3-track-skill-usage-and-influence-during-tasks: backlog
   5-4-record-skill-signals-from-repeated-workflows: backlog
   5-5-propose-skill-candidates-with-evidence-and-trigger-reason: backlog

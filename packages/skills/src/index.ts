@@ -14,8 +14,11 @@ import { isAbsolute, relative, resolve } from "node:path";
 export const SKILL_REGISTRY_SCHEMA_VERSION = 1 as const;
 export const SKILL_REGISTRY_SOURCES = ["project", "global"] as const;
 export const SKILL_LIFECYCLE_STATES = ["manual", "unavailable"] as const;
+export const SKILL_INVOCATION_MODES = ["manual"] as const;
+export const SKILL_INVOCATION_STATUSES = ["loaded", "failed"] as const;
 
 const DEFAULT_ACTIVATION_HINT = "Manual invocation only.";
+const DEFAULT_SKILL_CONTENT_MAX_LENGTH = 4_000;
 const SKILL_MANIFEST_FILE_NAME = "SKILL.md";
 const FORBIDDEN_METADATA_FIELD_FRAGMENTS = [
   "apikey",
@@ -37,6 +40,9 @@ const FORBIDDEN_METADATA_FIELD_FRAGMENTS = [
 
 export type SkillRegistrySource = (typeof SKILL_REGISTRY_SOURCES)[number];
 export type SkillLifecycleState = (typeof SKILL_LIFECYCLE_STATES)[number];
+export type SkillInvocationMode = (typeof SKILL_INVOCATION_MODES)[number];
+export type SkillInvocationStatus =
+  (typeof SKILL_INVOCATION_STATUSES)[number];
 
 export type SkillRegistryWarningCode =
   | "SKILL_ENTRY_INVALID"
@@ -46,6 +52,15 @@ export type SkillRegistryWarningCode =
   | "SKILL_MANIFEST_UNSAFE"
   | "SKILL_PATH_ESCAPE"
   | "SKILL_REGISTRY_ROOT_UNREADABLE";
+
+export type SkillInvocationErrorCode =
+  | "SKILL_AMBIGUOUS"
+  | "SKILL_BLOCKED_BY_POLICY"
+  | "SKILL_CONTENT_UNREADABLE"
+  | "SKILL_CONTENT_UNSAFE"
+  | "SKILL_NOT_FOUND"
+  | "SKILL_PATH_ESCAPE"
+  | "SKILL_UNAVAILABLE";
 
 export interface SkillRegistryRoot {
   exists: boolean;
@@ -98,6 +113,49 @@ export interface ListSkillsOptions {
   homeDir?: string;
   projectSkillsDir?: string;
 }
+
+export interface SkillInvocationRequest extends ListSkillsOptions {
+  maxContentLength?: number;
+  reference: string;
+}
+
+export interface InvokedSkillContext {
+  activationHint: string;
+  content: string;
+  contentLength: number;
+  contentTruncated: boolean;
+  description: string;
+  id: string;
+  invocationMode: "manual";
+  invokedBy: "user";
+  lifecycleState: "manual";
+  name: string;
+  source: SkillRegistrySource;
+}
+
+export interface SkillInvocationRecoverableError {
+  code: SkillInvocationErrorCode;
+  invocationMode: "manual";
+  invokedBy: "user";
+  message: string;
+  recoverable: true;
+  reference: string;
+  source?: SkillRegistrySource;
+}
+
+export type ManualSkillInvocationResult =
+  | {
+      ok: true;
+      skill: InvokedSkillContext;
+      status: "loaded";
+      warnings: SkillRegistryWarning[];
+    }
+  | {
+      error: SkillInvocationRecoverableError;
+      ok: false;
+      status: "failed";
+      warnings: SkillRegistryWarning[];
+    };
 
 export interface SkillFrontmatterParseResult {
   fields: Record<string, string>;
@@ -165,6 +223,108 @@ function resolveSkillRegistryRootsForScan(
 export function listAvailableSkills(
   options: ListSkillsOptions = {}
 ): ListSkillsResult {
+  return sanitizeListSkillsResult(collectAvailableSkills(options));
+}
+
+export function invokeManualSkill(
+  request: SkillInvocationRequest
+): ManualSkillInvocationResult {
+  const reference = createRedactedPreview(request.reference, 160);
+  const parsedReference = parseSkillReference(request.reference);
+  const registry = collectAvailableSkills(request);
+  const warnings = sanitizeListSkillsResult(registry).warnings;
+
+  if (parsedReference === null) {
+    return createFailedSkillInvocationResult(
+      "SKILL_NOT_FOUND",
+      reference,
+      "Manual skill reference must be a non-empty skill name or source-qualified skill name.",
+      undefined,
+      warnings
+    );
+  }
+
+  const matchingSkills = registry.skills.filter((skill) =>
+    matchesSkillReference(skill, parsedReference)
+  );
+
+  if (matchingSkills.length > 1) {
+    return createFailedSkillInvocationResult(
+      "SKILL_AMBIGUOUS",
+      reference,
+      "Manual skill reference matched multiple sources; use project:<name> or global:<name>.",
+      parsedReference.source,
+      warnings
+    );
+  }
+
+  if (matchingSkills.length === 0) {
+    const unavailable = registry.unavailableSkills.find((skill) =>
+      matchesUnavailableSkillReference(skill, parsedReference)
+    );
+
+    if (unavailable !== undefined) {
+      return createFailedSkillInvocationResult(
+        unavailable.warning.code === "SKILL_PATH_ESCAPE"
+          ? "SKILL_PATH_ESCAPE"
+          : "SKILL_UNAVAILABLE",
+        reference,
+        unavailable.warning.message,
+        unavailable.source,
+        warnings
+      );
+    }
+
+    return createFailedSkillInvocationResult(
+      "SKILL_NOT_FOUND",
+      reference,
+      "Manual skill reference did not match an available skill.",
+      parsedReference.source,
+      warnings
+    );
+  }
+
+  const skill = matchingSkills[0];
+  const content = loadSkillContextContent(
+    skill,
+    request.maxContentLength ?? DEFAULT_SKILL_CONTENT_MAX_LENGTH
+  );
+
+  if (!content.ok) {
+    return createFailedSkillInvocationResult(
+      content.code,
+      reference,
+      content.message,
+      skill.source,
+      warnings
+    );
+  }
+
+  const safeSkill = sanitizeSkillRegistryEntry(skill);
+
+  return {
+    ok: true,
+    skill: {
+      activationHint: safeSkill.activationHint,
+      content: content.content,
+      contentLength: content.contentLength,
+      contentTruncated: content.contentTruncated,
+      description: safeSkill.description,
+      id: safeSkill.id,
+      invocationMode: "manual",
+      invokedBy: "user",
+      lifecycleState: "manual",
+      name: safeSkill.name,
+      source: safeSkill.source
+    },
+    status: "loaded",
+    warnings
+  };
+}
+
+function collectAvailableSkills(
+  options: ListSkillsOptions = {}
+): ListSkillsResult {
   const registryRoots = resolveSkillRegistryRootsForScan(options);
   const skills: SkillRegistryEntry[] = [];
   const unavailableSkills: UnavailableSkillRegistryEntry[] = [];
@@ -174,13 +334,13 @@ export function listAvailableSkills(
     scanRegistryRoot(root, skills, unavailableSkills, warnings);
   }
 
-  return sanitizeListSkillsResult({
+  return {
     registryRoots,
     schemaVersion: SKILL_REGISTRY_SCHEMA_VERSION,
     skills,
     unavailableSkills,
     warnings
-  });
+  };
 }
 
 export function parseSkillFrontmatter(
@@ -696,6 +856,193 @@ function sanitizeSkillRegistryWarning(
       warning.relativePath === undefined
         ? undefined
         : createSafePathPreview(warning.relativePath)
+  };
+}
+
+interface ParsedSkillReference {
+  name: string;
+  source?: SkillRegistrySource;
+}
+
+type SkillContentLoadResult =
+  | {
+      content: string;
+      contentLength: number;
+      contentTruncated: boolean;
+      ok: true;
+    }
+  | {
+      code: SkillInvocationErrorCode;
+      message: string;
+      ok: false;
+    };
+
+function parseSkillReference(reference: string): ParsedSkillReference | null {
+  const trimmed = reference.trim();
+
+  if (trimmed.length === 0 || containsSecretLikeValue(trimmed)) {
+    return null;
+  }
+
+  const separatorIndex = trimmed.indexOf(":");
+
+  if (separatorIndex === -1) {
+    return { name: trimmed };
+  }
+
+  const source = trimmed.slice(0, separatorIndex);
+  const name = trimmed.slice(separatorIndex + 1).trim();
+
+  if (
+    name.length === 0 ||
+    !SKILL_REGISTRY_SOURCES.includes(source as SkillRegistrySource)
+  ) {
+    return null;
+  }
+
+  return {
+    name,
+    source: source as SkillRegistrySource
+  };
+}
+
+function matchesSkillReference(
+  skill: SkillRegistryEntry,
+  reference: ParsedSkillReference
+): boolean {
+  if (reference.source !== undefined && skill.source !== reference.source) {
+    return false;
+  }
+
+  return (
+    skill.name === reference.name ||
+    skill.id === reference.name ||
+    getRegistryDirectoryName(skill.relativePath) === reference.name
+  );
+}
+
+function matchesUnavailableSkillReference(
+  skill: UnavailableSkillRegistryEntry,
+  reference: ParsedSkillReference
+): boolean {
+  if (reference.source !== undefined && skill.source !== reference.source) {
+    return false;
+  }
+
+  return (
+    skill.id === reference.name ||
+    (skill.relativePath !== undefined &&
+      getRegistryDirectoryName(skill.relativePath) === reference.name)
+  );
+}
+
+function getRegistryDirectoryName(relativePathValue: string): string {
+  return relativePathValue.split("/")[0] ?? relativePathValue;
+}
+
+function loadSkillContextContent(
+  skill: SkillRegistryEntry,
+  maxContentLength: number
+): SkillContentLoadResult {
+  const normalizedMaxContentLength = normalizeSkillContentMaxLength(
+    maxContentLength
+  );
+
+  try {
+    const rootRealPath = realpathSync(skill.registryRoot);
+    const manifestRealPath = realpathSync(skill.manifestPath);
+
+    if (!isPathInside(rootRealPath, manifestRealPath)) {
+      return {
+        code: "SKILL_PATH_ESCAPE",
+        message: "Skill manifest resolves outside its expected registry root.",
+        ok: false
+      };
+    }
+  } catch {
+    return {
+      code: "SKILL_CONTENT_UNREADABLE",
+      message: "Skill manifest exists but could not be resolved for loading.",
+      ok: false
+    };
+  }
+
+  let manifestContent: string;
+
+  try {
+    manifestContent = readFileSync(skill.manifestPath, "utf8");
+  } catch {
+    return {
+      code: "SKILL_CONTENT_UNREADABLE",
+      message: "Skill manifest exists but could not be read for loading.",
+      ok: false
+    };
+  }
+
+  const body = stripSkillFrontmatterBody(manifestContent).trim();
+
+  if (containsSecretLikeValue(body)) {
+    return {
+      code: "SKILL_CONTENT_UNSAFE",
+      message: "Skill content contains secret-looking or unsafe values.",
+      ok: false
+    };
+  }
+
+  const contentTruncated = body.length > normalizedMaxContentLength;
+  const content = contentTruncated
+    ? body.slice(0, normalizedMaxContentLength).trimEnd()
+    : body;
+
+  return {
+    content,
+    contentLength: body.length,
+    contentTruncated,
+    ok: true
+  };
+}
+
+function stripSkillFrontmatterBody(manifestContent: string): string {
+  const lines = manifestContent.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const closingIndex = lines.findIndex(
+    (line, index) => index > 0 && line.trim() === "---"
+  );
+
+  if (lines[0]?.trim() !== "---" || closingIndex === -1) {
+    return "";
+  }
+
+  return lines.slice(closingIndex + 1).join("\n");
+}
+
+function normalizeSkillContentMaxLength(value: number): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    return DEFAULT_SKILL_CONTENT_MAX_LENGTH;
+  }
+
+  return Math.min(value, DEFAULT_SKILL_CONTENT_MAX_LENGTH);
+}
+
+function createFailedSkillInvocationResult(
+  code: SkillInvocationErrorCode,
+  reference: string,
+  message: string,
+  source: SkillRegistrySource | undefined,
+  warnings: SkillRegistryWarning[]
+): ManualSkillInvocationResult {
+  return {
+    error: {
+      code,
+      invocationMode: "manual",
+      invokedBy: "user",
+      message: createRedactedPreview(message, 240),
+      recoverable: true,
+      reference,
+      ...(source === undefined ? {} : { source })
+    },
+    ok: false,
+    status: "failed",
+    warnings
   };
 }
 

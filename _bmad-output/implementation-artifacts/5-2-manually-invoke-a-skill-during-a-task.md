@@ -1,6 +1,6 @@
 # Story 5.2: Manually Invoke a Skill During a Task
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -17,62 +17,62 @@ so that I can reuse a known workflow when I decide it is relevant.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-2)
-  - [ ] Report exact functions/contracts to add or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially `listAvailableSkills`, `validateSkillRegistryEntry`, `assembleTaskContextPacket`, `createProgram`, and runtime event validators.
-  - [ ] Keep this story invocation-only: no automatic skill selection, no usage/influence analytics, no skill candidate generation, no promotion, and no hidden authority changes.
-  - [ ] Preserve the Story 5.1 safety boundary: public registry listing remains sanitized and must not expose raw filesystem paths or full skill bodies.
+- [x] Confirm implementation function list before code edits (AC: 1-2)
+  - [x] Report exact functions/contracts to add or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially `listAvailableSkills`, `validateSkillRegistryEntry`, `assembleTaskContextPacket`, `createProgram`, and runtime event validators.
+  - [x] Keep this story invocation-only: no automatic skill selection, no usage/influence analytics, no skill candidate generation, no promotion, and no hidden authority changes.
+  - [x] Preserve the Story 5.1 safety boundary: public registry listing remains sanitized and must not expose raw filesystem paths or full skill bodies.
 
-- [ ] Define manual skill invocation contracts in `packages/skills` (AC: 1-2)
-  - [ ] Add an invocation mode contract, initially `manual`.
-  - [ ] Add structured status/error contracts for loaded and recoverable-failure outcomes.
-  - [ ] Add a skill reference format that can resolve an exact unique skill by name or disambiguate by source, for example `project:<name>` and `global:<name>`.
-  - [ ] Treat duplicate names without a source qualifier as ambiguous and recoverable, not as project-precedence magic.
-  - [ ] Do not add candidate/promoted lifecycle behavior in this story.
+- [x] Define manual skill invocation contracts in `packages/skills` (AC: 1-2)
+  - [x] Add an invocation mode contract, initially `manual`.
+  - [x] Add structured status/error contracts for loaded and recoverable-failure outcomes.
+  - [x] Add a skill reference format that can resolve an exact unique skill by name or disambiguate by source, for example `project:<name>` and `global:<name>`.
+  - [x] Treat duplicate names without a source qualifier as ambiguous and recoverable, not as project-precedence magic.
+  - [x] Do not add candidate/promoted lifecycle behavior in this story.
 
-- [ ] Implement safe skill content loading (AC: 1-2)
-  - [ ] Resolve the skill from trusted registry roots, not from sanitized public listing paths.
-  - [ ] Refactor or add internal descriptors if needed so raw manifest paths stay internal to the loader and never appear in public CLI/runtime output.
-  - [ ] Load only a valid `SKILL.md` from `.sprite/skills/<skill-dir>/SKILL.md` under the project or global registry root.
-  - [ ] Strip frontmatter from the context body or otherwise avoid duplicating metadata in task context.
-  - [ ] Bound loaded content length and report truncation metadata if truncation occurs.
-  - [ ] Block or redact secret-like/private-key/raw-output content before it can enter task context, logs, events, or CLI output.
-  - [ ] Do not execute commands from the skill; skill content is procedural guidance only.
+- [x] Implement safe skill content loading (AC: 1-2)
+  - [x] Resolve the skill from trusted registry roots, not from sanitized public listing paths.
+  - [x] Refactor or add internal descriptors if needed so raw manifest paths stay internal to the loader and never appear in public CLI/runtime output.
+  - [x] Load only a valid `SKILL.md` from `.sprite/skills/<skill-dir>/SKILL.md` under the project or global registry root.
+  - [x] Strip frontmatter from the context body or otherwise avoid duplicating metadata in task context.
+  - [x] Bound loaded content length and report truncation metadata if truncation occurs.
+  - [x] Block or redact secret-like/private-key/raw-output content before it can enter task context, logs, events, or CLI output.
+  - [x] Do not execute commands from the skill; skill content is procedural guidance only.
 
-- [ ] Wire manual invocation into task context assembly (AC: 1)
-  - [ ] Extend `TaskContextSkillInput` or add a focused invoked-skill input type that includes safe metadata, invocation mode, and bounded content.
-  - [ ] Update the skills section so manually invoked skills are visible in task context with clear lower-priority procedural guidance.
-  - [ ] Update task context metadata/self-model so it records loaded skill names and manual invocation mode without implying automatic influence analysis.
-  - [ ] Ensure no skill section is injected when invocation fails or when no skill is requested.
+- [x] Wire manual invocation into task context assembly (AC: 1)
+  - [x] Extend `TaskContextSkillInput` or add a focused invoked-skill input type that includes safe metadata, invocation mode, and bounded content.
+  - [x] Update the skills section so manually invoked skills are visible in task context with clear lower-priority procedural guidance.
+  - [x] Update task context metadata/self-model so it records loaded skill names and manual invocation mode without implying automatic influence analysis.
+  - [x] Ensure no skill section is injected when invocation fails or when no skill is requested.
 
-- [ ] Add runtime/CLI surface for manual invocation (AC: 1-2)
-  - [ ] Add a task-level CLI option such as repeatable `--skill <name-or-source-qualified-name>` that works for interactive tasks and `--print` tasks.
-  - [ ] Route CLI invocation through the shared runtime/core boundary instead of duplicating skill loading in the CLI renderer.
-  - [ ] On successful invocation, continue the task with the loaded skill in context.
-  - [ ] On recoverable invocation failure, surface a structured warning/error and continue the task without that skill.
-  - [ ] Keep `sprite skills list` behavior unchanged except for any shared contract additions needed by invocation.
+- [x] Add runtime/CLI surface for manual invocation (AC: 1-2)
+  - [x] Add a task-level CLI option such as repeatable `--skill <name-or-source-qualified-name>` that works for interactive tasks and `--print` tasks.
+  - [x] Route CLI invocation through the shared runtime/core boundary instead of duplicating skill loading in the CLI renderer.
+  - [x] On successful invocation, continue the task with the loaded skill in context.
+  - [x] On recoverable invocation failure, surface a structured warning/error and continue the task without that skill.
+  - [x] Keep `sprite skills list` behavior unchanged except for any shared contract additions needed by invocation.
 
-- [ ] Record explicit user invocation in runtime events/audit output (AC: 1-2)
-  - [ ] Add runtime event validation for a minimal manual invocation record, for example `skill.invoked`.
-  - [ ] Add a recoverable failed-attempt event if the task event stream already has an appropriate place for recoverable failures, for example `skill.invocation.failed`; otherwise record the recoverable error in task output and document why no event is emitted.
-  - [ ] Event payloads must include safe skill id/name/source, `invocationMode: "manual"`, `invokedBy: "user"`, and status/error code.
-  - [ ] Event payloads must not include full skill content, raw paths, secrets, private keys, stdout/stderr, diffs, or patches.
+- [x] Record explicit user invocation in runtime events/audit output (AC: 1-2)
+  - [x] Add runtime event validation for a minimal manual invocation record, for example `skill.invoked`.
+  - [x] Add a recoverable failed-attempt event if the task event stream already has an appropriate place for recoverable failures, for example `skill.invocation.failed`; otherwise record the recoverable error in task output and document why no event is emitted.
+  - [x] Event payloads must include safe skill id/name/source, `invocationMode: "manual"`, `invokedBy: "user"`, and status/error code.
+  - [x] Event payloads must not include full skill content, raw paths, secrets, private keys, stdout/stderr, diffs, or patches.
 
-- [ ] Add regression tests (AC: 1-2)
-  - [ ] Skills package tests: valid manual invocation resolves a project skill and loads bounded content.
-  - [ ] Skills package tests: source-qualified lookup disambiguates project/global duplicate names.
-  - [ ] Skills package tests: duplicate unqualified names return structured ambiguous recoverable error.
-  - [ ] Skills package tests: missing, malformed, unreadable, path-escaping, unsafe, or policy-blocked skill returns structured recoverable error and no context body.
-  - [ ] Task-context tests: invoked skill content appears in the skills section and metadata/self-model records manual invocation.
-  - [ ] Runtime event tests: `skill.invoked` and any failed-attempt event validate safe payloads and reject raw content/unsafe fields.
-  - [ ] CLI smoke tests: `sprite --skill <name> --print "<task>"` loads the skill, while invalid `--skill` continues without crashing and emits a structured recoverable warning/error.
+- [x] Add regression tests (AC: 1-2)
+  - [x] Skills package tests: valid manual invocation resolves a project skill and loads bounded content.
+  - [x] Skills package tests: source-qualified lookup disambiguates project/global duplicate names.
+  - [x] Skills package tests: duplicate unqualified names return structured ambiguous recoverable error.
+  - [x] Skills package tests: missing, malformed, unreadable, path-escaping, unsafe, or policy-blocked skill returns structured recoverable error and no context body.
+  - [x] Task-context tests: invoked skill content appears in the skills section and metadata/self-model records manual invocation.
+  - [x] Runtime event tests: `skill.invoked` and any failed-attempt event validate safe payloads and reject raw content/unsafe fields.
+  - [x] CLI smoke tests: `sprite --skill <name> --print "<task>"` loads the skill, while invalid `--skill` continues without crashing and emits a structured recoverable warning/error.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-2)
-  - [ ] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
-  - [ ] Run targeted validation before review: skills package tests, task-context tests, runtime-events tests, CLI smoke tests, and typecheck.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-2)
+  - [x] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
+  - [x] Run targeted validation before review: skills package tests, task-context tests, runtime-events tests, CLI smoke tests, and typecheck.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
 
 ## Dev Notes
 
@@ -252,22 +252,45 @@ No external web research is required for this story. The implementation is local
 
 ### Agent Model Used
 
-TBD during implementation.
+GPT-5.5 (Codex)
 
 ### Debug Log References
 
-TBD during implementation.
+- 2026-05-09: Reported implementation function/contract list before code edits and confirmed scope remained manual invocation only.
+- 2026-05-09: Ran GitNexus impact checks before edits; high/critical surfaces were treated as additive/narrow wiring and `createRuntimeSelfModelSection` follow-up was LOW risk.
+- 2026-05-09: Confirmed RED phase by adding failing regression tests for skills, task context, runtime events, and CLI smoke behavior.
+- 2026-05-10: Targeted validation passed: `rtk run 'npm test -- --run tests/task-context.test.ts tests/skill-registry.test.ts tests/runtime-events.test.ts tests/cli-smoke.test.ts'` (4 files, 129 tests).
+- 2026-05-10: Full validation passed: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` (17 files, 294 tests).
 
 ### Completion Notes List
 
-TBD during implementation.
+- Added explicit manual skill invocation contracts in `@sprite/skills`, including `manual` invocation mode, loaded/failed statuses, source-qualified lookup, bounded safe context, and structured recoverable error codes.
+- Implemented trusted-root skill resolution and content loading without exposing raw filesystem paths or loading from sanitized public registry output.
+- Wired successful manual invocations into task context as lower-priority procedural guidance and runtime self-model metadata without automatic influence tracking.
+- Added repeatable task-level `--skill <name-or-source-qualified-name>` CLI support for interactive and `--print` tasks through shared runtime/core wiring.
+- Added safe `skill.invoked` and `skill.invocation.failed` runtime events that reject raw content, paths, secrets, stdout/stderr, diffs, and patch-like fields.
+- Added regression coverage for valid invocation, source disambiguation, ambiguous/missing/unsafe/path-escaping failures, task context integration, event validation, and CLI smoke behavior.
+- Remaining limitation: this story intentionally does not implement automatic skill selection, influence analytics, usage tracking, skill candidates, or promotion; those remain in later Epic 5 stories.
 
 ### File List
 
-TBD during implementation.
+- `_bmad-output/implementation-artifacts/5-2-manually-invoke-a-skill-during-a-task.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/cli/src/index.ts`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/core/src/runtime-loop.ts`
+- `packages/core/src/skill-registry.ts`
+- `packages/core/src/task-context.ts`
+- `packages/skills/src/index.ts`
+- `tests/cli-smoke.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/skill-registry.test.ts`
+- `tests/task-context.test.ts`
 
 ## Change Log
 
 | Date | Version | Description | Author |
 | --- | --- | --- | --- |
 | 2026-05-09 | 0.1 | Created ready-for-dev story for manual skill invocation during tasks. | Codex |
+| 2026-05-10 | 0.2 | Implemented manual skill invocation, safe context loading, runtime events, CLI `--skill`, and regression coverage. | Codex |

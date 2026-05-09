@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
+  invokeManualSkill,
   listAvailableSkills,
   resolveSkillRegistryRoots
 } from "@sprite/skills";
@@ -37,11 +38,12 @@ function writeRaw(path: string, value: string): void {
 function writeSkillManifest(
   registryRoot: string,
   skillDirectory: string,
-  frontmatter: string
+  frontmatter: string,
+  body = "# Body content must never be emitted by list output."
 ): void {
   writeRaw(
     join(registryRoot, skillDirectory, "SKILL.md"),
-    `---\n${frontmatter.trim()}\n---\n\n# Body content must never be emitted by list output.\n`
+    `---\n${frontmatter.trim()}\n---\n\n${body}\n`
   );
 }
 
@@ -359,6 +361,192 @@ description: This must not be listed as a Sprite runtime skill.
         existsSync(join(projectDir, ".sprite", "skill-candidates"))
       ).toBe(false);
       expect(existsSync(join(projectDir, ".sprite", "sessions"))).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manually invokes a valid project skill and loads bounded body context", () => {
+    const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
+    const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+
+    try {
+      writeSkillManifest(
+        projectSkillsRoot,
+        "review",
+        `
+name: project-review
+description: Review code before committing.
+activationHint: Manually invoke when review is requested.
+`,
+        "# Review workflow\n- Check regressions.\n- Run focused tests."
+      );
+
+      const result = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "project-review"
+      });
+      const serialized = JSON.stringify(result);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "loaded",
+        skill: expect.objectContaining({
+          content: expect.stringContaining("Check regressions."),
+          contentTruncated: false,
+          description: "Review code before committing.",
+          invocationMode: "manual",
+          invokedBy: "user",
+          lifecycleState: "manual",
+          name: "project-review",
+          source: "project"
+        })
+      });
+      expect(serialized).not.toContain("activationHint:");
+      expect(serialized).not.toContain(projectDir);
+      expect(serialized).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires source qualification for duplicate manual skill names", () => {
+    const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
+    const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+    const globalSkillsRoot = join(homeDir, ".sprite", "skills");
+
+    try {
+      writeSkillManifest(
+        projectSkillsRoot,
+        "shared",
+        `
+name: shared-workflow
+description: Project workflow.
+`,
+        "Project workflow body."
+      );
+      writeSkillManifest(
+        globalSkillsRoot,
+        "shared",
+        `
+name: shared-workflow
+description: Global workflow.
+`,
+        "Global workflow body."
+      );
+
+      const ambiguous = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "shared-workflow"
+      });
+      const projectQualified = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "project:shared-workflow"
+      });
+      const globalQualified = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "global:shared-workflow"
+      });
+
+      expect(ambiguous).toMatchObject({
+        ok: false,
+        status: "failed",
+        error: expect.objectContaining({
+          code: "SKILL_AMBIGUOUS",
+          recoverable: true
+        })
+      });
+      expect(projectQualified).toMatchObject({
+        ok: true,
+        skill: expect.objectContaining({
+          content: expect.stringContaining("Project workflow body."),
+          source: "project"
+        })
+      });
+      expect(globalQualified).toMatchObject({
+        ok: true,
+        skill: expect.objectContaining({
+          content: expect.stringContaining("Global workflow body."),
+          source: "global"
+        })
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured recoverable errors for missing, unsafe, and escaped skills", () => {
+    const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
+    const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+    const outsideSkill = join(rootDir, "outside-skill");
+
+    try {
+      writeSkillManifest(
+        projectSkillsRoot,
+        "unsafe",
+        `
+name: unsafe-body
+description: Metadata is safe but body is not.
+`,
+        "Do not load OPENAI_API_KEY=sk-test-secret into context."
+      );
+      writeSkillManifest(
+        outsideSkill,
+        ".",
+        `
+name: escaped-skill
+description: This skill is outside the trusted root.
+`,
+        "Escaped body."
+      );
+      mkdirSync(projectSkillsRoot, { recursive: true });
+      symlinkSync(outsideSkill, join(projectSkillsRoot, "escaped"), "dir");
+
+      const missing = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "missing-skill"
+      });
+      const unsafe = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "unsafe-body"
+      });
+      const escaped = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "escaped"
+      });
+      const serialized = JSON.stringify({ escaped, missing, unsafe });
+
+      expect(missing).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({
+          code: "SKILL_NOT_FOUND",
+          recoverable: true
+        })
+      });
+      expect(unsafe).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({
+          code: "SKILL_CONTENT_UNSAFE",
+          recoverable: true
+        })
+      });
+      expect(escaped).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({
+          code: "SKILL_PATH_ESCAPE",
+          recoverable: true
+        })
+      });
+      expect(serialized).not.toContain("sk-test-secret");
+      expect(serialized).not.toContain("OPENAI_API_KEY");
+      expect(serialized).not.toContain(outsideSkill);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

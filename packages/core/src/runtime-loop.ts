@@ -17,6 +17,7 @@ import type {
 } from "./task-state.js";
 import {
   assembleTaskContextPacket,
+  type TaskContextSkillInput,
   type TaskContextMemoryInput,
   type TaskContextSessionStateInput,
   type WorkingMemorySnapshot
@@ -28,6 +29,7 @@ export interface TaskRequestContextOptions {
   compactedContext?: CompactedSessionContext;
   memoryEntries?: readonly TaskContextMemoryInput[];
   sessionState?: TaskContextSessionStateInput;
+  skillEntries?: readonly TaskContextSkillInput[];
   workingMemory?: WorkingMemorySnapshot;
 }
 
@@ -47,6 +49,7 @@ export function createTaskRequest(
       memoryEntries: options.memoryEntries,
       provider: bootstrapState.provider,
       sessionState: options.sessionState,
+      skillEntries: options.skillEntries,
       startup: bootstrapState.startup,
       task,
       workingMemory: options.workingMemory

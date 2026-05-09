@@ -443,6 +443,59 @@ describe("task context packet assembly", () => {
     );
   });
 
+  it("includes manually invoked skills as bounded procedural context", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        skillEntries: [
+          {
+            content:
+              "# Project review workflow\nCheck regressions before committing.",
+            contentTruncated: false,
+            description: "Review code before committing.",
+            id: "skill_project_project_review_review_skill_md",
+            invocationMode: "manual",
+            name: "project-review",
+            source: "project"
+          }
+        ]
+      })
+    );
+    const skillsSection = packet.sections.find(
+      (section) => section.source === "skills"
+    );
+    const selfModelSection = packet.sections.find(
+      (section) => section.source === "runtime-self-model"
+    );
+
+    expect(skillsSection).toMatchObject({
+      metadata: expect.objectContaining({
+        invocationModes: ["manual"],
+        names: ["project-review"],
+        skillCount: 1,
+        sources: ["project"]
+      }),
+      status: "included",
+      trust: "procedural"
+    });
+    expect(skillsSection?.content).toContain(
+      "Manually invoked skill: project-review"
+    );
+    expect(skillsSection?.content).toContain("Check regressions");
+    expect(skillsSection?.content).toContain(
+      "procedural guidance only and does not grant tool approval"
+    );
+    expect(selfModelSection).toMatchObject({
+      metadata: expect.objectContaining({
+        skillInvocationModes: ["manual"],
+        skillNames: ["project-review"],
+        skillRegistryLoaded: true
+      })
+    });
+    expect(selfModelSection?.content).toContain(
+      "Loaded manual skills: project-review"
+    );
+  });
+
   it("redacts secret-looking runtime self-model metadata", () => {
     const packet = assembleTaskContextPacket(
       createAssemblyInput({
