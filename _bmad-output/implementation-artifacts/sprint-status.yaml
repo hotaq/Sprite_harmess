@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-05-09T21:11:46+0700
+# last_updated: 2026-05-09T21:26:30+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-05-09T21:24:50+0700
+last_updated: 2026-05-09T21:26:30+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -73,7 +73,7 @@ development_status:
   3-7-trigger-manual-compaction: done
   3-8-continue-work-from-compacted-context: done
   epic-3-retrospective: done
-  epic-4: in-progress
+  epic-4: done
   4-1-maintain-working-memory-and-runtime-self-model-during-a-task: done
   4-2-store-episodic-and-semantic-memory-candidates: done
   4-3-review-edit-reject-or-accept-memory-candidates: done
@@ -81,7 +81,7 @@ development_status:
   4-5-show-prior-memory-or-lesson-influence-during-a-later-task: done
   4-6-trigger-retrospective-review-for-completed-failed-or-aborted-tasks: done
   4-7-store-procedural-memory-through-skill-linked-learning-outputs: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
   epic-5: backlog
   5-1-list-available-skills-from-manual-skill-registry: backlog
   5-2-manually-invoke-a-skill-during-a-task: backlog
