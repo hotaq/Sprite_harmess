@@ -1,6 +1,6 @@
 # Story 5.1: List Available Skills from Manual Skill Registry
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -20,60 +20,60 @@ so that I know what reusable workflows the agent can use.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-5)
-  - [ ] Report exact functions/contracts to add or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially `createProgram`, any core wrapper that exposes skill listing, and task-context/self-model helpers if they are updated.
-  - [ ] Keep this story list-only: no skill invocation, no skill candidate aggregation, no promotion, no active behavior change.
-  - [ ] Preserve the Epic 4 guardrail: skill signals and procedural outputs remain candidate evidence, not active skills.
+- [x] Confirm implementation function list before code edits (AC: 1-5)
+  - [x] Report exact functions/contracts to add or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially `createProgram`, any core wrapper that exposes skill listing, and task-context/self-model helpers if they are updated.
+  - [x] Keep this story list-only: no skill invocation, no skill candidate aggregation, no promotion, no active behavior change.
+  - [x] Preserve the Epic 4 guardrail: skill signals and procedural outputs remain candidate evidence, not active skills.
 
-- [ ] Define manual skill registry contracts in `packages/skills` (AC: 1-5)
-  - [ ] Add exported registry/listing types such as `SkillRegistrySource`, `SkillLifecycleState`, `SkillRegistryEntry`, `UnavailableSkillRegistryEntry`, `SkillRegistryWarning`, and `ListSkillsResult`.
-  - [ ] Add registry root resolution for project `.sprite/skills` and global `$HOME/.sprite/skills`.
-  - [ ] Define manual skill artifacts as directories containing `SKILL.md` with bounded frontmatter metadata: `name`, `description`, optional `activationHint`.
-  - [ ] Compute `source` from the registry root (`project` or `global`); do not trust the artifact to self-declare its source.
-  - [ ] Use a candidate-safe lifecycle for usable manual registry skills, e.g. `manual`; use `unavailable` only for malformed/unreadable entries.
-  - [ ] Do not scan `.codex/skills`, `.agents/skills`, BMAD skills, or Codex-native agent skills as product runtime skills in this story.
+- [x] Define manual skill registry contracts in `packages/skills` (AC: 1-5)
+  - [x] Add exported registry/listing types such as `SkillRegistrySource`, `SkillLifecycleState`, `SkillRegistryEntry`, `UnavailableSkillRegistryEntry`, `SkillRegistryWarning`, and `ListSkillsResult`.
+  - [x] Add registry root resolution for project `.sprite/skills` and global `$HOME/.sprite/skills`.
+  - [x] Define manual skill artifacts as directories containing `SKILL.md` with bounded frontmatter metadata: `name`, `description`, optional `activationHint`.
+  - [x] Compute `source` from the registry root (`project` or `global`); do not trust the artifact to self-declare its source.
+  - [x] Use a candidate-safe lifecycle for usable manual registry skills, e.g. `manual`; use `unavailable` only for malformed/unreadable entries.
+  - [x] Do not scan `.codex/skills`, `.agents/skills`, BMAD skills, or Codex-native agent skills as product runtime skills in this story.
 
-- [ ] Add safe registry loading and validation (AC: 1-5)
-  - [ ] Implement deterministic directory scanning with stable sort order.
-  - [ ] Validate registry paths stay inside their expected root and do not escape through relative paths.
-  - [ ] Treat malformed, missing, unsafe, unreadable, or invalid `SKILL.md` entries as unavailable warnings, not thrown crashes.
-  - [ ] Reject or redact secret-like values and forbidden raw fields (`content`, `rawOutput`, `stdout`, `stderr`, `diff`, `patch`, `token`, `secret`, credentials, private keys, etc.).
-  - [ ] Return bounded safe previews only; listing must not dump full skill bodies.
-  - [ ] Define duplicate-name behavior explicitly. Recommended: project and global entries are both distinguishable in list output; future invocation may choose project precedence.
+- [x] Add safe registry loading and validation (AC: 1-5)
+  - [x] Implement deterministic directory scanning with stable sort order.
+  - [x] Validate registry paths stay inside their expected root and do not escape through relative paths.
+  - [x] Treat malformed, missing, unsafe, unreadable, or invalid `SKILL.md` entries as unavailable warnings, not thrown crashes.
+  - [x] Reject or redact secret-like values and forbidden raw fields (`content`, `rawOutput`, `stdout`, `stderr`, `diff`, `patch`, `token`, `secret`, credentials, private keys, etc.).
+  - [x] Return bounded safe previews only; listing must not dump full skill bodies.
+  - [x] Define duplicate-name behavior explicitly. Recommended: project and global entries are both distinguishable in list output; future invocation may choose project precedence.
 
-- [ ] Expose skill listing through the runtime/core boundary (AC: 1-4)
-  - [ ] Add a thin core-facing function or runtime method that calls `@sprite/skills` and returns a safe list result.
-  - [ ] Keep CLI and future UI/RPC as renderers over the shared runtime/core result; do not duplicate registry scanning in CLI.
-  - [ ] Ensure listing can run without a configured provider and without starting/resuming a task.
-  - [ ] Do not emit task runtime events for a plain list command unless a later story explicitly defines skill usage/influence audit semantics.
+- [x] Expose skill listing through the runtime/core boundary (AC: 1-4)
+  - [x] Add a thin core-facing function or runtime method that calls `@sprite/skills` and returns a safe list result.
+  - [x] Keep CLI and future UI/RPC as renderers over the shared runtime/core result; do not duplicate registry scanning in CLI.
+  - [x] Ensure listing can run without a configured provider and without starting/resuming a task.
+  - [x] Do not emit task runtime events for a plain list command unless a later story explicitly defines skill usage/influence audit semantics.
 
-- [ ] Add CLI list command (AC: 1-4)
-  - [ ] Add `sprite skills list` with `--output text|json`.
-  - [ ] Text output should clearly separate project skills, global skills, and unavailable skills/warnings.
-  - [ ] JSON output should include `skills`, `unavailableSkills` or `warnings`, source metadata, lifecycle state, activation/manual invocation hint, and safe project/global registry roots.
-  - [ ] Invalid output format should return a structured CLI error consistent with existing session commands.
+- [x] Add CLI list command (AC: 1-4)
+  - [x] Add `sprite skills list` with `--output text|json`.
+  - [x] Text output should clearly separate project skills, global skills, and unavailable skills/warnings.
+  - [x] JSON output should include `skills`, `unavailableSkills` or `warnings`, source metadata, lifecycle state, activation/manual invocation hint, and safe project/global registry roots.
+  - [x] Invalid output format should return a structured CLI error consistent with existing session commands.
 
-- [ ] Update package wiring without introducing new dependencies (AC: 1-5)
-  - [ ] Add `exports` and `types` to `packages/skills/package.json` if `@sprite/skills` is imported by other packages.
-  - [ ] Add `@sprite/skills` dependency to `packages/core/package.json` if the core owns the shared listing API.
-  - [ ] Add `packages/skills/dist` and package metadata to root `package.json` `files` if package distribution now includes the skills package.
-  - [ ] Keep implementation in TypeScript/Vitest only; do not add YAML, frontmatter, glob, or filesystem dependencies.
+- [x] Update package wiring without introducing new dependencies (AC: 1-5)
+  - [x] Add `exports` and `types` to `packages/skills/package.json` if `@sprite/skills` is imported by other packages.
+  - [x] Add `@sprite/skills` dependency to `packages/core/package.json` if the core owns the shared listing API.
+  - [x] Add `packages/skills/dist` and package metadata to root `package.json` `files` if package distribution now includes the skills package.
+  - [x] Keep implementation in TypeScript/Vitest only; do not add YAML, frontmatter, glob, or filesystem dependencies.
 
-- [ ] Add regression tests (AC: 1-5)
-  - [ ] Skills package tests: project/global registry discovery, valid `SKILL.md` parsing, stable ordering, duplicate visibility, and missing directory behavior.
-  - [ ] Skills package tests: malformed/unreadable/unsafe skill entries produce unavailable warnings and do not throw.
-  - [ ] CLI tests: `sprite skills list` text output distinguishes project/global/unavailable entries.
-  - [ ] CLI tests: `sprite skills list --output json` returns structured safe data and warnings.
-  - [ ] Safety tests: unsafe metadata and secret-looking values are redacted or rejected and never appear in output.
-  - [ ] Regression test: listing skills does not create `.sprite/skill-candidates`, does not read learning-review procedural outputs as active skills, and does not create runtime task events.
+- [x] Add regression tests (AC: 1-5)
+  - [x] Skills package tests: project/global registry discovery, valid `SKILL.md` parsing, stable ordering, duplicate visibility, and missing directory behavior.
+  - [x] Skills package tests: malformed/unreadable/unsafe skill entries produce unavailable warnings and do not throw.
+  - [x] CLI tests: `sprite skills list` text output distinguishes project/global/unavailable entries.
+  - [x] CLI tests: `sprite skills list --output json` returns structured safe data and warnings.
+  - [x] Safety tests: unsafe metadata and secret-looking values are redacted or rejected and never appear in output.
+  - [x] Regression test: listing skills does not create `.sprite/skill-candidates`, does not read learning-review procedural outputs as active skills, and does not create runtime task events.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-5)
-  - [ ] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
-  - [ ] Run targeted validation before review: skills package tests, CLI smoke tests, task-context tests if self-model/skills context changes, and typecheck.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-5)
+  - [x] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
+  - [x] Run targeted validation before review: skills package tests, CLI smoke tests, task-context tests if self-model/skills context changes, and typecheck.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
 
 ## Dev Notes
 
@@ -213,16 +213,43 @@ GPT-5.5
 - 2026-05-09: Loaded Epic 5 Story 5.1 requirements, PRD FR52 and skill lifecycle NFRs, architecture skill evolution guidance, Epic 4 retrospective guardrails, current `packages/skills` placeholder, CLI command patterns, task-context skills placeholder, and recent GitNexus context/impact for `createProgram` and `assembleTaskContextPacket`.
 - 2026-05-09: No web research needed; implementation should use existing TypeScript/Vitest/Node filesystem APIs and no new dependencies.
 - 2026-05-09: Development started. First step is baseline validation before implementation, then confirm function/contract list and GitNexus impact before code edits.
+- 2026-05-09: Confirmed implementation function/contract list before code edits and reran GitNexus after stale-index warning; `createProgram` impact was LOW with direct caller `runCli` only.
+- 2026-05-09: Added RED tests for `@sprite/skills` manual registry behavior and `sprite skills list`; initial targeted run failed because package exports/CLI command did not exist.
+- 2026-05-09: Implemented manual registry scanning, safe metadata validation, core wrapper, CLI text/json renderers, and package wiring with no new external dependencies.
+- 2026-05-09: Targeted validation passed: `npm test -- --run tests/skill-registry.test.ts tests/cli-smoke.test.ts` (31 tests).
+- 2026-05-09: Typecheck passed: `npm run typecheck -- --pretty false`.
+- 2026-05-09: Full validation passed: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` (17 files / 284 tests; diff check clean).
 
 ### Completion Notes List
 
 - Story context created with manual skill registry scope, product/runtime skill path boundaries, no-invocation/no-promotion guardrails, likely contracts/functions, and test expectations.
+- Implemented `@sprite/skills` read-only manual registry listing for project `.sprite/skills` and global `$HOME/.sprite/skills`.
+- Added safe bounded frontmatter parsing for `SKILL.md` metadata (`name`, `description`, optional `activationHint`) with lifecycle states `manual` and `unavailable`.
+- Added structured warning/unavailable handling for missing, malformed, unreadable, unsafe, invalid, and path-escaping skill entries without throwing.
+- Added `listSkills()` core boundary so CLI/UI/RPC renderers can use the same safe result without duplicating filesystem scanning.
+- Added `sprite skills list --output text|json`; the command runs without provider configuration, does not start/resume a task, and does not create runtime/session/candidate artifacts.
+- Preserved Epic 4 guardrail: `.codex/skills`, `.agents/skills`, learning-review procedural outputs, skill candidates, and promoted-skill behavior remain outside this list-only story.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/5-1-list-available-skills-from-manual-skill-registry.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `package-lock.json`
+- `package.json`
+- `packages/cli/src/index.ts`
+- `packages/core/package.json`
+- `packages/core/src/index.ts`
+- `packages/core/src/skill-registry.ts`
+- `packages/core/tsconfig.json`
+- `packages/skills/package.json`
+- `packages/skills/src/index.ts`
+- `packages/skills/tsconfig.json`
+- `tests/cli-smoke.test.ts`
+- `tests/skill-registry.test.ts`
+- `tsconfig.base.json`
 
 ## Change Log
 
 - 2026-05-09: Created story context for listing available skills from the manual skill registry.
 - 2026-05-09: Started development and moved story to in-progress.
+- 2026-05-09: Implemented manual skill registry listing, CLI output, safety validation, package wiring, regression tests, and moved story to review.

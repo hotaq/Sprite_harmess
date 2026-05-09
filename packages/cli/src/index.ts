@@ -6,14 +6,18 @@ import {
   createBootstrapMessage,
   createInteractiveTaskMessage,
   inspectSessionState,
+  listSkills,
   resolveOneShotPrintOutputFormat,
   runOneShotPrintTask,
   type FinalTaskSummary,
+  type ListSkillsResult,
   type ManualSessionCompactionResult,
   type OneShotPrintOutputFormat,
   type OneShotPrintTaskResult,
   type SessionInspectionView,
-  type SessionResumeResult
+  type SessionResumeResult,
+  type SkillRegistryEntry,
+  type UnavailableSkillRegistryEntry
 } from "@sprite/core";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
@@ -133,6 +137,77 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
 
 function renderOneShotJson(result: OneShotPrintTaskResult): string {
   return JSON.stringify(result, null, 2);
+}
+
+function renderSkillsListJson(result: ListSkillsResult): string {
+  return JSON.stringify(result, null, 2);
+}
+
+function renderSkillsListText(result: ListSkillsResult): string {
+  const projectSkills = result.skills.filter(
+    (skill) => skill.source === "project"
+  );
+  const globalSkills = result.skills.filter(
+    (skill) => skill.source === "global"
+  );
+
+  return [
+    "Skills registry:",
+    "Registry roots:",
+    ...result.registryRoots.map(
+      (root) =>
+        `- ${root.source}: ${root.path} (${root.exists ? "found" : "missing"})`
+    ),
+    "Project skills:",
+    ...renderAvailableSkills(projectSkills),
+    "Global skills:",
+    ...renderAvailableSkills(globalSkills),
+    "Unavailable skills:",
+    ...renderUnavailableSkills(result.unavailableSkills),
+    "Warnings:",
+    ...renderSkillWarnings(result)
+  ].join("\n");
+}
+
+function renderAvailableSkills(skills: SkillRegistryEntry[]): string[] {
+  if (skills.length === 0) {
+    return ["- none"];
+  }
+
+  return skills.flatMap((skill) => [
+    `- ${skill.name} [${skill.lifecycleState}]`,
+    `  description: ${skill.description}`,
+    `  source: ${skill.source}`,
+    `  path: ${skill.relativePath}`,
+    `  activation: ${skill.activationHint}`
+  ]);
+}
+
+function renderUnavailableSkills(
+  unavailableSkills: UnavailableSkillRegistryEntry[]
+): string[] {
+  if (unavailableSkills.length === 0) {
+    return ["- none"];
+  }
+
+  return unavailableSkills.map((skill) => {
+    const pathLabel = skill.relativePath ?? skill.registryRoot;
+
+    return `- ${pathLabel} [${skill.lifecycleState}] - ${skill.warning.code}: ${skill.warning.message}`;
+  });
+}
+
+function renderSkillWarnings(result: ListSkillsResult): string[] {
+  if (result.warnings.length === 0) {
+    return ["- none"];
+  }
+
+  return result.warnings.map((warning) => {
+    const pathLabel =
+      warning.relativePath === undefined ? "" : ` (${warning.relativePath})`;
+
+    return `- ${warning.code}${pathLabel}: ${warning.message}`;
+  });
 }
 
 function renderProjectContextText(
@@ -465,6 +540,33 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
   const sessionCommand = program
     .command("session")
     .description("inspect or compact local session state");
+
+  const skillsCommand = program
+    .command("skills")
+    .description("inspect manually registered reusable skills");
+
+  skillsCommand
+    .command("list")
+    .description("list project and global manual skills")
+    .option("--output <format>", "print output format: text or json")
+    .action((options: { output?: string }, command: Command) => {
+      const optionValues = command.optsWithGlobals<{ output?: string }>();
+      const outputFormat = parseSessionTextJsonOutputFormat(
+        options.output ?? optionValues.output,
+        "Skills list"
+      );
+      const result = listSkills({
+        cwd: process.cwd(),
+        homeDir: process.env.HOME ?? process.env.USERPROFILE
+      });
+
+      writeMessage(
+        io,
+        outputFormat === "json"
+          ? renderSkillsListJson(result)
+          : renderSkillsListText(result)
+      );
+    });
 
   sessionCommand
     .command("inspect <sessionId>")

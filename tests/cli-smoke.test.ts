@@ -92,6 +92,180 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout.trim()).toBe(packageJson.version);
   });
 
+  it("lists project, global, and unavailable manual skills as safe text", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      writeRaw(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+activationHint: Manually invoke project review.
+---
+
+Unsafe body content sk-test-secret must never be printed.
+`
+      );
+      writeRaw(
+        join(homeDir, ".sprite", "skills", "test", "SKILL.md"),
+        `---
+name: global-test
+description: Build a reusable test plan.
+---
+`
+      );
+      writeRaw(
+        join(projectDir, ".sprite", "skills", "unsafe", "SKILL.md"),
+        `---
+name: unsafe-skill
+description: OPENAI_API_KEY=sk-test-secret must be rejected.
+token: sk-test-secret
+---
+`
+      );
+
+      const result = spawnSync("node", [cliPath, "skills", "list"], {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir },
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Skills registry:");
+      expect(result.stdout).toContain("Project skills:");
+      expect(result.stdout).toContain("- project-review [manual]");
+      expect(result.stdout).toContain("source: project");
+      expect(result.stdout).toContain("Global skills:");
+      expect(result.stdout).toContain("- global-test [manual]");
+      expect(result.stdout).toContain("source: global");
+      expect(result.stdout).toContain("Unavailable skills:");
+      expect(result.stdout).toContain("unsafe/SKILL.md");
+      expect(result.stdout).toContain("SKILL_MANIFEST_UNSAFE");
+      expect(result.stdout).not.toContain("sk-test-secret");
+      expect(result.stdout).not.toContain("OPENAI_API_KEY");
+      expect(
+        existsSync(join(projectDir, ".sprite", "skill-candidates"))
+      ).toBe(false);
+      expect(existsSync(join(projectDir, ".sprite", "sessions"))).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists manual skills as structured JSON without unsafe metadata", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      writeRaw(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+activationHint: Manually invoke project review.
+---
+`
+      );
+      writeRaw(
+        join(homeDir, ".sprite", "skills", "test", "SKILL.md"),
+        `---
+name: global-test
+description: Build a reusable test plan.
+---
+`
+      );
+      writeRaw(
+        join(projectDir, ".sprite", "skills", "unsafe", "SKILL.md"),
+        `---
+name: unsafe-skill
+description: sk-test-secret must be rejected.
+secret: sk-test-secret
+---
+`
+      );
+
+      const result = spawnSync(
+        "node",
+        [cliPath, "skills", "list", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain("sk-test-secret");
+
+      const output = parseJsonOutput(result.stdout);
+
+      expect(output).toMatchObject({
+        schemaVersion: 1,
+        registryRoots: expect.arrayContaining([
+          expect.objectContaining({ source: "project", exists: true }),
+          expect.objectContaining({ source: "global", exists: true })
+        ]),
+        skills: expect.arrayContaining([
+          expect.objectContaining({
+            name: "project-review",
+            source: "project",
+            lifecycleState: "manual",
+            activationHint: "Manually invoke project review."
+          }),
+          expect.objectContaining({
+            name: "global-test",
+            source: "global",
+            lifecycleState: "manual",
+            activationHint: "Manual invocation only."
+          })
+        ]),
+        unavailableSkills: expect.arrayContaining([
+          expect.objectContaining({
+            relativePath: "unsafe/SKILL.md",
+            source: "project",
+            lifecycleState: "unavailable",
+            warning: expect.objectContaining({
+              code: "SKILL_MANIFEST_UNSAFE"
+            })
+          })
+        ]),
+        warnings: expect.arrayContaining([
+          expect.objectContaining({ code: "SKILL_MANIFEST_UNSAFE" })
+        ])
+      });
+      expect(JSON.stringify(output)).not.toContain("sk-test-secret");
+      expect(
+        existsSync(join(projectDir, ".sprite", "skill-candidates"))
+      ).toBe(false);
+      expect(existsSync(join(projectDir, ".sprite", "sessions"))).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports skill-list-specific output format errors", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const result = spawnSync(
+        "node",
+        [cliPath, "skills", "list", "--output", "yaml"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "Skills list output format must be one of: text, json."
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("shows merged startup config when global and project config exist", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 
