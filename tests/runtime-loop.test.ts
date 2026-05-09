@@ -1065,6 +1065,238 @@ describe("AgentRuntime interactive task flow", () => {
     }
   });
 
+  it("creates a user-triggered retrospective review for failed terminal tasks with retained context", async () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "trigger retrospective for failed task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const command = await runtime.executeToolCall({
+        input: {
+          command: "pwd",
+          timeoutMs: 30_000
+        },
+        toolName: "run_command"
+      });
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(command.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+
+      const failed = runtime.failActiveTask(
+        "Provider failed before recovery completed."
+      );
+
+      expect(failed.ok).toBe(true);
+      if (!failed.ok) {
+        return;
+      }
+
+      const retrospective = runtime.createRetrospectiveReview();
+
+      expect(retrospective.ok).toBe(true);
+      if (!retrospective.ok) {
+        return;
+      }
+      expect(retrospective.value.status).toBe("created");
+      if (retrospective.value.status !== "created") {
+        return;
+      }
+
+      expect(retrospective.value.review).toMatchObject({
+        sessionId: failed.value.sessionId,
+        taskId: failed.value.taskId,
+        terminalStatus: "failed",
+        finalStatus: "failed"
+      });
+      expect(retrospective.value.event.type).toBe(
+        "retrospective.review.created"
+      );
+      expect(existsSync(retrospective.value.artifactPath)).toBe(true);
+      expect(readFileSync(retrospective.value.artifactPath, "utf8")).toContain(
+        "Provider failed before recovery completed."
+      );
+
+      const activeTask = runtime.getActiveTask();
+
+      expect(activeTask.ok).toBe(true);
+      if (!activeTask.ok) {
+        return;
+      }
+      expect(
+        activeTask.value.events.some(
+          (event) => event.type === "retrospective.review.created"
+        )
+      ).toBe(true);
+      expect(
+        activeTask.value.events.some(
+          (event) => event.type === "learning.review.created"
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates user-triggered retrospectives for completed and aborted task states", async () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      for (const scenario of [
+        {
+          expectedStatus: "completed",
+          finish: (runtime: AgentRuntime) =>
+            runtime.completeActiveTask(
+              "Task completed with command and file evidence."
+            ),
+          goal: "completed retrospective task"
+        },
+        {
+          expectedStatus: "cancelled",
+          finish: (runtime: AgentRuntime) =>
+            runtime.cancelActiveTask("User cancelled after command evidence."),
+          goal: "cancelled retrospective task"
+        },
+        {
+          expectedStatus: "max-iterations",
+          finish: (runtime: AgentRuntime) =>
+            runtime.stopActiveTaskForMaxIterations(
+              "Task stopped at max iterations after command evidence."
+            ),
+          goal: "max iteration retrospective task"
+        }
+      ] as const) {
+        const runtime = new AgentRuntime({
+          cwd: projectDir,
+          homeDir: join(rootDir, `home-${scenario.expectedStatus}`)
+        });
+        const submitted = runtime.submitInteractiveTask(scenario.goal);
+
+        expect(submitted.ok).toBe(true);
+        if (!submitted.ok) {
+          return;
+        }
+
+        const command = await runtime.executeToolCall({
+          input: {
+            command: "pwd",
+            timeoutMs: 30_000
+          },
+          toolName: "run_command"
+        });
+        const changed = runtime.recordFileActivity({
+          kind: "changed",
+          paths: [`${scenario.expectedStatus}.md`]
+        });
+
+        expect(command.ok).toBe(true);
+        expect(changed.ok).toBe(true);
+
+        const terminal = scenario.finish(runtime);
+
+        expect(terminal.ok).toBe(true);
+        if (!terminal.ok) {
+          return;
+        }
+
+        const retrospective = runtime.createRetrospectiveReview();
+
+        expect(retrospective.ok).toBe(true);
+        if (!retrospective.ok) {
+          return;
+        }
+        expect(retrospective.value.status).toBe("created");
+        if (retrospective.value.status !== "created") {
+          return;
+        }
+        expect(retrospective.value.review.terminalStatus).toBe(
+          scenario.expectedStatus
+        );
+        expect(retrospective.value.review.finalStatus).toBe(
+          scenario.expectedStatus
+        );
+        expect(retrospective.value.event.payload.terminalStatus).toBe(
+          scenario.expectedStatus
+        );
+        expect(existsSync(retrospective.value.artifactPath)).toBe(true);
+      }
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns structured missing retrospective context without writing artifacts", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "missing retrospective context"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const failed = runtime.failActiveTask(
+        "Provider failed before recovery completed."
+      );
+
+      expect(failed.ok).toBe(true);
+      if (!failed.ok) {
+        return;
+      }
+
+      const retrospective = runtime.createRetrospectiveReview();
+
+      expect(retrospective.ok).toBe(true);
+      if (!retrospective.ok) {
+        return;
+      }
+      expect(retrospective.value).toMatchObject({
+        status: "missing-context",
+        missingFields: ["filesTouched", "commandsRun"]
+      });
+      expect(
+        existsSync(
+          join(
+            projectDir,
+            ".sprite",
+            "sessions",
+            failed.value.sessionId,
+            "retrospectives",
+            `${failed.value.taskId}.json`
+          )
+        )
+      ).toBe(false);
+      expect(
+        failed.value.events.some(
+          (event) => event.type === "retrospective.review.created"
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("includes apply_patch changed files in final summaries", async () => {
     const { projectDir, rootDir } = createTempProject();
 

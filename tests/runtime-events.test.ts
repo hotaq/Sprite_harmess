@@ -217,6 +217,94 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(event).ok).toBe(true);
   });
 
+  it("validates retrospective review created runtime events", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_retrospective_review",
+        sessionId: "ses_retrospective",
+        taskId: "task_retrospective",
+        correlationId: "corr_retrospective",
+        createdAt: "2026-05-09T13:00:00.000Z"
+      },
+      "retrospective.review.created",
+      {
+        artifactPath:
+          ".sprite/sessions/ses_retrospective/retrospectives/task_retrospective.json",
+        commandCount: 1,
+        evidenceEventIds: ["evt_failed", "evt_command_completed"],
+        fileCount: 1,
+        finalStatus: "failed",
+        memoryCandidateCount: 1,
+        missedAssumptionCount: 0,
+        nextTimeImprovementCount: 1,
+        skillSignalCount: 1,
+        status: "recorded",
+        summary: "Retrospective review for failed task.",
+        terminalStatus: "failed"
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+  });
+
+  it("rejects retrospective review events with unsafe or missing evidence", () => {
+    const baseEvent = {
+      schemaVersion: 1 as const,
+      eventId: "evt_retrospective_invalid",
+      sessionId: "ses_retrospective",
+      taskId: "task_retrospective",
+      correlationId: "corr_retrospective",
+      createdAt: "2026-05-09T13:00:00.000Z",
+      type: "retrospective.review.created" as const,
+      payload: {
+        artifactPath:
+          ".sprite/sessions/ses_retrospective/retrospectives/task_retrospective.json",
+        commandCount: 1,
+        evidenceEventIds: ["evt_failed"],
+        fileCount: 1,
+        finalStatus: "failed",
+        memoryCandidateCount: 1,
+        missedAssumptionCount: 0,
+        nextTimeImprovementCount: 1,
+        skillSignalCount: 1,
+        status: "recorded",
+        summary: "Retrospective review for failed task.",
+        terminalStatus: "failed"
+      }
+    };
+
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_retrospective_no_evidence",
+        payload: {
+          ...baseEvent.payload,
+          evidenceEventIds: []
+        }
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_retrospective_raw",
+        payload: {
+          ...baseEvent.payload,
+          rawOutput: "provider stdout"
+        }
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_retrospective_secret",
+        payload: {
+          ...baseEvent.payload,
+          summary: "OPENAI_API_KEY=sk-test-secret"
+        }
+      }).ok
+    ).toBe(false);
+  });
+
   it("validates memory influence recorded runtime events for every audit status", () => {
     const context = {
       eventId: "evt_memory_influence",

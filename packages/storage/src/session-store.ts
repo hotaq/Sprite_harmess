@@ -20,7 +20,14 @@ import {
 
 export const SESSION_STATE_SCHEMA_VERSION = 1 as const;
 const SESSION_ID_PATTERN = /^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const SESSION_TASK_ID_PATTERN = /^task_[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const SESSION_COMPACTION_ARTIFACT_ID_PATTERN = /^cmp-[a-z0-9][a-z0-9-]*$/;
+const RETROSPECTIVE_TERMINAL_STATUSES = [
+  "cancelled",
+  "completed",
+  "failed",
+  "max-iterations"
+] as const;
 export const SESSION_SNAPSHOT_TASK_STATUSES = [
   "planned",
   "waiting-for-input",
@@ -66,6 +73,7 @@ export interface SessionArtifactPaths {
   statePath: string;
   compactionsDir: string;
   learningReviewsDir: string;
+  retrospectivesDir: string;
 }
 
 export interface SessionEventRecord {
@@ -173,12 +181,40 @@ export interface StoredLearningReviewLessonCandidate {
   sourceTaskId: string;
 }
 
+export interface StoredRetrospectiveReviewArtifact {
+  commandsRun: readonly object[];
+  context: object;
+  correlationId: string;
+  createdAt: string;
+  evidence: object;
+  eventHistoryReference: object;
+  failureReason?: string;
+  filesTouched: readonly string[];
+  finalStatus: (typeof RETROSPECTIVE_TERMINAL_STATUSES)[number];
+  memoryCandidates: readonly object[];
+  missedAssumptions: readonly object[];
+  nextTimeImprovements: readonly object[];
+  outcome?: string;
+  schemaVersion: typeof SESSION_STATE_SCHEMA_VERSION;
+  sessionId: string;
+  skillSignals: readonly object[];
+  summary: string;
+  taskGoal: string;
+  taskId: string;
+  terminalStatus: (typeof RETROSPECTIVE_TERMINAL_STATUSES)[number];
+}
+
 export interface WriteSessionCompactionArtifactResult {
   artifactId: string;
   artifactPath: string;
 }
 
 export interface WriteLearningReviewArtifactResult {
+  artifactPath: string;
+  taskId: string;
+}
+
+export interface WriteRetrospectiveReviewArtifactResult {
   artifactPath: string;
   taskId: string;
 }
@@ -202,6 +238,10 @@ export interface SessionStore {
     sessionId: string,
     review: StoredLearningReviewArtifact
   ): Result<WriteLearningReviewArtifactResult, SpriteError>;
+  writeRetrospectiveReview?(
+    sessionId: string,
+    review: StoredRetrospectiveReviewArtifact
+  ): Result<WriteRetrospectiveReviewArtifactResult, SpriteError>;
   writeStateSnapshot(snapshot: SessionStateSnapshot): Result<void, SpriteError>;
 }
 
@@ -229,6 +269,7 @@ export class LocalSessionStore implements SessionStore {
       mkdirSync(paths.value.rootDir, { recursive: true });
       mkdirSync(paths.value.compactionsDir, { recursive: true });
       mkdirSync(paths.value.learningReviewsDir, { recursive: true });
+      mkdirSync(paths.value.retrospectivesDir, { recursive: true });
       writeFileSync(paths.value.eventsPath, "", { flag: "a" });
       this.sessionPaths.set(sessionId, paths.value);
 
@@ -383,6 +424,57 @@ export class LocalSessionStore implements SessionStore {
     }
   }
 
+  writeRetrospectiveReview(
+    sessionId: string,
+    review: StoredRetrospectiveReviewArtifact
+  ): Result<WriteRetrospectiveReviewArtifactResult, SpriteError> {
+    const paths = this.getKnownSessionPaths(sessionId);
+
+    if (!paths.ok) {
+      return err(paths.error);
+    }
+
+    const validation = validateStoredRetrospectiveReviewArtifact(
+      sessionId,
+      review
+    );
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+
+    const artifactPath = resolveRetrospectiveReviewArtifactPath(
+      paths.value,
+      validation.value.taskId
+    );
+
+    if (!artifactPath.ok) {
+      return err(artifactPath.error);
+    }
+
+    try {
+      mkdirSync(paths.value.retrospectivesDir, { recursive: true });
+      const tempPath = path.join(
+        paths.value.retrospectivesDir,
+        `.${validation.value.taskId}.json.tmp-${process.pid}-${Date.now()}-${randomUUID()}`
+      );
+      writeFileSync(
+        tempPath,
+        `${JSON.stringify(validation.value, null, 2)}\n`
+      );
+      renameSync(tempPath, artifactPath.value);
+
+      return okSession({
+        artifactPath: artifactPath.value,
+        taskId: validation.value.taskId
+      });
+    } catch (error: unknown) {
+      return err(
+        toSessionStorageError("SESSION_RETROSPECTIVE_REVIEW_WRITE_FAILED", error)
+      );
+    }
+  }
+
   private getKnownSessionPaths(
     sessionId: string
   ): Result<SessionArtifactPaths, SpriteError> {
@@ -451,7 +543,8 @@ export function resolveSessionArtifactPaths(
       eventsPath: path.join(rootDir, "events.ndjson"),
       statePath: path.join(rootDir, "state.json"),
       compactionsDir: path.join(rootDir, "compactions"),
-      learningReviewsDir: path.join(rootDir, "learning-reviews")
+      learningReviewsDir: path.join(rootDir, "learning-reviews"),
+      retrospectivesDir: path.join(rootDir, "retrospectives")
     }
   };
 }
@@ -460,7 +553,7 @@ export function resolveLearningReviewArtifactPath(
   paths: SessionArtifactPaths,
   taskId: string
 ): Result<string, SpriteError> {
-  if (!/^task_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(taskId)) {
+  if (!SESSION_TASK_ID_PATTERN.test(taskId)) {
     return err(
       new SpriteError(
         "SESSION_LEARNING_REVIEW_TASK_ID_INVALID",
@@ -478,6 +571,35 @@ export function resolveLearningReviewArtifactPath(
       new SpriteError(
         "SESSION_LEARNING_REVIEW_PATH_ESCAPE",
         "Learning review artifact path must remain inside the session learning-reviews directory."
+      )
+    );
+  }
+
+  return okSession(artifactPath);
+}
+
+export function resolveRetrospectiveReviewArtifactPath(
+  paths: SessionArtifactPaths,
+  taskId: string
+): Result<string, SpriteError> {
+  if (!SESSION_TASK_ID_PATTERN.test(taskId)) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_TASK_ID_INVALID",
+        "Retrospective review task ID must use the task_ prefix and contain only safe identifier characters."
+      )
+    );
+  }
+
+  const retrospectivesDir = path.resolve(paths.retrospectivesDir);
+  const artifactPath = path.resolve(retrospectivesDir, `${taskId}.json`);
+  const relative = path.relative(retrospectivesDir, artifactPath);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_PATH_ESCAPE",
+        "Retrospective review artifact path must remain inside the session retrospectives directory."
       )
     );
   }
@@ -1034,6 +1156,192 @@ function validateStoredLearningReviewArtifact(
       new SpriteError(
         "SESSION_LEARNING_REVIEW_UNSAFE_VALUE",
         "Learning review artifact must not include secret-looking values."
+      )
+    );
+  }
+
+  return okSession(review);
+}
+
+function validateStoredRetrospectiveReviewArtifact(
+  sessionId: string,
+  review: StoredRetrospectiveReviewArtifact
+): Result<StoredRetrospectiveReviewArtifact, SpriteError> {
+  if (review.schemaVersion !== SESSION_STATE_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_INVALID_SCHEMA_VERSION",
+        "Retrospective review artifact schemaVersion is unsupported."
+      )
+    );
+  }
+
+  if (review.sessionId !== sessionId) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_SCOPE_MISMATCH",
+        "Retrospective review sessionId must match the active session."
+      )
+    );
+  }
+
+  if (!SESSION_ID_PATTERN.test(review.sessionId)) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_INVALID_SESSION_ID",
+        "Retrospective review sessionId must use the ses_ prefix."
+      )
+    );
+  }
+
+  if (!SESSION_TASK_ID_PATTERN.test(review.taskId)) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_INVALID_TASK_ID",
+        "Retrospective review taskId must use the task_ prefix."
+      )
+    );
+  }
+
+  if (!RETROSPECTIVE_TERMINAL_STATUSES.includes(review.terminalStatus)) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_INVALID_TERMINAL_STATUS",
+        "Retrospective review terminalStatus is unsupported."
+      )
+    );
+  }
+
+  if (!RETROSPECTIVE_TERMINAL_STATUSES.includes(review.finalStatus)) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_INVALID_FINAL_STATUS",
+        "Retrospective review finalStatus is unsupported."
+      )
+    );
+  }
+
+  if (
+    review.terminalStatus === "completed"
+      ? typeof review.outcome !== "string" || review.outcome.trim().length === 0
+      : typeof review.failureReason !== "string" ||
+        review.failureReason.trim().length === 0
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_MISSING_OUTCOME",
+        "Retrospective review must include an outcome or failure reason."
+      )
+    );
+  }
+
+  if (Number.isNaN(Date.parse(review.createdAt))) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_INVALID_TIMESTAMP",
+        "Retrospective review createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  const context = isPlainRecord(review.context) ? review.context : null;
+  const evidence = isPlainRecord(review.evidence) ? review.evidence : null;
+
+  if (
+    context === null ||
+    context.eligible !== true ||
+    !Array.isArray(context.missingFields) ||
+    context.missingFields.length > 0
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        "Retrospective review artifact requires eligible context."
+      )
+    );
+  }
+
+  if (
+    !Array.isArray(review.filesTouched) ||
+    review.filesTouched.length === 0 ||
+    !review.filesTouched.every(
+      (filePath) => typeof filePath === "string" && filePath.trim().length > 0
+    ) ||
+    !Array.isArray(review.commandsRun) ||
+    review.commandsRun.length === 0
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        "Retrospective review artifact requires files and command evidence."
+      )
+    );
+  }
+
+  if (
+    evidence === null ||
+    !Array.isArray(evidence.eventIds) ||
+    evidence.eventIds.length === 0 ||
+    !evidence.eventIds.every(
+      (eventId) => typeof eventId === "string" && eventId.trim().length > 0
+    ) ||
+    !Array.isArray(evidence.filesTouched) ||
+    evidence.filesTouched.length === 0 ||
+    !evidence.filesTouched.every(
+      (filePath) => typeof filePath === "string" && filePath.trim().length > 0
+    ) ||
+    !Array.isArray(evidence.commandsRun) ||
+    evidence.commandsRun.length === 0 ||
+    typeof evidence.terminalEventId !== "string" ||
+    evidence.terminalEventId.trim().length === 0
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        "Retrospective review artifact evidence must include events, files, commands, and a terminal event."
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["correlationId", review.correlationId],
+    ["summary", review.summary],
+    ["taskGoal", review.taskGoal]
+  ] as const) {
+    if (value.trim().length === 0 || containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "SESSION_RETROSPECTIVE_REVIEW_UNSAFE_FIELD",
+          `Retrospective review ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  const forbiddenField = findForbiddenLearningReviewArtifactField(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_UNSAFE_FIELD",
+        `Retrospective review artifact must not include raw or secret-bearing field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findUnsafeLearningReviewArtifactString(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "SESSION_RETROSPECTIVE_REVIEW_UNSAFE_VALUE",
+        "Retrospective review artifact must not include secret-looking values."
       )
     );
   }

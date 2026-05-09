@@ -16,11 +16,14 @@ import {
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
   generateLearningReview,
+  generateRetrospectiveReview,
+  evaluateRetrospectiveEligibility,
   reviewMemoryCandidate as applyMemoryCandidateReview,
   selectMemoryInfluenceCandidates,
   shouldAutoSaveMemoryCandidate,
   summarizeLearningReviewForEvent,
   summarizeMemoryCandidateForReview,
+  summarizeRetrospectiveReviewForEvent,
   validateMemoryInfluenceRecord,
   type LearningReviewCommandEvidence,
   type LearningReviewMemoryCandidateReference,
@@ -39,6 +42,10 @@ import {
   type MemoryInfluenceSourceType,
   type MemoryInfluenceStatus,
   type MemoryType,
+  type RetrospectiveEligibilityReport,
+  type RetrospectiveGenerationRequest,
+  type RetrospectiveReview,
+  type RetrospectiveTerminalStatus,
   type SafetyEvaluationDecision
 } from "@sprite/memory";
 import {
@@ -240,6 +247,20 @@ export interface RuntimeMemoryInfluenceRequest {
   sourceType: MemoryInfluenceSourceType;
   status: MemoryInfluenceStatus;
 }
+
+export type RuntimeRetrospectiveReviewResult =
+  | {
+      artifactPath: string;
+      eligibility: RetrospectiveEligibilityReport;
+      event: RuntimeEventRecord<"retrospective.review.created">;
+      review: RetrospectiveReview;
+      status: "created";
+    }
+  | {
+      eligibility: RetrospectiveEligibilityReport;
+      missingFields: RetrospectiveEligibilityReport["missingFields"];
+      status: "missing-context";
+    };
 
 interface RuntimeFileEditMetadata {
   affectedFiles: string[];
@@ -892,6 +913,147 @@ export class AgentRuntime {
         createdAt: this.now()
       })
     );
+  }
+
+  createRetrospectiveReview(
+    taskId?: string
+  ): Result<RuntimeRetrospectiveReviewResult> {
+    if (this.activeTask === null) {
+      return err(new SpriteError("NO_ACTIVE_TASK", "No task is available."));
+    }
+
+    if (taskId !== undefined && taskId !== this.activeTask.taskId) {
+      return err(
+        new SpriteError(
+          "RETROSPECTIVE_TASK_NOT_FOUND",
+          `Task ${taskId} is not the active task for this runtime.`
+        )
+      );
+    }
+
+    const task = this.activeTask;
+    const terminalStatus = toRetrospectiveTerminalStatus(task.status);
+
+    if (terminalStatus === null) {
+      return err(
+        new SpriteError(
+          "RETROSPECTIVE_TASK_NOT_TERMINAL",
+          "Retrospective reviews require a completed, failed, cancelled, or max-iterations task."
+        )
+      );
+    }
+
+    const events = this.eventBus.getHistory(task.taskId);
+    const finalSummary = createFinalTaskSummary({
+      ...task,
+      events
+    });
+    const terminalEvent = findRetrospectiveRuntimeTerminalEvent(
+      events,
+      terminalStatus
+    );
+    const request: RetrospectiveGenerationRequest = {
+      commandsRun: collectLearningReviewCommands(events),
+      correlationId: task.correlationId,
+      createdAt: this.now(),
+      events: events.map(toRetrospectiveReviewEventInput),
+      filesChanged: finalSummary.filesChanged,
+      filesProposedForChange: finalSummary.filesProposedForChange,
+      filesRead: finalSummary.filesRead,
+      finalStatus: terminalStatus,
+      memoryInfluences: collectRetrospectiveMemoryInfluences(events),
+      sessionId: task.sessionId,
+      taskGoal: task.request.task,
+      taskId: task.taskId,
+      ...(terminalEvent === undefined
+        ? {}
+        : {
+            terminalMessage:
+              getPayloadString(terminalEvent.payload, "message") ??
+              getPayloadString(terminalEvent.payload, "note"),
+            terminalReason: getPayloadString(terminalEvent.payload, "reason")
+          }),
+      terminalStatus,
+      validationResults: collectLearningReviewValidationResults(events)
+    };
+    const eligibility = evaluateRetrospectiveEligibility(request);
+
+    if (!eligibility.ok) {
+      return err(eligibility.error);
+    }
+
+    if (!eligibility.value.eligible) {
+      return ok({
+        eligibility: eligibility.value,
+        missingFields: eligibility.value.missingFields,
+        status: "missing-context"
+      });
+    }
+
+    const review = generateRetrospectiveReview(request);
+
+    if (!review.ok) {
+      return err(review.error);
+    }
+
+    const written = this.sessionStore.writeRetrospectiveReview(
+      task.sessionId,
+      review.value
+    );
+
+    if (!written.ok) {
+      return err(written.error);
+    }
+
+    const eventSummary = summarizeRetrospectiveReviewForEvent(review.value);
+    const event = createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "retrospective.review.created",
+      {
+        artifactPath: path.relative(task.request.cwd, written.value.artifactPath),
+        commandCount: eventSummary.commandCount,
+        evidenceEventIds: eventSummary.evidenceEventIds,
+        fileCount: eventSummary.fileCount,
+        finalStatus: eventSummary.finalStatus,
+        memoryCandidateCount: eventSummary.memoryCandidateCount,
+        missedAssumptionCount: eventSummary.missedAssumptionCount,
+        nextTimeImprovementCount: eventSummary.nextTimeImprovementCount,
+        skillSignalCount: eventSummary.skillSignalCount,
+        status: eventSummary.status,
+        summary: eventSummary.summary,
+        terminalStatus: eventSummary.terminalStatus
+      }
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.activeTask = this.withUpdatedWorkingMemory({
+      ...task,
+      events: this.eventBus.getHistory(task.taskId)
+    });
+
+    const persisted = this.persistSessionSnapshot(this.activeTask);
+
+    if (!persisted.ok) {
+      return err(persisted.error);
+    }
+
+    return ok({
+      artifactPath: written.value.artifactPath,
+      eligibility: eligibility.value,
+      event,
+      review: review.value,
+      status: "created"
+    });
   }
 
   async executeToolCall(
@@ -4698,6 +4860,87 @@ function toLearningReviewEventInput(event: RuntimeEventRecord): {
       : { summary: getPayloadString(event.payload, "summary") }),
     type: event.type
   };
+}
+
+function toRetrospectiveReviewEventInput(event: RuntimeEventRecord): {
+  eventId: string;
+  message?: string;
+  reason?: string;
+  status?: string;
+  summary?: string;
+  type: string;
+} {
+  return {
+    eventId: event.eventId,
+    ...(getPayloadString(event.payload, "message") === undefined
+      ? {}
+      : { message: getPayloadString(event.payload, "message") }),
+    ...(getPayloadString(event.payload, "reason") === undefined
+      ? {}
+      : { reason: getPayloadString(event.payload, "reason") }),
+    ...(getPayloadString(event.payload, "status") === undefined
+      ? {}
+      : { status: getPayloadString(event.payload, "status") }),
+    ...(getPayloadString(event.payload, "summary") === undefined
+      ? {}
+      : { summary: getPayloadString(event.payload, "summary") }),
+    type: event.type
+  };
+}
+
+function toRetrospectiveTerminalStatus(
+  status: PlannedExecutionFlow["status"]
+): RetrospectiveTerminalStatus | null {
+  switch (status) {
+    case "completed":
+    case "failed":
+    case "cancelled":
+    case "max-iterations":
+      return status;
+    case "planned":
+    case "waiting-for-input":
+      return null;
+  }
+}
+
+function findRetrospectiveRuntimeTerminalEvent(
+  events: readonly RuntimeEventRecord[],
+  terminalStatus: RetrospectiveTerminalStatus
+): RuntimeEventRecord | undefined {
+  return [...events].reverse().find((event) => {
+    if (terminalStatus === "completed") {
+      return event.type === "task.completed";
+    }
+
+    if (terminalStatus === "cancelled") {
+      return event.type === "task.cancelled";
+    }
+
+    return event.type === "task.failed";
+  });
+}
+
+function collectRetrospectiveMemoryInfluences(
+  events: readonly RuntimeEventRecord[]
+): NonNullable<RetrospectiveGenerationRequest["memoryInfluences"]> {
+  return events.flatMap((event) => {
+    if (event.type !== "memory.influence.recorded") {
+      return [];
+    }
+
+    return [
+      {
+        eventId: event.eventId,
+        sourceId: event.payload.sourceId,
+        sourceType: event.payload.sourceType,
+        status: event.payload.status,
+        summary:
+          event.payload.influenceSummary ??
+          event.payload.reason ??
+          event.payload.summary
+      }
+    ];
+  });
 }
 
 function collectLearningReviewCommands(

@@ -1,6 +1,6 @@
 # Story 4.6: Trigger Retrospective Review for Completed, Failed, or Aborted Tasks
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -19,63 +19,68 @@ so that failed work still produces useful learning when enough context exists.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-4)
-  - [ ] Report exact functions/contracts to add or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially `AgentRuntime`, `createFinalTaskSummary`, `validateRuntimeEvent`, `writeSessionEvent`, `readSessionState`, and session-store artifact writers.
-  - [ ] Treat retrospectives as user-triggered audit artifacts, not automatic successful-task learning reviews.
-  - [ ] Preserve the Story 4.4 boundary: completed-task learning reviews remain separate from retrospective reviews.
+- [x] Confirm implementation function list before code edits (AC: 1-4)
+  - [x] Report exact functions/contracts to add or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially `AgentRuntime`, `createFinalTaskSummary`, `validateRuntimeEvent`, `writeSessionEvent`, `readSessionState`, and session-store artifact writers.
+  - [x] Treat retrospectives as user-triggered audit artifacts, not automatic successful-task learning reviews.
+  - [x] Preserve the Story 4.4 boundary: completed-task learning reviews remain separate from retrospective reviews.
 
-- [ ] Add retrospective review contracts in `packages/memory` (AC: 1-4)
-  - [ ] Add `RetrospectiveTerminalStatus` for supported terminal states: `completed | failed | cancelled | max-iterations`; treat `cancelled` and `max-iterations` as aborted-style retrospective inputs.
-  - [ ] Add `RetrospectiveContextField` / `RetrospectiveMissingContextField` for NFR20 minimum context fields: task goal, event history reference, terminal state, files touched, commands run, failure reason or outcome, and final status.
-  - [ ] Add `RetrospectiveEligibilityReport` with `eligible`, `missingFields`, `availableFields`, `sourceTaskId`, `sourceSessionId`, and `terminalStatus`.
-  - [ ] Add `RetrospectiveReview` with schema version, source task/session/correlation IDs, terminal status, final status, outcome or failure reason, missed assumptions, memory candidates, skill signals, next-time improvements, files touched, commands run, evidence event IDs, context completeness, and `createdAt`.
-  - [ ] Add `RetrospectiveGenerationRequest` built from task/session evidence, not provider free-text.
-  - [ ] Add `generateRetrospectiveReview()` that produces deterministic bounded output from retained evidence.
-  - [ ] Add `validateRetrospectiveReview()` and safe normalizers that reject raw fields (`content`, `rawOutput`, `stdout`, `stderr`, `diff`, `patch`, `token`, `secret`, credentials, private keys, etc.) and secret-like values.
-  - [ ] Add `summarizeRetrospectiveReviewForEvent()` or equivalent safe event-summary helper.
+- [x] Add retrospective review contracts in `packages/memory` (AC: 1-4)
+  - [x] Add `RetrospectiveTerminalStatus` for supported terminal states: `completed | failed | cancelled | max-iterations`; treat `cancelled` and `max-iterations` as aborted-style retrospective inputs.
+  - [x] Add `RetrospectiveContextField` / `RetrospectiveMissingContextField` for NFR20 minimum context fields: task goal, event history reference, terminal state, files touched, commands run, failure reason or outcome, and final status.
+  - [x] Add `RetrospectiveEligibilityReport` with `eligible`, `missingFields`, `availableFields`, `sourceTaskId`, `sourceSessionId`, and `terminalStatus`.
+  - [x] Add `RetrospectiveReview` with schema version, source task/session/correlation IDs, terminal status, final status, outcome or failure reason, missed assumptions, memory candidates, skill signals, next-time improvements, files touched, commands run, evidence event IDs, context completeness, and `createdAt`.
+  - [x] Add `RetrospectiveGenerationRequest` built from task/session evidence, not provider free-text.
+  - [x] Add `generateRetrospectiveReview()` that produces deterministic bounded output from retained evidence.
+  - [x] Add `validateRetrospectiveReview()` and safe normalizers that reject raw fields (`content`, `rawOutput`, `stdout`, `stderr`, `diff`, `patch`, `token`, `secret`, credentials, private keys, etc.) and secret-like values.
+  - [x] Add `summarizeRetrospectiveReviewForEvent()` or equivalent safe event-summary helper.
 
-- [ ] Add retrospective artifact persistence in storage (AC: 1-4)
-  - [ ] Persist reviews under the existing session artifact tree, suggested path `.sprite/sessions/<session-id>/retrospectives/<task-id>.json`.
-  - [ ] Add `writeRetrospectiveReview()` with path traversal guards, schema validation before write, and atomic write behavior consistent with existing session artifacts.
-  - [ ] Add a bounded reader only if needed for inspection/tests; do not expose raw retrospective internals where a safe summary is enough.
-  - [ ] Ensure malformed or unsafe retrospective artifacts fail closed with structured errors.
+- [x] Add retrospective artifact persistence in storage (AC: 1-4)
+  - [x] Persist reviews under the existing session artifact tree, suggested path `.sprite/sessions/<session-id>/retrospectives/<task-id>.json`.
+  - [x] Add `writeRetrospectiveReview()` with path traversal guards, schema validation before write, and atomic write behavior consistent with existing session artifacts.
+  - [x] Add a bounded reader only if needed for inspection/tests; do not expose raw retrospective internals where a safe summary is enough.
+  - [x] Ensure malformed or unsafe retrospective artifacts fail closed with structured errors.
 
-- [ ] Add runtime trigger API and event emission (AC: 1-4)
-  - [ ] Add `AgentRuntime.createRetrospectiveReview()` or equivalent user-triggered API that accepts a task ID/session reference and returns either a created retrospective or structured missing-context report.
-  - [ ] Reconstruct evidence from existing session state, task terminal events, file activity, command/validation events, memory influence records, and final task summary inputs.
-  - [ ] Support completed, failed, cancelled, and max-iterations terminal states; reject active/nonterminal tasks with a structured missing-context or invalid-state report.
-  - [ ] Add stable runtime event `retrospective.review.created` with safe payload: source task/session IDs, artifact path, terminal status, final status, evidence event IDs, missing-context count if relevant, and safe summary.
-  - [ ] Add `createRetrospectiveReviewCreatedEvent()` / `validateRetrospectiveReviewCreatedEvent()` or equivalent validation path in `validateRuntimeEvent`.
-  - [ ] Do not emit a fabricated review event when eligibility fails; return a structured explanation instead. If an audit event for skipped retrospectives is added, keep it minimal and safe.
+- [x] Add runtime trigger API and event emission (AC: 1-4)
+  - [x] Add `AgentRuntime.createRetrospectiveReview()` or equivalent user-triggered API that accepts a task ID/session reference and returns either a created retrospective or structured missing-context report.
+  - [x] Reconstruct evidence from existing session state, task terminal events, file activity, command/validation events, memory influence records, and final task summary inputs.
+  - [x] Support completed, failed, cancelled, and max-iterations terminal states; reject active/nonterminal tasks with a structured missing-context or invalid-state report.
+  - [x] Add stable runtime event `retrospective.review.created` with safe payload: source task/session IDs, artifact path, terminal status, final status, evidence event IDs, missing-context count if relevant, and safe summary.
+  - [x] Add `createRetrospectiveReviewCreatedEvent()` / `validateRetrospectiveReviewCreatedEvent()` or equivalent validation path in `validateRuntimeEvent`.
+  - [x] Do not emit a fabricated review event when eligibility fails; return a structured explanation instead. If an audit event for skipped retrospectives is added, keep it minimal and safe.
 
-- [ ] Integrate user-visible output without over-scoping CLI/TUI/RPC (AC: 1-4)
-  - [ ] Surface created retrospective status, artifact reference, terminal status, and safe summary through the runtime API return value.
-  - [ ] Surface missing context as structured data with exact field names rather than prose-only errors.
-  - [ ] Update CLI/session inspection only if the current public API already exposes learning-review artifacts there; otherwise keep the story at runtime/storage level and document the limitation.
-  - [ ] Keep JSON-RPC, TUI, and skill-promotion workflows out of scope unless tests prove a small compatibility update is required.
+- [x] Integrate user-visible output without over-scoping CLI/TUI/RPC (AC: 1-4)
+  - [x] Surface created retrospective status, artifact reference, terminal status, and safe summary through the runtime API return value.
+  - [x] Surface missing context as structured data with exact field names rather than prose-only errors.
+  - [x] Update CLI/session inspection only if the current public API already exposes learning-review artifacts there; otherwise keep the story at runtime/storage level and document the limitation.
+  - [x] Keep JSON-RPC, TUI, and skill-promotion workflows out of scope unless tests prove a small compatibility update is required.
 
-- [ ] Preserve explicit scope boundaries (AC: 1-4)
-  - [ ] Do not create procedural memory or promoted skills; Story 4.7 owns skill-linked learning outputs.
-  - [ ] Do not add MemPalace integration, vector search, embeddings, SQLite indexing, background memory consolidation, or new dependencies.
-  - [ ] Do not infer invisible provider reasoning; missed assumptions and recommendations must be traceable to retained events, terminal state, files, commands, validation, or explicit memory influence records.
-  - [ ] Do not auto-run retrospectives on every terminal task unless an existing runtime hook already requires a minimal safe call; this story's primary behavior is user-triggered.
+- [x] Preserve explicit scope boundaries (AC: 1-4)
+  - [x] Do not create procedural memory or promoted skills; Story 4.7 owns skill-linked learning outputs.
+  - [x] Do not add MemPalace integration, vector search, embeddings, SQLite indexing, background memory consolidation, or new dependencies.
+  - [x] Do not infer invisible provider reasoning; missed assumptions and recommendations must be traceable to retained events, terminal state, files, commands, validation, or explicit memory influence records.
+  - [x] Do not auto-run retrospectives on every terminal task unless an existing runtime hook already requires a minimal safe call; this story's primary behavior is user-triggered.
 
-- [ ] Add regression tests (AC: 1-4)
-  - [ ] Memory tests: deterministic review generation for failed, cancelled/max-iterations, and completed tasks; missing-context eligibility reports; unsafe/raw content rejection.
-  - [ ] Storage tests: retrospective artifact path guards, atomic writes, schema validation, and unsafe artifact rejection.
-  - [ ] Runtime event tests: valid `retrospective.review.created` events pass; missing IDs, invalid terminal statuses, raw fields, secret-like values, and fabricated evidence fail.
-  - [ ] Runtime/session tests: user-triggered retrospective succeeds for failed, cancelled/aborted, and completed task histories with sufficient context.
-  - [ ] Runtime/session tests: missing task goal, missing terminal event, missing file/command evidence, or missing failure/outcome reason returns structured missing fields and writes no fabricated artifact.
-  - [ ] Regression tests: retrospective can reference prior `memory.influence.recorded` events from Story 4.5 without turning retrieved-only candidates into used memories.
-  - [ ] CLI/print/session inspection tests only if output shape changes.
+- [x] Add regression tests (AC: 1-4)
+  - [x] Memory tests: deterministic review generation for failed, cancelled/max-iterations, and completed tasks; missing-context eligibility reports; unsafe/raw content rejection.
+  - [x] Storage tests: retrospective artifact path guards, atomic writes, schema validation, and unsafe artifact rejection.
+  - [x] Runtime event tests: valid `retrospective.review.created` events pass; missing IDs, invalid terminal statuses, raw fields, secret-like values, and fabricated evidence fail.
+  - [x] Runtime/session tests: user-triggered retrospective succeeds for failed, cancelled/aborted, and completed task histories with sufficient context.
+  - [x] Runtime/session tests: missing task goal, missing terminal event, missing file/command evidence, or missing failure/outcome reason returns structured missing fields and writes no fabricated artifact.
+  - [x] Regression tests: retrospective can reference prior `memory.influence.recorded` events from Story 4.5 without turning retrieved-only candidates into used memories.
+  - [x] CLI/print/session inspection tests only if output shape changes.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-4)
-  - [ ] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
-  - [ ] Run targeted validation before review: memory, storage/session-store, runtime-events, runtime-loop/session persistence, and CLI/session inspection tests if touched.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-4)
+  - [x] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
+  - [x] Run targeted validation before review: memory, storage/session-store, runtime-events, runtime-loop/session persistence, and CLI/session inspection tests if touched.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+
+- [x] Resolve review findings before commit (AC: 2-4)
+  - [x] Require a matching terminal runtime event before retrospective eligibility can satisfy `terminalState`; no fallback to the last nonterminal event.
+  - [x] Strengthen session-store retrospective artifact validation so persisted artifacts must include eligible context plus event, file, command, and terminal-event evidence.
+  - [x] Add regression coverage for missing terminal-event evidence.
 
 ## Dev Notes
 
@@ -194,16 +199,44 @@ GPT-5.5
 ### Debug Log References
 
 - 2026-05-09: Story created from Epic 4 backlog using BMAD create-story flow. Implementation has not started yet.
+- 2026-05-09: Development started. First task is confirming the implementation function/contract surface before code edits.
+- 2026-05-09: GitNexus impact analysis before edits: `AgentRuntime`, `validateRuntimeEvent`, and `createFinalTaskSummary` reported CRITICAL risk; `LocalSessionStore`, `SessionStore`, `resolveSessionArtifactPaths`, `generateLearningReview`, and `validateLearningReview` reported LOW. Implementation stayed additive and avoided changing `createFinalTaskSummary`.
+- 2026-05-09: Red phase confirmed by new tests failing on missing retrospective exports, runtime event type, session-store writer/path, and `AgentRuntime.createRetrospectiveReview()`.
+- 2026-05-09: Green phase completed with retrospective memory contracts, storage persistence, runtime trigger API, event validation, and regression tests.
+- 2026-05-09: Review found and fixed two evidence-boundary gaps: terminal-state eligibility now requires a matching terminal event, and storage validation re-checks context/evidence completeness before artifact writes.
 
 ### Completion Notes List
 
-- Pending implementation.
+- Added deterministic retrospective contracts in `@sprite/memory`, including eligibility reports, review artifacts, safe event summaries, and raw/secret rejection.
+- Added project-local retrospective artifacts under `.sprite/sessions/<session-id>/retrospectives/<task-id>.json` with path guards, schema checks, atomic writes, and unsafe-write rejection.
+- Added user-triggered `AgentRuntime.createRetrospectiveReview()` for completed, failed, cancelled, and max-iterations terminal tasks.
+- Added `retrospective.review.created` runtime event validation with safe artifact/evidence/count payloads.
+- Missing context now returns structured `missingFields` and writes no artifact/event; it does not fabricate learning.
+- Review hardening prevents retrospectives from using the last nonterminal event as terminal evidence.
+- Storage now fails closed if a retrospective artifact lacks eligible context, files, commands, event IDs, or a terminal event ID.
+- Preserved Story 4.4 separation: successful-task learning reviews remain unchanged, and failed/cancelled/max-iteration tasks still do not auto-create successful-task learning reviews.
+- Scope kept local: no CLI/TUI/RPC surface, no MemPalace/vector search/SQLite/new dependency, no auto-promotion of memories or skills.
+- Validation evidence:
+  - `rtk run 'npm run typecheck -- --pretty false && npm test -- --run tests/memory-safety.test.ts tests/session-store.test.ts tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/session-persistence.test.ts'` passed before review fixes: 5 files, 163 tests.
+  - `rtk run 'npm run typecheck -- --pretty false && npm test -- --run tests/memory-safety.test.ts tests/session-store.test.ts tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/session-persistence.test.ts'` passed after review fixes: 5 files, 164 tests.
+  - `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` passed after review fixes: 16 files, 273 tests.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/4-6-trigger-retrospective-review-for-completed-failed-or-aborted-tasks.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/memory/src/index.ts`
+- `packages/storage/src/session-store.ts`
+- `tests/memory-safety.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/runtime-loop.test.ts`
+- `tests/session-store.test.ts`
 
 ## Change Log
 
 - 2026-05-09: Created story context for user-triggered retrospectives on completed, failed, cancelled, or max-iteration tasks.
+- 2026-05-09: Started development and moved story to in-progress.
+- 2026-05-09: Implemented retrospective generation, persistence, runtime trigger, event validation, and regression tests; moved story to review.
+- 2026-05-09: Resolved review findings, strengthened evidence gates, and moved story to done.

@@ -49,6 +49,7 @@ export const MEMORY_ENTRY_SCHEMA_VERSION = 1 as const;
 export const LEARNING_REVIEW_SCHEMA_VERSION = 1 as const;
 export const LEARNING_REVIEW_MODES = ["compact", "full"] as const;
 export const MEMORY_INFLUENCE_SCHEMA_VERSION = 1 as const;
+export const RETROSPECTIVE_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MEMORY_INFLUENCE_STATUSES = [
   "used",
   "ignored",
@@ -57,6 +58,21 @@ export const MEMORY_INFLUENCE_STATUSES = [
 export const MEMORY_INFLUENCE_SOURCE_TYPES = [
   "memory_entry",
   "learning_review_lesson"
+] as const;
+export const RETROSPECTIVE_TERMINAL_STATUSES = [
+  "cancelled",
+  "completed",
+  "failed",
+  "max-iterations"
+] as const;
+export const RETROSPECTIVE_CONTEXT_FIELDS = [
+  "taskGoal",
+  "eventHistory",
+  "terminalState",
+  "filesTouched",
+  "commandsRun",
+  "failureReasonOrOutcome",
+  "finalStatus"
 ] as const;
 const DEFAULT_PREVIEW_LIMIT = 160;
 const MAX_MEMORY_CANDIDATE_CONTENT_LENGTH = 2_000;
@@ -78,6 +94,10 @@ export type MemoryInfluenceStatus =
   (typeof MEMORY_INFLUENCE_STATUSES)[number];
 export type MemoryInfluenceSourceType =
   (typeof MEMORY_INFLUENCE_SOURCE_TYPES)[number];
+export type RetrospectiveTerminalStatus =
+  (typeof RETROSPECTIVE_TERMINAL_STATUSES)[number];
+export type RetrospectiveContextField =
+  (typeof RETROSPECTIVE_CONTEXT_FIELDS)[number];
 
 export interface SafetySensitiveContentRequest {
   content: string;
@@ -248,6 +268,104 @@ export interface LearningReviewEventSummary {
   skillSignalIds: string[];
   summary: string;
   testGapCount: number;
+}
+
+export interface RetrospectiveReviewEventInput
+  extends LearningReviewEventInput {
+  status?: string;
+}
+
+export interface RetrospectiveMemoryInfluenceReference {
+  eventId: string;
+  sourceId: string;
+  sourceType: MemoryInfluenceSourceType;
+  status: MemoryInfluenceStatus;
+  summary?: string;
+}
+
+export interface RetrospectiveEligibilityReport {
+  availableFields: RetrospectiveContextField[];
+  eligible: boolean;
+  missingFields: RetrospectiveContextField[];
+  sourceSessionId: string;
+  sourceTaskId: string;
+  terminalStatus: RetrospectiveTerminalStatus;
+}
+
+export interface RetrospectiveReviewMemoryCandidate {
+  candidateId: string;
+  confidence: MemoryConfidence;
+  evidenceEventIds: string[];
+  memoryType: DurableMemoryType;
+  summary: string;
+}
+
+export interface RetrospectiveReviewEvidence {
+  commandsRun: LearningReviewCommandEvidence[];
+  eventIds: string[];
+  filesTouched: string[];
+  memoryInfluenceEventIds: string[];
+  terminalEventId: string;
+  validationResults: LearningReviewValidationResult[];
+}
+
+export interface RetrospectiveReview {
+  commandsRun: LearningReviewCommandEvidence[];
+  context: RetrospectiveEligibilityReport;
+  correlationId: string;
+  createdAt: string;
+  evidence: RetrospectiveReviewEvidence;
+  eventHistoryReference: {
+    eventCount: number;
+    eventIds: string[];
+  };
+  failureReason?: string;
+  filesTouched: string[];
+  finalStatus: RetrospectiveTerminalStatus;
+  memoryCandidates: RetrospectiveReviewMemoryCandidate[];
+  missedAssumptions: LearningReviewSectionItem[];
+  nextTimeImprovements: LearningReviewSectionItem[];
+  outcome?: string;
+  schemaVersion: typeof RETROSPECTIVE_REVIEW_SCHEMA_VERSION;
+  sessionId: string;
+  skillSignals: LearningReviewSkillSignal[];
+  summary: string;
+  taskGoal: string;
+  taskId: string;
+  terminalStatus: RetrospectiveTerminalStatus;
+}
+
+export interface RetrospectiveGenerationRequest {
+  commandsRun?: readonly LearningReviewCommandEvidence[];
+  correlationId: string;
+  createdAt?: string;
+  events: readonly RetrospectiveReviewEventInput[];
+  filesChanged?: readonly string[];
+  filesProposedForChange?: readonly string[];
+  filesRead?: readonly string[];
+  finalStatus: RetrospectiveTerminalStatus;
+  memoryInfluences?: readonly RetrospectiveMemoryInfluenceReference[];
+  sessionId: string;
+  taskGoal: string;
+  taskId: string;
+  terminalMessage?: string;
+  terminalReason?: string;
+  terminalStatus: RetrospectiveTerminalStatus;
+  validationResults?: readonly LearningReviewValidationResult[];
+}
+
+export interface RetrospectiveReviewEventSummary {
+  commandCount: number;
+  evidenceEventIds: string[];
+  fileCount: number;
+  finalStatus: RetrospectiveTerminalStatus;
+  memoryCandidateCount: number;
+  missedAssumptionCount: number;
+  nextTimeImprovementCount: number;
+  skillSignalCount: number;
+  status: "recorded";
+  summary: string;
+  terminalStatus: RetrospectiveTerminalStatus;
 }
 
 export interface MemoryInfluenceSourceInput {
@@ -1119,6 +1237,384 @@ export function validateLearningReview(
   return { ok: true, value: review };
 }
 
+export function evaluateRetrospectiveEligibility(
+  request: RetrospectiveGenerationRequest
+): Result<RetrospectiveEligibilityReport, SpriteError> {
+  if (!RETROSPECTIVE_TERMINAL_STATUSES.includes(request.terminalStatus)) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_INVALID_TERMINAL_STATUS",
+        "Retrospective terminal status is unsupported."
+      )
+    );
+  }
+
+  const availableFields: RetrospectiveContextField[] = [];
+  const missingFields: RetrospectiveContextField[] = [];
+  const eventIds = uniqueStrings(
+    request.events.flatMap((event) =>
+      isNonEmptyString(event.eventId) ? [event.eventId] : []
+    )
+  );
+  const filesTouched = collectRetrospectiveFiles(request);
+  const commandsRun = normalizeLearningCommands(request.commandsRun ?? []);
+  const failureReasonOrOutcome = createRetrospectiveReasonOrOutcome(request);
+  const finalStatusAvailable = RETROSPECTIVE_TERMINAL_STATUSES.includes(
+    request.finalStatus
+  );
+  const terminalEvent = findRetrospectiveTerminalEvent(
+    request.events,
+    request.terminalStatus
+  );
+
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "taskGoal",
+    isNonEmptyString(request.taskGoal)
+  );
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "eventHistory",
+    eventIds.length > 0
+  );
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "terminalState",
+    terminalEvent !== undefined
+  );
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "filesTouched",
+    filesTouched.length > 0
+  );
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "commandsRun",
+    commandsRun.length > 0
+  );
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "failureReasonOrOutcome",
+    isNonEmptyString(failureReasonOrOutcome)
+  );
+  addRetrospectiveContextField(
+    availableFields,
+    missingFields,
+    "finalStatus",
+    finalStatusAvailable
+  );
+
+  return {
+    ok: true,
+    value: {
+      availableFields,
+      eligible: missingFields.length === 0,
+      missingFields,
+      sourceSessionId: createSafePreview(request.sessionId),
+      sourceTaskId: createSafePreview(request.taskId),
+      terminalStatus: request.terminalStatus
+    }
+  };
+}
+
+export function generateRetrospectiveReview(
+  request: RetrospectiveGenerationRequest
+): Result<RetrospectiveReview, SpriteError> {
+  const eligibility = evaluateRetrospectiveEligibility(request);
+
+  if (!eligibility.ok) {
+    return err(eligibility.error);
+  }
+
+  if (!eligibility.value.eligible) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        `Retrospective review is missing required context fields: ${eligibility.value.missingFields.join(", ")}.`
+      )
+    );
+  }
+
+  const createdAt = request.createdAt ?? new Date().toISOString();
+  const events = request.events.map((event) => ({
+    eventId: createSafePreview(event.eventId),
+    ...(event.message === undefined
+      ? {}
+      : { message: createSafePreview(event.message) }),
+    ...(event.reason === undefined
+      ? {}
+      : { reason: createSafePreview(event.reason) }),
+    ...(event.status === undefined
+      ? {}
+      : { status: createSafePreview(event.status) }),
+    ...(event.summary === undefined
+      ? {}
+      : { summary: createSafePreview(event.summary) }),
+    type: createSafePreview(event.type)
+  }));
+  const commandsRun = normalizeLearningCommands(request.commandsRun ?? []);
+  const validationResults = normalizeLearningValidations(
+    request.validationResults ?? []
+  );
+  const memoryInfluences = normalizeRetrospectiveMemoryInfluences(
+    request.memoryInfluences ?? []
+  );
+  const eventIds = uniqueStrings([
+    ...events.map((event) => event.eventId),
+    ...commandsRun.map((command) => command.eventId),
+    ...validationResults.map((result) => result.eventId),
+    ...memoryInfluences.map((influence) => influence.eventId)
+  ]);
+  const filesTouched = collectRetrospectiveFiles(request);
+  const terminalEvent = findRetrospectiveTerminalEvent(
+    events,
+    request.terminalStatus
+  );
+
+  if (terminalEvent === undefined) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        "Retrospective review requires a matching terminal event."
+      )
+    );
+  }
+
+  const reasonOrOutcome = createRetrospectiveReasonOrOutcome(request);
+  const terminalEvidenceIds = [terminalEvent.eventId];
+  const isFailureLike = request.terminalStatus !== "completed";
+  const missedAssumptions = limitLearningItems(
+    [
+      ...events
+        .filter((event) => event.type === "task.steering.received")
+        .map((event) =>
+          createLearningItem(
+            `User steering changed or clarified the task: ${event.summary ?? event.message ?? event.reason ?? event.type}`,
+            [event.eventId]
+          )
+        ),
+      ...(isFailureLike
+        ? [
+            createLearningItem(
+              `Terminal state '${request.terminalStatus}' means the original completion assumption did not hold: ${reasonOrOutcome}.`,
+              terminalEvidenceIds
+            )
+          ]
+        : [])
+    ],
+    "compact"
+  );
+  const memoryCandidates = createRetrospectiveMemoryCandidates(
+    request,
+    reasonOrOutcome,
+    terminalEvidenceIds,
+    memoryInfluences
+  );
+  const skillSignals = createRetrospectiveSkillSignals(
+    request,
+    terminalEvidenceIds,
+    validationResults,
+    memoryInfluences
+  );
+  const nextTimeImprovements = createRetrospectiveNextTimeImprovements(
+    request,
+    reasonOrOutcome,
+    terminalEvidenceIds,
+    validationResults
+  );
+  const review: RetrospectiveReview = {
+    commandsRun,
+    context: eligibility.value,
+    correlationId: createSafePreview(request.correlationId),
+    createdAt,
+    evidence: {
+      commandsRun,
+      eventIds,
+      filesTouched,
+      memoryInfluenceEventIds: memoryInfluences.map(
+        (influence) => influence.eventId
+      ),
+      terminalEventId: terminalEvent.eventId,
+      validationResults
+    },
+    eventHistoryReference: {
+      eventCount: events.length,
+      eventIds: events.map((event) => event.eventId)
+    },
+    ...(isFailureLike
+      ? { failureReason: createSafePreview(reasonOrOutcome, 240) }
+      : { outcome: createSafePreview(reasonOrOutcome, 240) }),
+    filesTouched,
+    finalStatus: request.finalStatus,
+    memoryCandidates,
+    missedAssumptions,
+    nextTimeImprovements,
+    schemaVersion: RETROSPECTIVE_REVIEW_SCHEMA_VERSION,
+    sessionId: createSafePreview(request.sessionId),
+    skillSignals,
+    summary: createSafePreview(
+      `Retrospective review for ${request.terminalStatus} task ${request.taskId}.`
+    ),
+    taskGoal: createSafePreview(request.taskGoal, 240),
+    taskId: createSafePreview(request.taskId),
+    terminalStatus: request.terminalStatus
+  };
+
+  return validateRetrospectiveReview(review);
+}
+
+export function summarizeRetrospectiveReviewForEvent(
+  review: RetrospectiveReview
+): RetrospectiveReviewEventSummary {
+  return {
+    commandCount: review.commandsRun.length,
+    evidenceEventIds: [...review.evidence.eventIds],
+    fileCount: review.filesTouched.length,
+    finalStatus: review.finalStatus,
+    memoryCandidateCount: review.memoryCandidates.length,
+    missedAssumptionCount: review.missedAssumptions.length,
+    nextTimeImprovementCount: review.nextTimeImprovements.length,
+    skillSignalCount: review.skillSignals.length,
+    status: "recorded",
+    summary: createSafePreview(review.summary),
+    terminalStatus: review.terminalStatus
+  };
+}
+
+export function validateRetrospectiveReview(
+  review: RetrospectiveReview
+): Result<RetrospectiveReview, SpriteError> {
+  if (review.schemaVersion !== RETROSPECTIVE_REVIEW_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_INVALID_SCHEMA_VERSION",
+        "Retrospective review schemaVersion is unsupported."
+      )
+    );
+  }
+
+  if (!RETROSPECTIVE_TERMINAL_STATUSES.includes(review.terminalStatus)) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_INVALID_TERMINAL_STATUS",
+        "Retrospective terminalStatus is unsupported."
+      )
+    );
+  }
+
+  if (!RETROSPECTIVE_TERMINAL_STATUSES.includes(review.finalStatus)) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_INVALID_FINAL_STATUS",
+        "Retrospective finalStatus is unsupported."
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["sessionId", review.sessionId],
+    ["taskId", review.taskId],
+    ["correlationId", review.correlationId],
+    ["taskGoal", review.taskGoal],
+    ["summary", review.summary]
+  ] as const) {
+    if (!isNonEmptyString(value) || containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "RETROSPECTIVE_REVIEW_UNSAFE_FIELD",
+          `Retrospective review ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  if (Number.isNaN(Date.parse(review.createdAt))) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_INVALID_TIMESTAMP",
+        "Retrospective review createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  if (!review.context.eligible || review.context.missingFields.length > 0) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        "Retrospective review artifacts require eligible context."
+      )
+    );
+  }
+
+  if (
+    review.evidence.eventIds.length === 0 ||
+    review.evidence.filesTouched.length === 0 ||
+    review.evidence.commandsRun.length === 0 ||
+    !isNonEmptyString(review.evidence.terminalEventId)
+  ) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT",
+        "Retrospective review evidence must include events, files, commands, and a terminal event."
+      )
+    );
+  }
+
+  if (review.terminalStatus === "completed") {
+    if (!isNonEmptyString(review.outcome)) {
+      return err(
+        new SpriteError(
+          "RETROSPECTIVE_REVIEW_MISSING_OUTCOME",
+          "Completed task retrospectives require an outcome."
+        )
+      );
+    }
+  } else if (!isNonEmptyString(review.failureReason)) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_MISSING_FAILURE_REASON",
+        "Failed or aborted task retrospectives require a failure reason."
+      )
+    );
+  }
+
+  const forbiddenField = findForbiddenLearningReviewField(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_UNSAFE_FIELD",
+        `Retrospective review must not include raw or secret-bearing field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findSecretLearningReviewString(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_UNSAFE_VALUE",
+        "Retrospective review must not include secret-looking values."
+      )
+    );
+  }
+
+  return { ok: true, value: review };
+}
+
 export function selectMemoryInfluenceCandidates(
   request: MemoryInfluenceSelectionRequest
 ): Result<MemoryInfluenceCandidate[], SpriteError> {
@@ -1724,6 +2220,195 @@ function normalizeLearningValidations(
       : { name: createSafePreview(validation.name) }),
     status: createSafePreview(validation.status)
   }));
+}
+
+function normalizeRetrospectiveMemoryInfluences(
+  influences: readonly RetrospectiveMemoryInfluenceReference[]
+): RetrospectiveMemoryInfluenceReference[] {
+  return influences.slice(0, 20).map((influence) => ({
+    eventId: createSafePreview(influence.eventId),
+    sourceId: createSafePreview(influence.sourceId),
+    sourceType: influence.sourceType,
+    status: influence.status,
+    ...(influence.summary === undefined
+      ? {}
+      : { summary: createSafePreview(influence.summary, 240) })
+  }));
+}
+
+function collectRetrospectiveFiles(
+  request: RetrospectiveGenerationRequest
+): string[] {
+  return normalizeLearningStrings(
+    [
+      ...(request.filesChanged ?? []),
+      ...(request.filesProposedForChange ?? []),
+      ...(request.filesRead ?? [])
+    ],
+    "compact"
+  );
+}
+
+function addRetrospectiveContextField(
+  availableFields: RetrospectiveContextField[],
+  missingFields: RetrospectiveContextField[],
+  field: RetrospectiveContextField,
+  available: boolean
+): void {
+  if (available) {
+    availableFields.push(field);
+  } else {
+    missingFields.push(field);
+  }
+}
+
+function createRetrospectiveReasonOrOutcome(
+  request: RetrospectiveGenerationRequest
+): string {
+  const reason = isNonEmptyString(request.terminalReason)
+    ? createSafePreview(request.terminalReason)
+    : undefined;
+  const message = isNonEmptyString(request.terminalMessage)
+    ? createSafePreview(request.terminalMessage)
+    : undefined;
+
+  if (reason !== undefined && message !== undefined) {
+    return `${reason}: ${message}`;
+  }
+
+  return reason ?? message ?? "";
+}
+
+function findRetrospectiveTerminalEvent(
+  events: readonly RetrospectiveReviewEventInput[],
+  terminalStatus: RetrospectiveTerminalStatus
+): RetrospectiveReviewEventInput | undefined {
+  const terminalTypes = new Set([
+    "task.cancelled",
+    "task.completed",
+    "task.failed"
+  ]);
+
+  return [...events].reverse().find((event) => {
+    if (!terminalTypes.has(event.type)) {
+      return false;
+    }
+
+    if (terminalStatus === "completed") {
+      return event.type === "task.completed";
+    }
+
+    if (terminalStatus === "cancelled") {
+      return event.type === "task.cancelled";
+    }
+
+    return event.type === "task.failed";
+  });
+}
+
+function createRetrospectiveMemoryCandidates(
+  request: RetrospectiveGenerationRequest,
+  reasonOrOutcome: string,
+  terminalEvidenceIds: readonly string[],
+  memoryInfluences: readonly RetrospectiveMemoryInfluenceReference[]
+): RetrospectiveReviewMemoryCandidate[] {
+  return [
+    {
+      candidateId: `retromem_${safeRetrospectiveIdPart(request.taskId)}_terminal`,
+      confidence: request.terminalStatus === "completed" ? "low" : "medium",
+      evidenceEventIds: [...terminalEvidenceIds],
+      memoryType: "episodic",
+      summary: createSafePreview(
+        `Task '${request.taskGoal}' ended as ${request.terminalStatus}: ${reasonOrOutcome}.`,
+        240
+      )
+    },
+    ...memoryInfluences.slice(0, 4).map((influence, index) => ({
+      candidateId: `retromem_${safeRetrospectiveIdPart(request.taskId)}_influence_${index + 1}`,
+      confidence: "medium" as const,
+      evidenceEventIds: [influence.eventId],
+      memoryType: "semantic" as const,
+      summary: createSafePreview(
+        `Memory influence ${influence.sourceId} was ${influence.status}${influence.summary === undefined ? "" : `: ${influence.summary}`}.`,
+        240
+      )
+    }))
+  ];
+}
+
+function createRetrospectiveSkillSignals(
+  request: RetrospectiveGenerationRequest,
+  terminalEvidenceIds: readonly string[],
+  validationResults: readonly LearningReviewValidationResult[],
+  memoryInfluences: readonly RetrospectiveMemoryInfluenceReference[]
+): LearningReviewSkillSignal[] {
+  return limitLearningItems(
+    [
+      ...(request.terminalStatus === "completed"
+        ? []
+        : [
+            createLearningItem(
+              `Terminal ${request.terminalStatus} tasks should be routed through retrospective review before retrying.`,
+              terminalEvidenceIds
+            )
+          ]),
+      ...validationResults
+        .filter((result) => result.status !== "passed")
+        .map((result) =>
+          createLearningItem(
+            `Validation follow-up pattern detected: ${result.name ?? result.command ?? result.eventId} ended as ${result.status}.`,
+            [result.eventId]
+          )
+        ),
+      ...(memoryInfluences.length === 0
+        ? []
+        : [
+            createLearningItem(
+              "Retrospectives should include prior memory influence evidence when it shaped or contradicted the task.",
+              memoryInfluences.map((influence) => influence.eventId)
+            )
+          ])
+    ],
+    "compact"
+  ).map((item, index) => ({
+    evidenceEventIds: item.evidenceEventIds,
+    id: `skillsig_retrospective_${safeRetrospectiveIdPart(request.taskId)}_${index + 1}`,
+    signal: item.summary,
+    triggerReason: item.summary
+  }));
+}
+
+function createRetrospectiveNextTimeImprovements(
+  request: RetrospectiveGenerationRequest,
+  reasonOrOutcome: string,
+  terminalEvidenceIds: readonly string[],
+  validationResults: readonly LearningReviewValidationResult[]
+): LearningReviewSectionItem[] {
+  return limitLearningItems(
+    [
+      createLearningItem(
+        request.terminalStatus === "completed"
+          ? "Keep task outcome, command evidence, and touched files linked when reusing this result."
+          : `Before retrying, review the terminal reason and recovery path: ${reasonOrOutcome}.`,
+        terminalEvidenceIds
+      ),
+      ...validationResults
+        .filter((result) => result.status !== "passed")
+        .map((result) =>
+          createLearningItem(
+            `Resolve or document validation result '${result.status}' for ${result.name ?? result.command ?? result.eventId} before considering the next attempt complete.`,
+            [result.eventId]
+          )
+        )
+    ],
+    "compact"
+  );
+}
+
+function safeRetrospectiveIdPart(value: string): string {
+  const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "_");
+
+  return sanitized.length === 0 ? "task" : sanitized;
 }
 
 function normalizeLearningMemoryCandidates(

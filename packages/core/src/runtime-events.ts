@@ -12,6 +12,7 @@ import {
   MEMORY_INFLUENCE_STATUSES,
   MEMORY_SENSITIVITY_STATUSES,
   MEMORY_TYPES,
+  RETROSPECTIVE_TERMINAL_STATUSES,
   type DurableMemoryType,
   type LearningReviewMode,
   type MemoryCandidateLifecycleStatus,
@@ -20,7 +21,8 @@ import {
   type MemoryInfluenceSourceType,
   type MemoryInfluenceStatus,
   type MemorySensitivityStatus,
-  type MemoryType
+  type MemoryType,
+  type RetrospectiveTerminalStatus
 } from "@sprite/memory";
 import { SpriteError, err, type Result } from "@sprite/shared";
 import {
@@ -186,6 +188,7 @@ const RUNTIME_EVENT_TYPES = [
   "task.steering.received",
   "task.recovery.recorded",
   "learning.review.created",
+  "retrospective.review.created",
   "memory.candidate.created",
   "memory.candidate.reviewed",
   "memory.entry.saved",
@@ -277,6 +280,20 @@ export interface RuntimeEventPayloadMap {
     status: "recorded";
     summary: string;
     testGapCount: number;
+  };
+  "retrospective.review.created": {
+    artifactPath: string;
+    commandCount: number;
+    evidenceEventIds: string[];
+    fileCount: number;
+    finalStatus: RetrospectiveTerminalStatus;
+    memoryCandidateCount: number;
+    missedAssumptionCount: number;
+    nextTimeImprovementCount: number;
+    skillSignalCount: number;
+    status: "recorded";
+    summary: string;
+    terminalStatus: RetrospectiveTerminalStatus;
   };
   "memory.safety.evaluated": {
     action: (typeof MEMORY_SAFETY_ACTIONS)[number];
@@ -827,6 +844,13 @@ export function validateRuntimeEvent(
     }
     case "learning.review.created": {
       return validateLearningReviewCreatedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "retrospective.review.created": {
+      return validateRetrospectiveReviewCreatedEvent(
         context,
         eventType.value,
         event.payload
@@ -1384,6 +1408,173 @@ function validateLearningReviewCreatedEvent(
     status: status.value,
     summary: summary.value,
     testGapCount: testGapCount.value
+  });
+}
+
+function validateRetrospectiveReviewCreatedEvent(
+  context: RuntimeEventContext,
+  type: "retrospective.review.created",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"retrospective.review.created">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const artifactPath = requirePayloadString(type, payload, "artifactPath");
+  const commandCount = requireNonNegativeInteger(type, payload, "commandCount");
+  const evidenceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "evidenceEventIds"
+  );
+  const fileCount = requireNonNegativeInteger(type, payload, "fileCount");
+  const finalStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "finalStatus",
+    RETROSPECTIVE_TERMINAL_STATUSES
+  );
+  const memoryCandidateCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "memoryCandidateCount"
+  );
+  const missedAssumptionCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "missedAssumptionCount"
+  );
+  const nextTimeImprovementCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "nextTimeImprovementCount"
+  );
+  const skillSignalCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "skillSignalCount"
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const terminalStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "terminalStatus",
+    RETROSPECTIVE_TERMINAL_STATUSES
+  );
+  const checks = [
+    artifactPath,
+    commandCount,
+    evidenceEventIds,
+    fileCount,
+    finalStatus,
+    memoryCandidateCount,
+    missedAssumptionCount,
+    nextTimeImprovementCount,
+    skillSignalCount,
+    status,
+    summary,
+    terminalStatus
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !artifactPath.ok ||
+    !commandCount.ok ||
+    !evidenceEventIds.ok ||
+    !fileCount.ok ||
+    !finalStatus.ok ||
+    !memoryCandidateCount.ok ||
+    !missedAssumptionCount.ok ||
+    !nextTimeImprovementCount.ok ||
+    !skillSignalCount.ok ||
+    !status.ok ||
+    !summary.ok ||
+    !terminalStatus.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  const artifactPathValidation = validateFileActivityPath(artifactPath.value);
+
+  if (!artifactPathValidation.ok) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' artifactPath must be project-relative and safe.`
+      )
+    );
+  }
+
+  if (
+    evidenceEventIds.value.length === 0 ||
+    commandCount.value === 0 ||
+    fileCount.value === 0
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include evidence, command, and file counts.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    ["artifactPath", artifactPath.value],
+    ["finalStatus", finalStatus.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ["terminalStatus", terminalStatus.value],
+    ...evidenceEventIds.value.map(
+      (eventId) => ["evidenceEventIds", eventId] as const
+    )
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    artifactPath: artifactPathValidation.value,
+    commandCount: commandCount.value,
+    evidenceEventIds: evidenceEventIds.value,
+    fileCount: fileCount.value,
+    finalStatus: finalStatus.value,
+    memoryCandidateCount: memoryCandidateCount.value,
+    missedAssumptionCount: missedAssumptionCount.value,
+    nextTimeImprovementCount: nextTimeImprovementCount.value,
+    skillSignalCount: skillSignalCount.value,
+    status: status.value,
+    summary: summary.value,
+    terminalStatus: terminalStatus.value
   });
 }
 

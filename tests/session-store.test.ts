@@ -6,6 +6,7 @@ import {
   readLearningReviewLessonCandidates,
   readSessionArtifacts,
   resolveLearningReviewArtifactPath,
+  resolveRetrospectiveReviewArtifactPath,
   resolveSessionArtifactPaths,
   type SessionEventRecord,
   type SessionStateSnapshot
@@ -652,6 +653,196 @@ describe("local session store", () => {
       expect(
         existsSync(
           join(ensured.value.learningReviewsDir, "task_learning_secret.json")
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists retrospective review artifacts inside the session retrospectives directory", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T13:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      expect(existsSync(ensured.value.retrospectivesDir)).toBe(true);
+
+      const review = {
+        commandsRun: [
+          {
+            command: "npm test -- --run tests/runtime-loop.test.ts",
+            eventId: "evt_command_completed",
+            status: "completed"
+          }
+        ],
+        context: {
+          availableFields: [
+            "taskGoal",
+            "eventHistory",
+            "terminalState",
+            "filesTouched",
+            "commandsRun",
+            "failureReasonOrOutcome",
+            "finalStatus"
+          ],
+          eligible: true,
+          missingFields: [],
+          sourceSessionId: sessionId,
+          sourceTaskId: "task_retrospective",
+          terminalStatus: "failed"
+        },
+        correlationId: "corr_retrospective",
+        createdAt: "2026-05-09T13:01:00.000Z",
+        evidence: {
+          commandsRun: [
+            {
+              command: "npm test -- --run tests/runtime-loop.test.ts",
+              eventId: "evt_command_completed",
+              status: "completed"
+            }
+          ],
+          eventIds: ["evt_failed", "evt_command_completed"],
+          filesTouched: ["packages/core/src/agent-runtime.ts"],
+          memoryInfluenceEventIds: [],
+          terminalEventId: "evt_failed",
+          validationResults: []
+        },
+        eventHistoryReference: {
+          eventCount: 2,
+          eventIds: ["evt_command_completed", "evt_failed"]
+        },
+        failureReason: "unrecoverable-error: Provider failed.",
+        filesTouched: ["packages/core/src/agent-runtime.ts"],
+        finalStatus: "failed" as const,
+        memoryCandidates: [
+          {
+            candidateId: "retromem_task_retrospective_1",
+            confidence: "medium",
+            evidenceEventIds: ["evt_failed"],
+            memoryType: "episodic",
+            summary: "Task failed because provider failed."
+          }
+        ],
+        missedAssumptions: [],
+        nextTimeImprovements: [
+          {
+            evidenceEventIds: ["evt_failed"],
+            summary: "Add recovery evidence before retrying this task shape."
+          }
+        ],
+        schemaVersion: 1 as const,
+        sessionId,
+        skillSignals: [],
+        summary: "Retrospective review for failed task task_retrospective.",
+        taskGoal: "Trigger retrospective review",
+        taskId: "task_retrospective",
+        terminalStatus: "failed" as const
+      };
+
+      const written = store.writeRetrospectiveReview(sessionId, review);
+
+      expect(written.ok).toBe(true);
+      if (!written.ok) {
+        return;
+      }
+      expect(written.value.artifactPath).toBe(
+        join(ensured.value.retrospectivesDir, "task_retrospective.json")
+      );
+      expect(readJson(written.value.artifactPath)).toMatchObject({
+        sessionId,
+        taskId: "task_retrospective",
+        terminalStatus: "failed"
+      });
+
+      const resolved = resolveRetrospectiveReviewArtifactPath(
+        ensured.value,
+        "task_retrospective"
+      );
+
+      expect(resolved.ok).toBe(true);
+      if (resolved.ok) {
+        expect(resolved.value).toBe(written.value.artifactPath);
+      }
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsafe retrospective review artifacts before writing", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T13:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const written = store.writeRetrospectiveReview(sessionId, {
+        schemaVersion: 1,
+        sessionId,
+        taskId: "task_retrospective_secret",
+        correlationId: "corr_retrospective_secret",
+        createdAt: "2026-05-09T13:01:00.000Z",
+        terminalStatus: "failed",
+        finalStatus: "failed",
+        taskGoal: "Trigger retrospective review",
+        summary: "Retrospective review for failed task.",
+        eventHistoryReference: {
+          eventCount: 1,
+          eventIds: ["evt_failed"]
+        },
+        evidence: {
+          commandsRun: [],
+          eventIds: ["evt_failed"],
+          filesTouched: ["packages/core/src/agent-runtime.ts"],
+          memoryInfluenceEventIds: [],
+          terminalEventId: "evt_failed",
+          validationResults: []
+        },
+        filesTouched: ["packages/core/src/agent-runtime.ts"],
+        commandsRun: [],
+        failureReason: "OPENAI_API_KEY=sk-test-secret",
+        memoryCandidates: [],
+        missedAssumptions: [],
+        nextTimeImprovements: [],
+        skillSignals: [],
+        context: {
+          availableFields: [],
+          eligible: true,
+          missingFields: [],
+          sourceSessionId: sessionId,
+          sourceTaskId: "task_retrospective_secret",
+          terminalStatus: "failed"
+        }
+      } as never);
+
+      expect(written.ok).toBe(false);
+      expect(
+        existsSync(
+          join(
+            ensured.value.retrospectivesDir,
+            "task_retrospective_secret.json"
+          )
         )
       ).toBe(false);
     } finally {

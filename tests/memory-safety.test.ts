@@ -1,19 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_INFLUENCE_SCHEMA_VERSION,
+  RETROSPECTIVE_REVIEW_SCHEMA_VERSION,
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
   evaluateSafetySensitiveContent,
+  evaluateRetrospectiveEligibility,
   generateLearningReview,
+  generateRetrospectiveReview,
   getMemoryCandidateLifecycleStatus,
   reviewMemoryCandidate,
   selectMemoryInfluenceCandidates,
   shouldAutoSaveMemoryCandidate,
   summarizeLearningReviewForEvent,
   summarizeMemoryCandidateForReview,
+  summarizeRetrospectiveReviewForEvent,
   validateLearningReview,
   validateMemoryCandidateEdit,
-  validateMemoryInfluenceRecord
+  validateMemoryInfluenceRecord,
+  validateRetrospectiveReview
 } from "@sprite/memory";
 
 describe("memory safety evaluation", () => {
@@ -655,6 +660,265 @@ describe("memory safety evaluation", () => {
     });
 
     expect(unsafe.ok).toBe(false);
+  });
+
+  it("generates deterministic retrospective reviews for failed tasks with retained context", () => {
+    const request = {
+      commandsRun: [
+        {
+          command: "npm test -- --run tests/runtime-loop.test.ts",
+          eventId: "evt_command_completed",
+          status: "completed"
+        }
+      ],
+      correlationId: "corr_retrospective",
+      createdAt: "2026-05-09T13:00:00.000Z",
+      events: [
+        {
+          eventId: "evt_started",
+          type: "task.started"
+        },
+        {
+          eventId: "evt_command_completed",
+          summary: "Command completed.",
+          type: "tool.call.completed"
+        },
+        {
+          eventId: "evt_failed",
+          message: "Provider failed before recovery completed.",
+          reason: "unrecoverable-error",
+          type: "task.failed"
+        }
+      ],
+      filesChanged: ["packages/core/src/agent-runtime.ts"],
+      filesRead: ["packages/memory/src/index.ts"],
+      finalStatus: "failed" as const,
+      memoryInfluences: [
+        {
+          eventId: "evt_memory_influence",
+          sourceId: "mem_rtk",
+          sourceType: "memory_entry" as const,
+          status: "used" as const,
+          summary: "Prior memory shaped validation command selection."
+        }
+      ],
+      sessionId: "ses_retrospective",
+      taskGoal: "Trigger retrospective review for failed tasks",
+      taskId: "task_retrospective",
+      terminalMessage: "Provider failed before recovery completed.",
+      terminalReason: "unrecoverable-error",
+      terminalStatus: "failed" as const,
+      validationResults: [
+        {
+          command: "npm test -- --run tests/runtime-loop.test.ts",
+          eventId: "evt_validation_failed",
+          name: "targeted tests",
+          status: "failed"
+        }
+      ]
+    };
+
+    const eligibility = evaluateRetrospectiveEligibility(request);
+
+    expect(eligibility.ok).toBe(true);
+    if (!eligibility.ok) {
+      return;
+    }
+    expect(eligibility.value).toMatchObject({
+      eligible: true,
+      missingFields: [],
+      terminalStatus: "failed"
+    });
+
+    const generated = generateRetrospectiveReview(request);
+
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) {
+      return;
+    }
+
+    expect(generated.value).toMatchObject({
+      schemaVersion: RETROSPECTIVE_REVIEW_SCHEMA_VERSION,
+      sessionId: "ses_retrospective",
+      taskId: "task_retrospective",
+      terminalStatus: "failed",
+      finalStatus: "failed",
+      failureReason: "unrecoverable-error: Provider failed before recovery completed."
+    });
+    expect(generated.value.evidence.eventIds).toEqual([
+      "evt_started",
+      "evt_command_completed",
+      "evt_failed",
+      "evt_validation_failed",
+      "evt_memory_influence"
+    ]);
+    expect(generated.value.evidence.filesTouched).toEqual([
+      "packages/core/src/agent-runtime.ts",
+      "packages/memory/src/index.ts"
+    ]);
+    expect(generated.value.memoryCandidates.length).toBeGreaterThan(0);
+    expect(generated.value.skillSignals.length).toBeGreaterThan(0);
+    expect(generated.value.nextTimeImprovements.length).toBeGreaterThan(0);
+    expect(JSON.stringify(generated.value)).not.toContain("rawOutput");
+
+    const summary = summarizeRetrospectiveReviewForEvent(generated.value);
+
+    expect(summary).toMatchObject({
+      commandCount: 1,
+      fileCount: 2,
+      finalStatus: "failed",
+      memoryCandidateCount: generated.value.memoryCandidates.length,
+      skillSignalCount: generated.value.skillSignals.length,
+      status: "recorded",
+      terminalStatus: "failed"
+    });
+  });
+
+  it("returns exact missing retrospective context fields instead of fabricating learning", () => {
+    const request = {
+      commandsRun: [],
+      correlationId: "corr_missing",
+      events: [],
+      filesChanged: [],
+      finalStatus: "failed" as const,
+      sessionId: "ses_missing",
+      taskGoal: "",
+      taskId: "task_missing",
+      terminalStatus: "failed" as const
+    };
+
+    const eligibility = evaluateRetrospectiveEligibility(request);
+
+    expect(eligibility.ok).toBe(true);
+    if (!eligibility.ok) {
+      return;
+    }
+    expect(eligibility.value).toMatchObject({
+      eligible: false,
+      terminalStatus: "failed"
+    });
+    expect(eligibility.value.missingFields).toEqual([
+      "taskGoal",
+      "eventHistory",
+      "terminalState",
+      "filesTouched",
+      "commandsRun",
+      "failureReasonOrOutcome"
+    ]);
+
+    const generated = generateRetrospectiveReview(request);
+
+    expect(generated.ok).toBe(false);
+    if (generated.ok) {
+      return;
+    }
+    expect(generated.error?.code).toBe(
+      "RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT"
+    );
+  });
+
+  it("requires a matching terminal event before generating retrospective reviews", () => {
+    const request = {
+      commandsRun: [
+        {
+          command: "npm test -- --run tests/runtime-loop.test.ts",
+          eventId: "evt_command_completed",
+          status: "completed"
+        }
+      ],
+      correlationId: "corr_retrospective_missing_terminal",
+      createdAt: "2026-05-09T13:00:00.000Z",
+      events: [
+        {
+          eventId: "evt_started",
+          type: "task.started"
+        },
+        {
+          eventId: "evt_command_completed",
+          summary: "Command completed.",
+          type: "tool.call.completed"
+        }
+      ],
+      filesChanged: ["packages/core/src/agent-runtime.ts"],
+      finalStatus: "failed" as const,
+      sessionId: "ses_retrospective_missing_terminal",
+      taskGoal: "Trigger retrospective review only after terminal evidence",
+      taskId: "task_retrospective_missing_terminal",
+      terminalMessage: "Provider failed before recovery completed.",
+      terminalReason: "unrecoverable-error",
+      terminalStatus: "failed" as const
+    };
+
+    const eligibility = evaluateRetrospectiveEligibility(request);
+
+    expect(eligibility.ok).toBe(true);
+    if (!eligibility.ok) {
+      return;
+    }
+    expect(eligibility.value.eligible).toBe(false);
+    expect(eligibility.value.missingFields).toContain("terminalState");
+
+    const generated = generateRetrospectiveReview(request);
+
+    expect(generated.ok).toBe(false);
+    if (generated.ok) {
+      return;
+    }
+    expect(generated.error?.code).toBe(
+      "RETROSPECTIVE_REVIEW_CONTEXT_INSUFFICIENT"
+    );
+  });
+
+  it("rejects unsafe retrospective review material before persistence or events", () => {
+    const generated = generateRetrospectiveReview({
+      commandsRun: [
+        {
+          command: "npm test -- --run",
+          eventId: "evt_command_completed",
+          status: "completed"
+        }
+      ],
+      correlationId: "corr_retrospective_secret",
+      createdAt: "2026-05-09T13:00:00.000Z",
+      events: [
+        {
+          eventId: "evt_completed",
+          message: "Task completed with enough evidence.",
+          type: "task.completed"
+        }
+      ],
+      filesChanged: ["packages/core/src/agent-runtime.ts"],
+      finalStatus: "completed" as const,
+      sessionId: "ses_retrospective_secret",
+      taskGoal: "Create safe retrospective",
+      taskId: "task_retrospective_secret",
+      terminalMessage: "Task completed with enough evidence.",
+      terminalReason: "completed",
+      terminalStatus: "completed" as const
+    });
+
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) {
+      return;
+    }
+
+    expect(
+      validateRetrospectiveReview({
+        ...generated.value,
+        nextTimeImprovements: [
+          {
+            evidenceEventIds: ["evt_completed"],
+            summary: "OPENAI_API_KEY=sk-test-secret"
+          }
+        ]
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRetrospectiveReview({
+        ...generated.value,
+        rawOutput: "provider stdout"
+      } as unknown as Parameters<typeof validateRetrospectiveReview>[0]).ok
+    ).toBe(false);
   });
 
   it("selects bounded deterministic memory influence candidates without exposing secrets", () => {
