@@ -1,6 +1,6 @@
 # Story 5.1: List Available Skills from Manual Skill Registry
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -74,6 +74,11 @@ so that I know what reusable workflows the agent can use.
   - [x] Run targeted validation before review: skills package tests, CLI smoke tests, task-context tests if self-model/skills context changes, and typecheck.
   - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
   - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+
+### Review Findings
+
+- [x] [Review][Patch] Unsafe metadata field detection misses compound sensitive field names [packages/skills/src/index.ts:618] — fixed by rejecting sensitive substrings inside normalized metadata keys, including `apiToken`, `clientSecret`, `credentialFile`, `privateKeyPem`, and `rawOutputFile`.
+- [x] [Review][Patch] Registry path metadata can echo secret-like substrings [packages/skills/src/index.ts:51] — fixed by returning safe/redacted path previews for registry roots, entry registry roots, manifest paths, warning paths, and unavailable-entry paths.
 
 ## Dev Notes
 
@@ -219,6 +224,8 @@ GPT-5.5
 - 2026-05-09: Targeted validation passed: `npm test -- --run tests/skill-registry.test.ts tests/cli-smoke.test.ts` (31 tests).
 - 2026-05-09: Typecheck passed: `npm run typecheck -- --pretty false`.
 - 2026-05-09: Full validation passed: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` (17 files / 284 tests; diff check clean).
+- 2026-05-09: Code review found two AC5 safety gaps: compound sensitive metadata keys and secret-like substrings in path metadata.
+- 2026-05-09: Review fixes added regression tests for compound unsafe fields and path redaction, then full validation passed: `npm run typecheck -- --pretty false && npm run lint -- --pretty false && npm test -- --run && git diff --check` (17 files / 287 tests).
 
 ### Completion Notes List
 
@@ -229,6 +236,7 @@ GPT-5.5
 - Added `listSkills()` core boundary so CLI/UI/RPC renderers can use the same safe result without duplicating filesystem scanning.
 - Added `sprite skills list --output text|json`; the command runs without provider configuration, does not start/resume a task, and does not create runtime/session/candidate artifacts.
 - Preserved Epic 4 guardrail: `.codex/skills`, `.agents/skills`, learning-review procedural outputs, skill candidates, and promoted-skill behavior remain outside this list-only story.
+- Resolved review findings by rejecting compound sensitive metadata keys and redacting secret-like substrings in returned path fields before CLI/text/json rendering.
 
 ### File List
 
@@ -253,3 +261,4 @@ GPT-5.5
 - 2026-05-09: Created story context for listing available skills from the manual skill registry.
 - 2026-05-09: Started development and moved story to in-progress.
 - 2026-05-09: Implemented manual skill registry listing, CLI output, safety validation, package wiring, regression tests, and moved story to review.
+- 2026-05-09: Addressed review safety findings and moved story to done.

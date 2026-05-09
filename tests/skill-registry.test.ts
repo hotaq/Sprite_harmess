@@ -204,7 +204,78 @@ token: sk-test-secret
       ]);
       expect(serialized).not.toContain("sk-test-secret");
       expect(serialized).not.toContain("OPENAI_API_KEY");
-      expect(() => listAvailableSkills({ cwd: projectDir, homeDir })).not.toThrow();
+      expect(() =>
+        listAvailableSkills({ cwd: projectDir, homeDir })
+      ).not.toThrow();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects compound unsafe metadata keys even when the value looks harmless", () => {
+    const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
+    const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+
+    try {
+      writeSkillManifest(
+        projectSkillsRoot,
+        "api-token-field",
+        `
+name: compound-unsafe
+description: Compound sensitive metadata keys must be rejected.
+apiToken: placeholder
+clientSecret: placeholder
+credentialFile: ./safe-looking-path
+privateKeyPem: placeholder
+rawOutputFile: output.txt
+`
+      );
+
+      const result = listAvailableSkills({ cwd: projectDir, homeDir });
+
+      expect(result.skills).toEqual([]);
+      expect(result.unavailableSkills).toEqual([
+        expect.objectContaining({
+          lifecycleState: "unavailable",
+          relativePath: "api-token-field/SKILL.md",
+          warning: expect.objectContaining({
+            code: "SKILL_MANIFEST_UNSAFE"
+          })
+        })
+      ]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts secret-like substrings from returned registry and manifest paths", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sk-test-secret-skills-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+    const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+
+    try {
+      mkdirSync(homeDir, { recursive: true });
+      mkdirSync(projectDir, { recursive: true });
+      writeSkillManifest(
+        projectSkillsRoot,
+        "manual",
+        `
+name: safe-path-skill
+description: Path metadata must not leak secret-like parent directories.
+`
+      );
+
+      const result = listAvailableSkills({ cwd: projectDir, homeDir });
+      const serialized = JSON.stringify(result);
+
+      expect(result.skills).toHaveLength(1);
+      expect(serialized).not.toContain("sk-test-secret");
+      expect(result.registryRoots.every((root) => root.path.includes("[REDACTED]"))).toBe(
+        true
+      );
+      expect(result.skills[0]?.registryRoot).toContain("[REDACTED]");
+      expect(result.skills[0]?.manifestPath).toContain("[REDACTED]");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

@@ -17,11 +17,11 @@ export const SKILL_LIFECYCLE_STATES = ["manual", "unavailable"] as const;
 
 const DEFAULT_ACTIVATION_HINT = "Manual invocation only.";
 const SKILL_MANIFEST_FILE_NAME = "SKILL.md";
-const FORBIDDEN_METADATA_FIELDS = new Set([
+const FORBIDDEN_METADATA_FIELD_FRAGMENTS = [
   "apikey",
+  "apitoken",
   "content",
   "credential",
-  "credentials",
   "diff",
   "patch",
   "password",
@@ -30,11 +30,10 @@ const FORBIDDEN_METADATA_FIELDS = new Set([
   "raw",
   "rawoutput",
   "secret",
-  "secrets",
   "stderr",
   "stdout",
   "token"
-]);
+] as const;
 
 export type SkillRegistrySource = (typeof SKILL_REGISTRY_SOURCES)[number];
 export type SkillLifecycleState = (typeof SKILL_LIFECYCLE_STATES)[number];
@@ -127,6 +126,15 @@ export type ValidateSkillRegistryEntryResult =
 export function resolveSkillRegistryRoots(
   options: ListSkillsOptions = {}
 ): SkillRegistryRoot[] {
+  return resolveSkillRegistryRootsForScan(options).map((root) => ({
+    ...root,
+    path: createSafePathPreview(root.path)
+  }));
+}
+
+function resolveSkillRegistryRootsForScan(
+  options: ListSkillsOptions = {}
+): SkillRegistryRoot[] {
   const cwd = resolve(options.cwd ?? process.cwd());
   const homeDir =
     options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? "";
@@ -157,7 +165,7 @@ export function resolveSkillRegistryRoots(
 export function listAvailableSkills(
   options: ListSkillsOptions = {}
 ): ListSkillsResult {
-  const registryRoots = resolveSkillRegistryRoots(options);
+  const registryRoots = resolveSkillRegistryRootsForScan(options);
   const skills: SkillRegistryEntry[] = [];
   const unavailableSkills: UnavailableSkillRegistryEntry[] = [];
   const warnings: SkillRegistryWarning[] = [];
@@ -166,13 +174,13 @@ export function listAvailableSkills(
     scanRegistryRoot(root, skills, unavailableSkills, warnings);
   }
 
-  return {
+  return sanitizeListSkillsResult({
     registryRoots,
     schemaVersion: SKILL_REGISTRY_SCHEMA_VERSION,
     skills,
     unavailableSkills,
     warnings
-  };
+  });
 }
 
 export function parseSkillFrontmatter(
@@ -619,8 +627,80 @@ function isUnsafeMetadataField(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
 
   return (
-    FORBIDDEN_METADATA_FIELDS.has(normalized) || containsSecretLikeValue(key)
+    FORBIDDEN_METADATA_FIELD_FRAGMENTS.some((fragment) =>
+      normalized.includes(fragment)
+    ) || containsSecretLikeValue(key)
   );
+}
+
+function sanitizeListSkillsResult(result: ListSkillsResult): ListSkillsResult {
+  return {
+    registryRoots: result.registryRoots.map((root) => ({
+      ...root,
+      path: createSafePathPreview(root.path)
+    })),
+    schemaVersion: result.schemaVersion,
+    skills: result.skills.map((skill) => sanitizeSkillRegistryEntry(skill)),
+    unavailableSkills: result.unavailableSkills.map((skill) =>
+      sanitizeUnavailableSkillRegistryEntry(skill)
+    ),
+    warnings: result.warnings.map((warning) =>
+      sanitizeSkillRegistryWarning(warning)
+    )
+  };
+}
+
+function sanitizeSkillRegistryEntry(
+  skill: SkillRegistryEntry
+): SkillRegistryEntry {
+  const relativePath = createSafePathPreview(skill.relativePath);
+
+  return {
+    ...skill,
+    id: createSkillId(skill.source, skill.name, relativePath),
+    manifestPath: createSafePathPreview(skill.manifestPath),
+    registryRoot: createSafePathPreview(skill.registryRoot),
+    relativePath
+  };
+}
+
+function sanitizeUnavailableSkillRegistryEntry(
+  skill: UnavailableSkillRegistryEntry
+): UnavailableSkillRegistryEntry {
+  const relativePath =
+    skill.relativePath === undefined
+      ? undefined
+      : createSafePathPreview(skill.relativePath);
+  const registryRoot = createSafePathPreview(skill.registryRoot);
+
+  return {
+    ...skill,
+    id: createUnavailableSkillId(skill.source, relativePath ?? registryRoot),
+    manifestPath:
+      skill.manifestPath === undefined
+        ? undefined
+        : createSafePathPreview(skill.manifestPath),
+    registryRoot,
+    relativePath,
+    warning: sanitizeSkillRegistryWarning(skill.warning)
+  };
+}
+
+function sanitizeSkillRegistryWarning(
+  warning: SkillRegistryWarning
+): SkillRegistryWarning {
+  return {
+    ...warning,
+    registryRoot: createSafePathPreview(warning.registryRoot),
+    relativePath:
+      warning.relativePath === undefined
+        ? undefined
+        : createSafePathPreview(warning.relativePath)
+  };
+}
+
+function createSafePathPreview(pathValue: string): string {
+  return createRedactedPreview(pathValue, 512);
 }
 
 function unquoteScalar(value: string): string {

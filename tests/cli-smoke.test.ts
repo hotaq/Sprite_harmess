@@ -243,6 +243,37 @@ secret: sk-test-secret
     }
   });
 
+  it("redacts secret-like substrings from skill list paths in CLI output", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "sk-test-secret-cli-"));
+    const homeDir = join(rootDir, "home");
+    const projectDir = join(rootDir, "project");
+
+    try {
+      mkdirSync(homeDir, { recursive: true });
+      mkdirSync(projectDir, { recursive: true });
+      writeRaw(
+        join(projectDir, ".sprite", "skills", "safe", "SKILL.md"),
+        `---
+name: safe-skill
+description: Path redaction should protect CLI output.
+---
+`
+      );
+
+      const result = spawnSync("node", [cliPath, "skills", "list"], {
+        cwd: projectDir,
+        env: { ...process.env, HOME: homeDir },
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("[REDACTED]");
+      expect(result.stdout).not.toContain("sk-test-secret");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports skill-list-specific output format errors", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 
