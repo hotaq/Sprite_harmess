@@ -20,12 +20,24 @@ export interface FinalTaskSummaryEvent {
   trigger?: string;
 }
 
+export interface FinalTaskSummaryMemoryInfluence {
+  eventId: string;
+  reason?: string;
+  sourceId: string;
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  sourceType: "memory_entry" | "learning_review_lesson";
+  status: "used" | "ignored" | "contradicted";
+  summary?: string;
+}
+
 export interface FinalTaskSummary {
   status: PlannedExecutionFlow["status"];
   result: string;
   provider: FinalTaskSummaryProvider | null;
   model: string | null;
   importantEvents: FinalTaskSummaryEvent[];
+  memoryInfluences: FinalTaskSummaryMemoryInfluence[];
   filesChanged: string[];
   filesProposedForChange: string[];
   filesRead: string[];
@@ -47,6 +59,7 @@ export function createFinalTaskSummary(
     provider: summarizeProvider(state.request.provider),
     model: state.request.provider?.model ?? null,
     importantEvents: state.events.map(summarizeEvent),
+    memoryInfluences: collectMemoryInfluences(state),
     filesChanged: fileActivity.filesChanged,
     filesProposedForChange: fileActivity.filesProposedForChange,
     filesRead: fileActivity.filesRead,
@@ -102,7 +115,43 @@ function summarizeEvent(event: RuntimeEventRecord): FinalTaskSummaryEvent {
     };
   }
 
+  if (event.type === "memory.influence.recorded") {
+    return {
+      ...summary,
+      reason: event.payload.reason,
+      summary:
+        event.payload.influenceSummary ??
+        event.payload.reason ??
+        event.payload.summary
+    };
+  }
+
   return summary;
+}
+
+function collectMemoryInfluences(
+  state: PlannedExecutionFlow
+): FinalTaskSummaryMemoryInfluence[] {
+  return state.events
+    .filter((event) => event.type === "memory.influence.recorded")
+    .map((event): FinalTaskSummaryMemoryInfluence => ({
+      eventId: event.eventId,
+      ...(event.payload.reason === undefined
+        ? {}
+        : { reason: event.payload.reason }),
+      sourceId: event.payload.sourceId,
+      ...(event.payload.sourceSessionId === undefined
+        ? {}
+        : { sourceSessionId: event.payload.sourceSessionId }),
+      ...(event.payload.sourceTaskId === undefined
+        ? {}
+        : { sourceTaskId: event.payload.sourceTaskId }),
+      sourceType: event.payload.sourceType,
+      status: event.payload.status,
+      ...(event.payload.influenceSummary === undefined
+        ? {}
+        : { summary: event.payload.influenceSummary })
+    }));
 }
 
 function collectNotAttempted(state: PlannedExecutionFlow): string[] {

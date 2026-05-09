@@ -4,15 +4,21 @@ import {
 } from "@sprite/config";
 import {
   DURABLE_MEMORY_TYPES,
+  LEARNING_REVIEW_MODES,
   MEMORY_CANDIDATE_LIFECYCLE_STATUSES,
   MEMORY_CANDIDATE_REVIEW_ACTIONS,
   MEMORY_CONFIDENCE_VALUES,
+  MEMORY_INFLUENCE_SOURCE_TYPES,
+  MEMORY_INFLUENCE_STATUSES,
   MEMORY_SENSITIVITY_STATUSES,
   MEMORY_TYPES,
   type DurableMemoryType,
+  type LearningReviewMode,
   type MemoryCandidateLifecycleStatus,
   type MemoryCandidateReviewAction,
   type MemoryConfidence,
+  type MemoryInfluenceSourceType,
+  type MemoryInfluenceStatus,
   type MemorySensitivityStatus,
   type MemoryType
 } from "@sprite/memory";
@@ -179,9 +185,11 @@ const RUNTIME_EVENT_TYPES = [
   "task.cancelled",
   "task.steering.received",
   "task.recovery.recorded",
+  "learning.review.created",
   "memory.candidate.created",
   "memory.candidate.reviewed",
   "memory.entry.saved",
+  "memory.influence.recorded",
   "memory.safety.evaluated",
   "session.resumed",
   "session.compacted",
@@ -256,6 +264,20 @@ export interface RuntimeEventPayloadMap {
     trigger: (typeof RECOVERY_TRIGGERS)[number];
     validationId?: string;
   };
+  "learning.review.created": {
+    artifactPath: string;
+    evidenceEventIds: string[];
+    factCount: number;
+    lessonCount: number;
+    memoryCandidateIds: string[];
+    missedAssumptionCount: number;
+    mistakeCount: number;
+    mode: LearningReviewMode;
+    skillSignalIds: string[];
+    status: "recorded";
+    summary: string;
+    testGapCount: number;
+  };
   "memory.safety.evaluated": {
     action: (typeof MEMORY_SAFETY_ACTIONS)[number];
     matchedRuleIds: string[];
@@ -305,6 +327,19 @@ export interface RuntimeEventPayloadMap {
     sourceEventIds: string[];
     sourceTaskId?: string;
     status: "recorded";
+    summary: string;
+  };
+  "memory.influence.recorded": {
+    evidenceEventIds: string[];
+    influenceSummary?: string;
+    preview: string;
+    reason?: string;
+    sourceEventIds: string[];
+    sourceId: string;
+    sourceSessionId?: string;
+    sourceTaskId?: string;
+    sourceType: MemoryInfluenceSourceType;
+    status: MemoryInfluenceStatus;
     summary: string;
   };
   "session.resumed": {
@@ -790,6 +825,13 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "learning.review.created": {
+      return validateLearningReviewCreatedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "session.resumed": {
       return validateSessionResumedEvent(
         context,
@@ -827,6 +869,13 @@ export function validateRuntimeEvent(
     }
     case "memory.entry.saved": {
       return validateMemoryEntrySavedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "memory.influence.recorded": {
+      return validateMemoryInfluenceRecordedEvent(
         context,
         eventType.value,
         event.payload
@@ -1173,6 +1222,171 @@ function validateMemoryCandidateCreatedEvent(
   });
 }
 
+function validateLearningReviewCreatedEvent(
+  context: RuntimeEventContext,
+  type: "learning.review.created",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"learning.review.created">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const artifactPath = requirePayloadString(type, payload, "artifactPath");
+  const evidenceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "evidenceEventIds"
+  );
+  const factCount = requireNonNegativeInteger(type, payload, "factCount");
+  const lessonCount = requireNonNegativeInteger(type, payload, "lessonCount");
+  const memoryCandidateIds = requirePayloadStringArray(
+    type,
+    payload,
+    "memoryCandidateIds"
+  );
+  const missedAssumptionCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "missedAssumptionCount"
+  );
+  const mistakeCount = requireNonNegativeInteger(type, payload, "mistakeCount");
+  const mode = requirePayloadLiteral(type, payload, "mode", LEARNING_REVIEW_MODES);
+  const skillSignalIds = requirePayloadStringArray(
+    type,
+    payload,
+    "skillSignalIds"
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "recorded"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const testGapCount = requireNonNegativeInteger(type, payload, "testGapCount");
+  const checks = [
+    artifactPath,
+    evidenceEventIds,
+    factCount,
+    lessonCount,
+    memoryCandidateIds,
+    missedAssumptionCount,
+    mistakeCount,
+    mode,
+    skillSignalIds,
+    status,
+    summary,
+    testGapCount
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !artifactPath.ok ||
+    !evidenceEventIds.ok ||
+    !factCount.ok ||
+    !lessonCount.ok ||
+    !memoryCandidateIds.ok ||
+    !missedAssumptionCount.ok ||
+    !mistakeCount.ok ||
+    !mode.ok ||
+    !skillSignalIds.ok ||
+    !status.ok ||
+    !summary.ok ||
+    !testGapCount.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  const artifactPathValidation = validateFileActivityPath(artifactPath.value);
+
+  if (!artifactPathValidation.ok) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' artifactPath must be project-relative and safe.`
+      )
+    );
+  }
+
+  if (evidenceEventIds.value.length === 0 || factCount.value === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include learning review evidence and at least one fact.`
+      )
+    );
+  }
+
+  for (const candidateId of memoryCandidateIds.value) {
+    if (!/^memcand_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(candidateId)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' memoryCandidateIds must use memcand_ identifiers.`
+        )
+      );
+    }
+  }
+
+  const secretCheckedFields = [
+    ["artifactPath", artifactPath.value],
+    ["mode", mode.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ...evidenceEventIds.value.map(
+      (eventId) => ["evidenceEventIds", eventId] as const
+    ),
+    ...memoryCandidateIds.value.map(
+      (candidateId) => ["memoryCandidateIds", candidateId] as const
+    ),
+    ...skillSignalIds.value.map(
+      (signalId) => ["skillSignalIds", signalId] as const
+    )
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    artifactPath: artifactPathValidation.value,
+    evidenceEventIds: evidenceEventIds.value,
+    factCount: factCount.value,
+    lessonCount: lessonCount.value,
+    memoryCandidateIds: memoryCandidateIds.value,
+    missedAssumptionCount: missedAssumptionCount.value,
+    mistakeCount: mistakeCount.value,
+    mode: mode.value,
+    skillSignalIds: skillSignalIds.value,
+    status: status.value,
+    summary: summary.value,
+    testGapCount: testGapCount.value
+  });
+}
+
 function validateMemoryCandidateReviewedEvent(
   context: RuntimeEventContext,
   type: "memory.candidate.reviewed",
@@ -1460,6 +1674,199 @@ function validateMemoryEntrySavedEvent(
       : { sourceTaskId: validation.value.sourceTaskId }),
     status: validation.value.status,
     summary: validation.value.summary
+  });
+}
+
+function validateMemoryInfluenceRecordedEvent(
+  context: RuntimeEventContext,
+  type: "memory.influence.recorded",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"memory.influence.recorded">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw metadata field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const evidenceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "evidenceEventIds"
+  );
+  const influenceSummary = optionalPayloadString(
+    type,
+    payload,
+    "influenceSummary"
+  );
+  const preview = requirePayloadString(type, payload, "preview");
+  const reason = optionalPayloadString(type, payload, "reason");
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const sourceId = requirePayloadString(type, payload, "sourceId");
+  const sourceSessionId = optionalPayloadString(
+    type,
+    payload,
+    "sourceSessionId"
+  );
+  const sourceTaskId = optionalPayloadString(type, payload, "sourceTaskId");
+  const sourceType = requirePayloadLiteral(
+    type,
+    payload,
+    "sourceType",
+    MEMORY_INFLUENCE_SOURCE_TYPES
+  );
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    MEMORY_INFLUENCE_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const checks = [
+    evidenceEventIds,
+    influenceSummary,
+    preview,
+    reason,
+    sourceEventIds,
+    sourceId,
+    sourceSessionId,
+    sourceTaskId,
+    sourceType,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !evidenceEventIds.ok ||
+    !influenceSummary.ok ||
+    !preview.ok ||
+    !reason.ok ||
+    !sourceEventIds.ok ||
+    !sourceId.ok ||
+    !sourceSessionId.ok ||
+    !sourceTaskId.ok ||
+    !sourceType.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (evidenceEventIds.value.length === 0 || sourceEventIds.value.length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include evidenceEventIds and sourceEventIds.`
+      )
+    );
+  }
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload sourceId must be a safe identifier.`
+      )
+    );
+  }
+
+  if (status.value === "used" && influenceSummary.value === undefined) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload influenceSummary is required when status is used.`
+      )
+    );
+  }
+
+  if (
+    (status.value === "ignored" || status.value === "contradicted") &&
+    reason.value === undefined
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload reason is required when status is ${status.value}.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    ["preview", preview.value],
+    ["sourceId", sourceId.value],
+    ["sourceType", sourceType.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ...(influenceSummary.value === undefined
+      ? []
+      : [["influenceSummary", influenceSummary.value] as const]),
+    ...(reason.value === undefined
+      ? []
+      : [["reason", reason.value] as const]),
+    ...(sourceSessionId.value === undefined
+      ? []
+      : [["sourceSessionId", sourceSessionId.value] as const]),
+    ...(sourceTaskId.value === undefined
+      ? []
+      : [["sourceTaskId", sourceTaskId.value] as const]),
+    ...evidenceEventIds.value.map(
+      (eventId) => ["evidenceEventIds", eventId] as const
+    ),
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    )
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    evidenceEventIds: evidenceEventIds.value,
+    ...(influenceSummary.value === undefined
+      ? {}
+      : { influenceSummary: influenceSummary.value }),
+    preview: preview.value,
+    ...(reason.value === undefined ? {} : { reason: reason.value }),
+    sourceEventIds: sourceEventIds.value,
+    sourceId: sourceId.value,
+    ...(sourceSessionId.value === undefined
+      ? {}
+      : { sourceSessionId: sourceSessionId.value }),
+    ...(sourceTaskId.value === undefined
+      ? {}
+      : { sourceTaskId: sourceTaskId.value }),
+    sourceType: sourceType.value,
+    status: status.value,
+    summary: summary.value
   });
 }
 

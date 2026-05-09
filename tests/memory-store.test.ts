@@ -1,5 +1,8 @@
-import { createMemoryCandidate } from "@sprite/memory";
-import { createLocalMemoryStore } from "@sprite/storage";
+import {
+  createMemoryCandidate,
+  createMemoryEntryFromCandidate
+} from "@sprite/memory";
+import { createLocalMemoryStore, readMemoryEntries } from "@sprite/storage";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,6 +88,69 @@ describe("LocalMemoryStore candidate review APIs", () => {
         lifecycleStatus: "rejected",
         reviewReason: "Not actionable."
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads bounded memory entries newest-first without changing default reads", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const store = createLocalMemoryStore();
+
+      for (const index of [1, 2, 3] as const) {
+        const candidate = createMemoryCandidate({
+          candidateId: `memcand_entry_${index}`,
+          confidence: "high",
+          content: `Memory entry ${index} says use bounded retrieval.`,
+          createdAt: `2026-05-08T13:0${index}:00.000Z`,
+          provenance: "memory-store test",
+          sourceEventIds: [`evt_entry_${index}`],
+          sourceTaskId: `task_entry_${index}`,
+          type: "semantic"
+        });
+
+        expect(candidate.ok).toBe(true);
+        if (!candidate.ok || candidate.value.candidate === null) {
+          return;
+        }
+
+        const entry = createMemoryEntryFromCandidate(candidate.value.candidate, {
+          createdAt: `2026-05-08T13:0${index}:00.000Z`,
+          entryId: `mem_entry_${index}`
+        });
+
+        expect(entry.ok).toBe(true);
+        if (!entry.ok) {
+          return;
+        }
+
+        const appended = store.appendEntry(projectDir, entry.value);
+
+        expect(appended.ok).toBe(true);
+      }
+
+      const allEntries = readMemoryEntries(projectDir);
+      const recentEntries = readMemoryEntries(projectDir, {
+        limit: 2,
+        newestFirst: true
+      });
+
+      expect(allEntries.ok).toBe(true);
+      expect(recentEntries.ok).toBe(true);
+      if (!allEntries.ok || !recentEntries.ok) {
+        return;
+      }
+      expect(allEntries.value.map((entry) => entry.id)).toEqual([
+        "mem_entry_1",
+        "mem_entry_2",
+        "mem_entry_3"
+      ]);
+      expect(recentEntries.value.map((entry) => entry.id)).toEqual([
+        "mem_entry_3",
+        "mem_entry_2"
+      ]);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

@@ -3,7 +3,9 @@ import * as storage from "@sprite/storage";
 import {
   createLocalSessionStore,
   createSessionId,
+  readLearningReviewLessonCandidates,
   readSessionArtifacts,
+  resolveLearningReviewArtifactPath,
   resolveSessionArtifactPaths,
   type SessionEventRecord,
   type SessionStateSnapshot
@@ -11,6 +13,7 @@ import {
 import { SpriteError, err } from "@sprite/shared";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -199,7 +202,7 @@ describe("local session store", () => {
       ).toBe(true);
       expect(readNdjson(result.value.eventsPath)).toEqual([]);
       expect(readJson(result.value.statePath)).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 1 as const,
         sessionId,
         cwd: projectDir,
         createdAt: "2026-04-26T12:00:00.000Z",
@@ -236,7 +239,7 @@ describe("local session store", () => {
       const artifact = {
         artifactId: "cmp-threshold-001",
         createdAt: "2026-05-04T00:01:00.000Z",
-        schemaVersion: 1,
+        schemaVersion: 1 as const,
         sessionId,
         summary: {
           continuity: {
@@ -301,6 +304,356 @@ describe("local session store", () => {
       expect(
         readSessionCompactionArtifact(paths, "cmp-threshold-001")
       ).toEqual(readBack);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists learning review artifacts inside the session learning-reviews directory", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      expect(existsSync(ensured.value.learningReviewsDir)).toBe(true);
+
+      const review = {
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:01:00.000Z",
+        evidence: {
+          commandsRun: [],
+          eventIds: ["evt_completed"],
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          taskId: "task_learning",
+          userCorrections: [],
+          validationResults: []
+        },
+        facts: [
+          {
+            evidenceEventIds: ["evt_completed"],
+            summary: "Completed influence storage read."
+          }
+        ],
+        lessons: [],
+        memoryCandidates: [],
+        missedAssumptions: [],
+        mistakes: [],
+        mode: "compact",
+        schemaVersion: 1 as const,
+        sessionId,
+        skillSignals: [],
+        summary: "Learning review for completed task.",
+        taskId: "task_learning",
+        terminalStatus: "completed" as const,
+        testGaps: [
+          {
+            evidenceEventIds: ["evt_completed"],
+            summary: "No validation was recorded."
+          }
+        ]
+      };
+      const written = store.writeLearningReview(sessionId, review);
+
+      expect(written.ok).toBe(true);
+      if (!written.ok) {
+        return;
+      }
+      expect(written.value.artifactPath).toBe(
+        join(ensured.value.learningReviewsDir, "task_learning.json")
+      );
+      expect(
+        resolve(written.value.artifactPath).startsWith(
+          ensured.value.learningReviewsDir
+        )
+      ).toBe(true);
+      expect(readJson(written.value.artifactPath)).toMatchObject({
+        sessionId,
+        taskId: "task_learning",
+        terminalStatus: "completed"
+      });
+
+      const resolved = resolveLearningReviewArtifactPath(
+        ensured.value,
+        "task_learning"
+      );
+
+      expect(resolved.ok).toBe(true);
+      if (resolved.ok) {
+        expect(resolved.value).toBe(written.value.artifactPath);
+      }
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads prior learning review lessons as safe bounded influence candidates", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const written = store.writeLearningReview(sessionId, {
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:01:00.000Z",
+        evidence: {
+          commandsRun: [],
+          eventIds: ["evt_completed"],
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          taskId: "task_learning",
+          userCorrections: [],
+          validationResults: []
+        },
+        facts: [
+          {
+            evidenceEventIds: ["evt_completed"],
+            summary: "Completed influence storage read."
+          }
+        ],
+        lessons: [
+          {
+            evidenceEventIds: ["evt_completed", "evt_validation"],
+            summary:
+              "Use prior validation evidence before recording memory influence."
+          }
+        ],
+        memoryCandidates: [],
+        missedAssumptions: [],
+        mistakes: [],
+        mode: "compact",
+        schemaVersion: 1 as const,
+        sessionId,
+        skillSignals: [],
+        summary: "Learning review for completed task.",
+        taskId: "task_learning",
+        terminalStatus: "completed" as const,
+        testGaps: [
+          {
+            evidenceEventIds: ["evt_validation_gap"],
+            summary: "Add a bounded retrieval regression test."
+          }
+        ]
+      });
+
+      expect(written.ok).toBe(true);
+
+      mkdirSync(
+        join(projectDir, ".sprite", "sessions", "ses_bad", "learning-reviews"),
+        { recursive: true }
+      );
+      writeFileSync(
+        join(
+          projectDir,
+          ".sprite",
+          "sessions",
+          "ses_bad",
+          "learning-reviews",
+          "not-a-review.json"
+        ),
+        "not json"
+      );
+
+      const result = readLearningReviewLessonCandidates(projectDir);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+
+      expect(result.value).toEqual([
+        expect.objectContaining({
+          mode: "compact",
+          preview:
+            "Use prior validation evidence before recording memory influence.",
+          section: "lesson",
+          sourceEventIds: ["evt_completed", "evt_validation"],
+          sourceId: `lesson_${sessionId}_task_learning_1`,
+          sourceSessionId: sessionId,
+          sourceTaskId: "task_learning"
+        }),
+        expect.objectContaining({
+          preview: "Completed influence storage read.",
+          section: "fact",
+          sourceId: `fact_${sessionId}_task_learning_1`
+        }),
+        expect.objectContaining({
+          preview: "Add a bounded retrieval regression test.",
+          section: "test_gap",
+          sourceId: `test_gap_${sessionId}_task_learning_1`
+        })
+      ]);
+      expect(JSON.stringify(result.value)).not.toContain("commandsRun");
+      expect(JSON.stringify(result.value)).not.toContain("filesChanged");
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds prior learning review candidate reads with deterministic limits", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      for (const taskId of ["task_learning_a", "task_learning_b"] as const) {
+        const written = store.writeLearningReview(sessionId, {
+          correlationId: `corr_${taskId}`,
+          createdAt: "2026-05-09T12:01:00.000Z",
+          evidence: {
+            commandsRun: [],
+            eventIds: [`evt_${taskId}`],
+            filesChanged: [],
+            filesProposedForChange: [],
+            filesRead: [],
+            taskId,
+            userCorrections: [],
+            validationResults: []
+          },
+          facts: [
+            {
+              evidenceEventIds: [`evt_${taskId}`],
+              summary: `Fact for ${taskId}.`
+            }
+          ],
+          lessons: [
+            {
+              evidenceEventIds: [`evt_${taskId}`],
+              summary: `Lesson for ${taskId}.`
+            }
+          ],
+          memoryCandidates: [],
+          missedAssumptions: [],
+          mistakes: [],
+          mode: "compact",
+          schemaVersion: 1 as const,
+          sessionId,
+          skillSignals: [],
+          summary: `Learning review for ${taskId}.`,
+          taskId,
+          terminalStatus: "completed" as const,
+          testGaps: [
+            {
+              evidenceEventIds: [`evt_${taskId}`],
+              summary: `Test gap for ${taskId}.`
+            }
+          ]
+        });
+
+        expect(written.ok).toBe(true);
+      }
+
+      const result = readLearningReviewLessonCandidates(projectDir, {
+        artifactLimit: 1,
+        candidateLimit: 2,
+        sessionLimit: 1
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+      expect(result.value).toHaveLength(2);
+      expect(result.value.map((candidate) => candidate.section)).toEqual([
+        "lesson",
+        "fact"
+      ]);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsafe learning review artifacts before writing", () => {
+    const projectDir = createTempProject();
+
+    try {
+      const sessionId = createSessionId();
+      const store = createLocalSessionStore();
+      const ensured = store.ensureSession(
+        sessionId,
+        projectDir,
+        "2026-05-09T12:00:00.000Z"
+      );
+
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) {
+        return;
+      }
+
+      const written = store.writeLearningReview(sessionId, {
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:01:00.000Z",
+        evidence: {
+          commandsRun: [],
+          eventIds: ["evt_completed"],
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          taskId: "task_learning_secret",
+          userCorrections: [],
+          validationResults: []
+        },
+        facts: [
+          {
+            evidenceEventIds: ["evt_completed"],
+            rawContent: "OPENAI_API_KEY=sk-test-secret"
+          }
+        ],
+        lessons: [],
+        memoryCandidates: [],
+        missedAssumptions: [],
+        mistakes: [],
+        mode: "compact",
+        schemaVersion: 1,
+        sessionId,
+        skillSignals: [],
+        summary: "Learning review for completed task.",
+        taskId: "task_learning_secret",
+        terminalStatus: "completed",
+        testGaps: []
+      } as never);
+
+      expect(written.ok).toBe(false);
+      expect(
+        existsSync(
+          join(ensured.value.learningReviewsDir, "task_learning_secret.json")
+        )
+      ).toBe(false);
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }

@@ -10,17 +10,35 @@ import {
   type SpriteValidationCommand
 } from "@sprite/config";
 import {
+  MEMORY_CONFIDENCE_VALUES,
+  MEMORY_INFLUENCE_SCHEMA_VERSION,
+  MEMORY_TYPES,
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
+  generateLearningReview,
   reviewMemoryCandidate as applyMemoryCandidateReview,
+  selectMemoryInfluenceCandidates,
   shouldAutoSaveMemoryCandidate,
+  summarizeLearningReviewForEvent,
   summarizeMemoryCandidateForReview,
+  validateMemoryInfluenceRecord,
+  type LearningReviewCommandEvidence,
+  type LearningReviewMemoryCandidateReference,
+  type LearningReviewMode,
+  type LearningReviewSkillSignal,
+  type LearningReviewValidationResult,
   type MemoryCandidate,
   type MemoryCandidateEvaluation,
   type MemoryCandidateReviewRequest,
   type MemoryCandidateReviewView,
+  type MemoryConfidence,
   type MemoryCandidateRequest,
   type MemoryEntry,
+  type MemoryInfluenceRecord,
+  type MemoryInfluenceSourceInput,
+  type MemoryInfluenceSourceType,
+  type MemoryInfluenceStatus,
+  type MemoryType,
   type SafetyEvaluationDecision
 } from "@sprite/memory";
 import {
@@ -52,10 +70,12 @@ import {
   createLocalMemoryStore,
   createLocalSessionStore,
   createSessionId,
+  readLearningReviewLessonCandidates,
   readMemoryEntries,
   readSessionForResume,
   type SessionSnapshotPlanStep,
   type SessionStateSnapshot,
+  type StoredLearningReviewLessonCandidate,
   type StoredMemoryCandidate,
   type StoredMemoryEntry
 } from "@sprite/storage";
@@ -111,6 +131,7 @@ import {
 import {
   updateTaskContextWorkingMemory,
   type TaskContextPacket,
+  type TaskContextMemoryInput,
   type WorkingMemoryCommand,
   type WorkingMemoryObservation,
   type WorkingMemorySnapshot
@@ -129,6 +150,7 @@ export interface BootstrapState {
 
 export interface RuntimeStartupOptions extends ConfigLoaderOptions {
   env?: NodeJS.ProcessEnv;
+  learningReviewMode?: LearningReviewMode;
   providerOverride?: ProviderRuntimeOverride;
 }
 
@@ -204,6 +226,19 @@ export interface RuntimeMemoryCandidateReviewResult {
   candidate: MemoryCandidate;
   entry: MemoryEntry | null;
   view: MemoryCandidateReviewView;
+}
+
+export interface RuntimeMemoryInfluenceRequest {
+  evidenceEventIds?: readonly string[];
+  influenceSummary?: string;
+  preview: string;
+  reason?: string;
+  sourceEventIds?: readonly string[];
+  sourceId: string;
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  sourceType: MemoryInfluenceSourceType;
+  status: MemoryInfluenceStatus;
 }
 
 interface RuntimeFileEditMetadata {
@@ -328,6 +363,10 @@ interface PendingApprovalRecord {
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
 const MAX_WORKING_MEMORY_EVENT_IDS = 12;
+const MEMORY_INFLUENCE_MEMORY_ENTRY_READ_LIMIT = 50;
+const MEMORY_INFLUENCE_LEARNING_REVIEW_SESSION_LIMIT = 20;
+const MEMORY_INFLUENCE_LEARNING_REVIEW_ARTIFACT_LIMIT = 50;
+const MEMORY_INFLUENCE_LEARNING_REVIEW_CANDIDATE_LIMIT = 100;
 
 function createCompactedContextWarnings(
   notes: readonly ContextAssemblyNote[]
@@ -404,7 +443,17 @@ export class AgentRuntime {
     const createdAt = this.now();
     const startedEventId = this.nextEventId();
     const waitingEventId = this.nextEventId();
+    const memoryEntries = this.loadMemoryInfluenceContextEntries(
+      task,
+      resolvedBootstrapState.startup.cwd
+    );
+
+    if (!memoryEntries.ok) {
+      return err(memoryEntries.error);
+    }
+
     const request = createTaskRequest(task, resolvedBootstrapState, {
+      memoryEntries: memoryEntries.value,
       sessionState: {
         correlationId,
         currentPhase: "plan",
@@ -461,6 +510,69 @@ export class AgentRuntime {
     }
 
     return ok(bootstrapState.value.startup.cwd);
+  }
+
+  private loadMemoryInfluenceContextEntries(
+    task: string,
+    cwd: string
+  ): Result<TaskContextMemoryInput[]> {
+    const memoryEntries = readMemoryEntries(cwd, {
+      limit: MEMORY_INFLUENCE_MEMORY_ENTRY_READ_LIMIT,
+      newestFirst: true
+    });
+
+    if (!memoryEntries.ok) {
+      return err(memoryEntries.error);
+    }
+
+    const lessonCandidates = readLearningReviewLessonCandidates(cwd, {
+      artifactLimit: MEMORY_INFLUENCE_LEARNING_REVIEW_ARTIFACT_LIMIT,
+      candidateLimit: MEMORY_INFLUENCE_LEARNING_REVIEW_CANDIDATE_LIMIT,
+      sessionLimit: MEMORY_INFLUENCE_LEARNING_REVIEW_SESSION_LIMIT
+    });
+
+    if (!lessonCandidates.ok) {
+      return err(lessonCandidates.error);
+    }
+
+    const sources: MemoryInfluenceSourceInput[] = [
+      ...memoryEntries.value.flatMap((entry) => {
+        const source = toMemoryInfluenceSourceInput(entry);
+
+        return source === null ? [] : [source];
+      }),
+      ...lessonCandidates.value.map(toLessonInfluenceSourceInput)
+    ];
+    const selected = selectMemoryInfluenceCandidates({
+      limit: 5,
+      sources,
+      taskGoal: task
+    });
+
+    if (!selected.ok) {
+      return err(selected.error);
+    }
+
+    return ok(
+      selected.value.map((candidate) => ({
+        ...(candidate.confidence === undefined
+          ? {}
+          : { confidence: candidate.confidence }),
+        content: candidate.preview,
+        id: candidate.sourceId,
+        provenance: candidate.provenance ?? candidate.retrievalReason,
+        retrievalReason: candidate.retrievalReason,
+        sourceEventIds: candidate.sourceEventIds,
+        ...(candidate.sourceSessionId === undefined
+          ? {}
+          : { sourceSessionId: candidate.sourceSessionId }),
+        ...(candidate.sourceTaskId === undefined
+          ? {}
+          : { sourceTaskId: candidate.sourceTaskId }),
+        sourceType: candidate.sourceType,
+        type: toTaskContextMemoryType(candidate.type)
+      }))
+    );
   }
 
   subscribeToEvents(listener: RuntimeEventListener): () => void {
@@ -725,7 +837,7 @@ export class AgentRuntime {
       return activeTask;
     }
 
-    return this.setActiveTask(
+    const completed = this.setActiveTask(
       completeTask(activeTask.value, message, {
         sessionId: activeTask.value.sessionId,
         taskId: activeTask.value.taskId,
@@ -734,6 +846,12 @@ export class AgentRuntime {
         createdAt: this.now()
       })
     );
+
+    if (!completed.ok) {
+      return completed;
+    }
+
+    return this.createLearningReviewForCompletedTask(completed.value);
   }
 
   stopActiveTaskForMaxIterations(
@@ -1778,6 +1896,67 @@ export class AgentRuntime {
     });
   }
 
+  recordMemoryInfluence(
+    request: RuntimeMemoryInfluenceRequest
+  ): Result<MemoryInfluenceRecord> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const latestEventId = activeTask.value.events.at(-1)?.eventId;
+    const evidenceEventIds = uniqueStrings([
+      ...(request.evidenceEventIds ?? []),
+      ...(latestEventId === undefined ? [] : [latestEventId])
+    ]);
+    const sourceEventIds = uniqueStrings([...(request.sourceEventIds ?? [])]);
+    const record: MemoryInfluenceRecord = {
+      correlationId: activeTask.value.correlationId,
+      createdAt: this.now(),
+      evidenceEventIds,
+      ...(request.influenceSummary === undefined
+        ? {}
+        : { influenceSummary: createRedactedPreview(request.influenceSummary) }),
+      preview: createRedactedPreview(request.preview),
+      ...(request.reason === undefined
+        ? {}
+        : { reason: createRedactedPreview(request.reason) }),
+      schemaVersion: MEMORY_INFLUENCE_SCHEMA_VERSION,
+      sessionId: activeTask.value.sessionId,
+      sourceEventIds,
+      sourceId: request.sourceId,
+      ...(request.sourceSessionId === undefined
+        ? {}
+        : { sourceSessionId: request.sourceSessionId }),
+      ...(request.sourceTaskId === undefined
+        ? {}
+        : { sourceTaskId: request.sourceTaskId }),
+      sourceType: request.sourceType,
+      status: request.status,
+      taskId: activeTask.value.taskId
+    };
+    const validation = validateMemoryInfluenceRecord(record);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+
+    const emitted = this.emitNewEvents([
+      this.createMemoryInfluenceRecordedEvent(
+        activeTask.value,
+        validation.value
+      )
+    ]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return ok(validation.value);
+  }
+
   private executeRegisteredTool(
     cwd: string,
     request: RuntimeToolCallRequest
@@ -2777,6 +2956,46 @@ export class AgentRuntime {
     );
   }
 
+  private createMemoryInfluenceRecordedEvent(
+    task: PlannedExecutionFlow,
+    record: MemoryInfluenceRecord
+  ): RuntimeEventRecord<"memory.influence.recorded"> {
+    const summary =
+      record.status === "used"
+        ? record.influenceSummary
+        : record.reason;
+
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: record.createdAt
+      },
+      "memory.influence.recorded",
+      {
+        evidenceEventIds: [...record.evidenceEventIds],
+        ...(record.influenceSummary === undefined
+          ? {}
+          : { influenceSummary: record.influenceSummary }),
+        preview: record.preview,
+        ...(record.reason === undefined ? {} : { reason: record.reason }),
+        sourceEventIds: [...record.sourceEventIds],
+        sourceId: record.sourceId,
+        ...(record.sourceSessionId === undefined
+          ? {}
+          : { sourceSessionId: record.sourceSessionId }),
+        ...(record.sourceTaskId === undefined
+          ? {}
+          : { sourceTaskId: record.sourceTaskId }),
+        sourceType: record.sourceType,
+        status: record.status,
+        summary: summary ?? "Memory influence recorded."
+      }
+    );
+  }
+
   private createMemoryCandidateReviewedEvent(
     task: PlannedExecutionFlow,
     candidate: MemoryCandidate,
@@ -3543,6 +3762,105 @@ export class AgentRuntime {
     return ok(this.activeTask);
   }
 
+  private createLearningReviewForCompletedTask(
+    task: PlannedExecutionFlow
+  ): Result<PlannedExecutionFlow> {
+    const events = this.eventBus.getHistory(task.taskId);
+
+    if (!isLearningReviewEligible(task, events)) {
+      return ok(task);
+    }
+
+    if (events.some((event) => event.type === "learning.review.created")) {
+      return ok(
+        this.withUpdatedWorkingMemory({
+          ...task,
+          events
+        })
+      );
+    }
+
+    const finalSummary = createFinalTaskSummary({
+      ...task,
+      events
+    });
+    const review = generateLearningReview({
+      commandsRun: collectLearningReviewCommands(events),
+      correlationId: task.correlationId,
+      createdAt: this.now(),
+      events: events.map(toLearningReviewEventInput),
+      filesChanged: finalSummary.filesChanged,
+      filesProposedForChange: finalSummary.filesProposedForChange,
+      filesRead: finalSummary.filesRead,
+      memoryCandidates: collectLearningReviewMemoryCandidates(events),
+      mode: this.options.learningReviewMode ?? "compact",
+      sessionId: task.sessionId,
+      skillSignals: collectLearningReviewSkillSignals(events),
+      taskGoal: task.request.task,
+      taskId: task.taskId,
+      terminalStatus: "completed",
+      validationResults: collectLearningReviewValidationResults(events)
+    });
+
+    if (!review.ok) {
+      return err(review.error);
+    }
+
+    const written = this.sessionStore.writeLearningReview(
+      task.sessionId,
+      review.value
+    );
+
+    if (!written.ok) {
+      return err(written.error);
+    }
+
+    const eventSummary = summarizeLearningReviewForEvent(review.value);
+    const event = createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "learning.review.created",
+      {
+        artifactPath: path.relative(task.request.cwd, written.value.artifactPath),
+        evidenceEventIds: eventSummary.evidenceEventIds,
+        factCount: eventSummary.factCount,
+        lessonCount: eventSummary.lessonCount,
+        memoryCandidateIds: eventSummary.memoryCandidateIds,
+        missedAssumptionCount: eventSummary.missedAssumptionCount,
+        mistakeCount: eventSummary.mistakeCount,
+        mode: eventSummary.mode,
+        skillSignalIds: eventSummary.skillSignalIds,
+        status: "recorded",
+        summary: eventSummary.summary,
+        testGapCount: eventSummary.testGapCount
+      }
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    const nextTask = this.withUpdatedWorkingMemory({
+      ...task,
+      events: this.eventBus.getHistory(task.taskId)
+    });
+    const persisted = this.persistSessionSnapshot(nextTask);
+
+    if (!persisted.ok) {
+      return err(persisted.error);
+    }
+
+    this.activeTask = nextTask;
+
+    return ok(nextTask);
+  }
+
   private validateRecoveryActionRequest(
     task: PlannedExecutionFlow,
     request: RuntimeRecoveryActionRequest
@@ -4199,6 +4517,15 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
   const filesReadLines = formatPathList(summary.filesRead);
   const filesChangedLines = formatPathList(summary.filesChanged);
   const filesProposedLines = formatPathList(summary.filesProposedForChange);
+  const memoryInfluenceLines =
+    summary.memoryInfluences.length === 0
+      ? ["- none"]
+      : summary.memoryInfluences.map((influence) => {
+          const detail =
+            influence.summary ?? influence.reason ?? "No influence detail.";
+
+          return `- ${influence.status}: ${influence.sourceType}:${influence.sourceId} - ${detail}`;
+        });
 
   return [
     "Final summary:",
@@ -4214,6 +4541,8 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
     ...filesChangedLines,
     "Files proposed for change:",
     ...filesProposedLines,
+    "Memory influences:",
+    ...memoryInfluenceLines,
     "Important events:",
     ...importantEventLines,
     "Unresolved risks:",
@@ -4323,11 +4652,227 @@ function createOneShotPrintTaskResult(
   };
 }
 
+function isLearningReviewEligible(
+  task: PlannedExecutionFlow,
+  events: readonly RuntimeEventRecord[]
+): boolean {
+  return (
+    task.status === "completed" &&
+    events.some((event) =>
+      [
+        "approval.resolved",
+        "file.activity.recorded",
+        "file.edit.applied",
+        "file.edit.failed",
+        "file.edit.requested",
+        "memory.candidate.created",
+        "memory.candidate.reviewed",
+        "memory.entry.saved",
+        "task.recovery.recorded",
+        "task.steering.received",
+        "tool.call.completed",
+        "tool.call.failed",
+        "validation.completed"
+      ].includes(event.type)
+    )
+  );
+}
+
+function toLearningReviewEventInput(event: RuntimeEventRecord): {
+  eventId: string;
+  message?: string;
+  reason?: string;
+  summary?: string;
+  type: string;
+} {
+  return {
+    eventId: event.eventId,
+    ...(getPayloadString(event.payload, "message") === undefined
+      ? {}
+      : { message: getPayloadString(event.payload, "message") }),
+    ...(getPayloadString(event.payload, "reason") === undefined
+      ? {}
+      : { reason: getPayloadString(event.payload, "reason") }),
+    ...(getPayloadString(event.payload, "summary") === undefined
+      ? {}
+      : { summary: getPayloadString(event.payload, "summary") }),
+    type: event.type
+  };
+}
+
+function collectLearningReviewCommands(
+  events: readonly RuntimeEventRecord[]
+): LearningReviewCommandEvidence[] {
+  return events.flatMap((event) => {
+    const command = getPayloadString(event.payload, "command");
+
+    if (command === undefined) {
+      return [];
+    }
+
+    return [
+      {
+        command,
+        eventId: event.eventId,
+        status: getPayloadString(event.payload, "status") ?? event.type
+      }
+    ];
+  });
+}
+
+function collectLearningReviewValidationResults(
+  events: readonly RuntimeEventRecord[]
+): LearningReviewValidationResult[] {
+  return events.flatMap((event) => {
+    if (event.type !== "validation.completed") {
+      return [];
+    }
+
+    return [
+      {
+        ...(event.payload.command === undefined
+          ? {}
+          : { command: event.payload.command }),
+        eventId: event.eventId,
+        ...(event.payload.name === undefined ? {} : { name: event.payload.name }),
+        status: event.payload.status
+      }
+    ];
+  });
+}
+
+function collectLearningReviewMemoryCandidates(
+  events: readonly RuntimeEventRecord[]
+): LearningReviewMemoryCandidateReference[] {
+  const candidates = new Map<string, LearningReviewMemoryCandidateReference>();
+
+  for (const event of events) {
+    if (
+      event.type !== "memory.candidate.created" &&
+      event.type !== "memory.candidate.reviewed" &&
+      event.type !== "memory.entry.saved"
+    ) {
+      continue;
+    }
+
+    candidates.set(event.payload.candidateId, {
+      candidateId: event.payload.candidateId,
+      confidence: event.payload.confidence,
+      eventId: event.eventId,
+      memoryType: event.payload.memoryType,
+      status: event.payload.status
+    });
+  }
+
+  return [...candidates.values()];
+}
+
+function collectLearningReviewSkillSignals(
+  events: readonly RuntimeEventRecord[]
+): LearningReviewSkillSignal[] {
+  return events.flatMap((event) => {
+    if (event.type === "validation.completed" && event.payload.status === "passed") {
+      return [
+        {
+          evidenceEventIds: [event.eventId],
+          id: `skillsig_${safeSignalIdPart(event.payload.validationId)}`,
+          signal: `Validation workflow succeeded: ${event.payload.name ?? event.payload.command ?? event.payload.validationId}.`,
+          triggerReason:
+            "A repeatable validation command completed successfully for the task."
+        }
+      ];
+    }
+
+    if (event.type === "task.recovery.recorded") {
+      return [
+        {
+          evidenceEventIds: [event.eventId],
+          id: `skillsig_${safeSignalIdPart(event.eventId)}`,
+          signal: `Recovery pattern recorded: ${event.payload.trigger} -> ${event.payload.decision}.`,
+          triggerReason: event.payload.summary
+        }
+      ];
+    }
+
+    return [];
+  });
+}
+
+function getPayloadString(
+  payload: object,
+  key: string
+): string | undefined {
+  const value = (payload as Record<string, unknown>)[key];
+
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function safeSignalIdPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 type WorkingMemoryCommandStatus = NonNullable<WorkingMemoryCommand["status"]>;
+
+function toMemoryInfluenceSourceInput(
+  entry: StoredMemoryEntry
+): MemoryInfluenceSourceInput | null {
+  if (!isMemoryType(entry.type) || !isMemoryConfidence(entry.confidence)) {
+    return null;
+  }
+
+  return {
+    confidence: entry.confidence,
+    content: entry.contentPreview,
+    createdAt: entry.createdAt,
+    provenance: entry.provenance,
+    sourceEventIds: [...entry.sourceEventIds],
+    sourceId: entry.id,
+    ...(entry.sourceTaskId === undefined
+      ? {}
+      : { sourceTaskId: entry.sourceTaskId }),
+    sourceType: "memory_entry",
+    type: entry.type
+  };
+}
+
+function toLessonInfluenceSourceInput(
+  lesson: StoredLearningReviewLessonCandidate
+): MemoryInfluenceSourceInput {
+  return {
+    content: lesson.preview,
+    createdAt: lesson.createdAt,
+    provenance: `learning review ${lesson.section} ${lesson.mode}`,
+    sourceEventIds: [...lesson.sourceEventIds],
+    sourceId: lesson.sourceId,
+    sourceSessionId: lesson.sourceSessionId,
+    sourceTaskId: lesson.sourceTaskId,
+    sourceType: "learning_review_lesson",
+    type: lesson.section === "lesson" ? "lesson" : "semantic"
+  };
+}
+
+function toTaskContextMemoryType(type: MemoryType | "lesson" | undefined): MemoryType {
+  return type !== undefined && isMemoryType(type) ? type : "semantic";
+}
+
+function isMemoryType(value: unknown): value is MemoryType {
+  return (
+    typeof value === "string" && MEMORY_TYPES.includes(value as MemoryType)
+  );
+}
+
+function isMemoryConfidence(value: unknown): value is MemoryConfidence {
+  return (
+    typeof value === "string" &&
+    MEMORY_CONFIDENCE_VALUES.includes(value as MemoryConfidence)
+  );
+}
 
 function toMemoryCandidate(candidate: StoredMemoryCandidate): MemoryCandidate {
   return candidate as unknown as MemoryCandidate;

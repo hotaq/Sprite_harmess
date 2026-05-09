@@ -1,7 +1,11 @@
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   writeFileSync
@@ -32,6 +36,11 @@ export interface MemoryArtifactPaths {
   candidatesDir: string;
   entriesPath: string;
   rootDir: string;
+}
+
+export interface ReadMemoryEntriesOptions {
+  limit?: number;
+  newestFirst?: boolean;
 }
 
 export interface StoredMemoryCandidate {
@@ -375,7 +384,8 @@ export function resolveMemoryArtifactPaths(
 }
 
 export function readMemoryEntries(
-  cwd: string
+  cwd: string,
+  options: ReadMemoryEntriesOptions = {}
 ): Result<StoredMemoryEntry[], SpriteError> {
   const paths = resolveMemoryArtifactPaths(cwd);
 
@@ -383,25 +393,86 @@ export function readMemoryEntries(
     return err(paths.error);
   }
 
+  const normalizedLimit = normalizePositiveIntegerOption(
+    options.limit,
+    "MEMORY_ENTRIES_INVALID_LIMIT",
+    "Memory entry read limit must be a positive integer."
+  );
+
+  if (!normalizedLimit.ok) {
+    return err(normalizedLimit.error);
+  }
+
   if (!existsSync(paths.value.entriesPath)) {
     return { ok: true, value: [] };
   }
 
   try {
-    const content = readFileSync(paths.value.entriesPath, "utf8").trim();
-
-    if (content.length === 0) {
-      return { ok: true, value: [] };
-    }
+    const lines =
+      normalizedLimit.value === undefined
+        ? readAllNdjsonLines(paths.value.entriesPath)
+        : readRecentNdjsonLines(paths.value.entriesPath, normalizedLimit.value);
+    const entries = lines.map((line) => JSON.parse(line) as StoredMemoryEntry);
 
     return {
       ok: true,
-      value: content
-        .split("\n")
-        .map((line) => JSON.parse(line) as StoredMemoryEntry)
+      value: options.newestFirst === true ? entries.reverse() : entries
     };
   } catch (error) {
     return err(toMemoryStorageError("MEMORY_ENTRIES_READ_FAILED", error));
+  }
+}
+
+function normalizePositiveIntegerOption(
+  value: number | undefined,
+  code: string,
+  message: string
+): Result<number | undefined, SpriteError> {
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (!Number.isInteger(value) || value <= 0) {
+    return err(new SpriteError(code, message));
+  }
+
+  return { ok: true, value };
+}
+
+function readAllNdjsonLines(filePath: string): string[] {
+  const content = readFileSync(filePath, "utf8").trim();
+
+  return content.length === 0 ? [] : content.split("\n");
+}
+
+function readRecentNdjsonLines(filePath: string, limit: number): string[] {
+  const fd = openSync(filePath, "r");
+
+  try {
+    const stats = fstatSync(fd);
+    const chunkSize = 8192;
+    const chunks: string[] = [];
+    let position = stats.size;
+    let newlineCount = 0;
+
+    while (position > 0 && newlineCount <= limit) {
+      const bytesToRead = Math.min(chunkSize, position);
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+
+      position -= bytesToRead;
+
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
+      const chunk = buffer.subarray(0, bytesRead).toString("utf8");
+
+      chunks.unshift(chunk);
+      newlineCount += chunk.split("\n").length - 1;
+    }
+
+    const content = chunks.join("").trim();
+
+    return content.length === 0 ? [] : content.split("\n").slice(-limit);
+  } finally {
+    closeSync(fd);
   }
 }
 

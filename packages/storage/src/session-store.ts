@@ -2,12 +2,21 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
-  writeFileSync
+  statSync,
+  writeFileSync,
+  type Dirent
 } from "node:fs";
 import path from "node:path";
-import { SpriteError, err, type Result } from "@sprite/shared";
+import {
+  SpriteError,
+  containsSecretLikeValue,
+  createRedactedPreview,
+  err,
+  type Result
+} from "@sprite/shared";
 
 export const SESSION_STATE_SCHEMA_VERSION = 1 as const;
 const SESSION_ID_PATTERN = /^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -31,6 +40,9 @@ export const SESSION_SNAPSHOT_PLAN_STEP_STATUSES = [
 ] as const;
 export const DEFAULT_SESSION_RECENT_EVENT_LIMIT = 20;
 export const MAX_SESSION_RECENT_EVENT_LIMIT = 100;
+export const DEFAULT_LEARNING_REVIEW_SESSION_SCAN_LIMIT = 20;
+export const DEFAULT_LEARNING_REVIEW_ARTIFACT_SCAN_LIMIT = 50;
+export const DEFAULT_LEARNING_REVIEW_CANDIDATE_LIMIT = 100;
 const SESSION_SNAPSHOT_TASK_STATUS_SET: ReadonlySet<string> = new Set(
   SESSION_SNAPSHOT_TASK_STATUSES
 );
@@ -53,6 +65,7 @@ export interface SessionArtifactPaths {
   eventsPath: string;
   statePath: string;
   compactionsDir: string;
+  learningReviewsDir: string;
 }
 
 export interface SessionEventRecord {
@@ -109,6 +122,12 @@ export interface ReadSessionArtifactsResult {
   state: SessionStateSnapshot;
 }
 
+export interface ReadLearningReviewLessonCandidateOptions {
+  artifactLimit?: number;
+  candidateLimit?: number;
+  sessionLimit?: number;
+}
+
 export interface ReadSessionForResumeResult {
   paths: SessionArtifactPaths;
   persistedEventCount: number;
@@ -124,9 +143,44 @@ export interface SessionCompactionArtifact {
   summary: object;
 }
 
+export interface StoredLearningReviewArtifact {
+  correlationId: string;
+  createdAt: string;
+  evidence: object;
+  facts: readonly object[];
+  lessons: readonly object[];
+  memoryCandidates: readonly object[];
+  missedAssumptions: readonly object[];
+  mistakes: readonly object[];
+  mode: string;
+  schemaVersion: typeof SESSION_STATE_SCHEMA_VERSION;
+  sessionId: string;
+  skillSignals: readonly object[];
+  summary: string;
+  taskId: string;
+  terminalStatus: "completed";
+  testGaps: readonly object[];
+}
+
+export interface StoredLearningReviewLessonCandidate {
+  createdAt: string;
+  mode: string;
+  preview: string;
+  section: "fact" | "lesson" | "test_gap";
+  sourceEventIds: string[];
+  sourceId: string;
+  sourceSessionId: string;
+  sourceTaskId: string;
+}
+
 export interface WriteSessionCompactionArtifactResult {
   artifactId: string;
   artifactPath: string;
+}
+
+export interface WriteLearningReviewArtifactResult {
+  artifactPath: string;
+  taskId: string;
 }
 
 interface ReadSessionArtifactBundle {
@@ -144,6 +198,10 @@ export interface SessionStore {
     sessionId: string,
     events: readonly SessionEventRecord[]
   ): Result<void, SpriteError>;
+  writeLearningReview?(
+    sessionId: string,
+    review: StoredLearningReviewArtifact
+  ): Result<WriteLearningReviewArtifactResult, SpriteError>;
   writeStateSnapshot(snapshot: SessionStateSnapshot): Result<void, SpriteError>;
 }
 
@@ -170,6 +228,7 @@ export class LocalSessionStore implements SessionStore {
     try {
       mkdirSync(paths.value.rootDir, { recursive: true });
       mkdirSync(paths.value.compactionsDir, { recursive: true });
+      mkdirSync(paths.value.learningReviewsDir, { recursive: true });
       writeFileSync(paths.value.eventsPath, "", { flag: "a" });
       this.sessionPaths.set(sessionId, paths.value);
 
@@ -276,6 +335,54 @@ export class LocalSessionStore implements SessionStore {
     }
   }
 
+  writeLearningReview(
+    sessionId: string,
+    review: StoredLearningReviewArtifact
+  ): Result<WriteLearningReviewArtifactResult, SpriteError> {
+    const paths = this.getKnownSessionPaths(sessionId);
+
+    if (!paths.ok) {
+      return err(paths.error);
+    }
+
+    const validation = validateStoredLearningReviewArtifact(sessionId, review);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+
+    const artifactPath = resolveLearningReviewArtifactPath(
+      paths.value,
+      validation.value.taskId
+    );
+
+    if (!artifactPath.ok) {
+      return err(artifactPath.error);
+    }
+
+    try {
+      mkdirSync(paths.value.learningReviewsDir, { recursive: true });
+      const tempPath = path.join(
+        paths.value.learningReviewsDir,
+        `.${validation.value.taskId}.json.tmp-${process.pid}-${Date.now()}-${randomUUID()}`
+      );
+      writeFileSync(
+        tempPath,
+        `${JSON.stringify(validation.value, null, 2)}\n`
+      );
+      renameSync(tempPath, artifactPath.value);
+
+      return okSession({
+        artifactPath: artifactPath.value,
+        taskId: validation.value.taskId
+      });
+    } catch (error: unknown) {
+      return err(
+        toSessionStorageError("SESSION_LEARNING_REVIEW_WRITE_FAILED", error)
+      );
+    }
+  }
+
   private getKnownSessionPaths(
     sessionId: string
   ): Result<SessionArtifactPaths, SpriteError> {
@@ -343,9 +450,39 @@ export function resolveSessionArtifactPaths(
       rootDir,
       eventsPath: path.join(rootDir, "events.ndjson"),
       statePath: path.join(rootDir, "state.json"),
-      compactionsDir: path.join(rootDir, "compactions")
+      compactionsDir: path.join(rootDir, "compactions"),
+      learningReviewsDir: path.join(rootDir, "learning-reviews")
     }
   };
+}
+
+export function resolveLearningReviewArtifactPath(
+  paths: SessionArtifactPaths,
+  taskId: string
+): Result<string, SpriteError> {
+  if (!/^task_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(taskId)) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_TASK_ID_INVALID",
+        "Learning review task ID must use the task_ prefix and contain only safe identifier characters."
+      )
+    );
+  }
+
+  const learningReviewsDir = path.resolve(paths.learningReviewsDir);
+  const artifactPath = path.resolve(learningReviewsDir, `${taskId}.json`);
+  const relative = path.relative(learningReviewsDir, artifactPath);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_PATH_ESCAPE",
+        "Learning review artifact path must remain inside the session learning-reviews directory."
+      )
+    );
+  }
+
+  return okSession(artifactPath);
 }
 
 export function resolveSessionCompactionArtifactPath(
@@ -584,6 +721,218 @@ export function readSessionArtifacts(
   });
 }
 
+export function readLearningReviewLessonCandidates(
+  cwd: string,
+  options: ReadLearningReviewLessonCandidateOptions = {}
+): Result<StoredLearningReviewLessonCandidate[], SpriteError> {
+  const sessionsDir = path.join(cwd, ".sprite", "sessions");
+  const sessionLimit =
+    options.sessionLimit ?? DEFAULT_LEARNING_REVIEW_SESSION_SCAN_LIMIT;
+  const artifactLimit =
+    options.artifactLimit ?? DEFAULT_LEARNING_REVIEW_ARTIFACT_SCAN_LIMIT;
+  const candidateLimit =
+    options.candidateLimit ?? DEFAULT_LEARNING_REVIEW_CANDIDATE_LIMIT;
+
+  for (const [limitName, limitValue] of [
+    ["sessionLimit", sessionLimit],
+    ["artifactLimit", artifactLimit],
+    ["candidateLimit", candidateLimit]
+  ] as const) {
+    if (!Number.isInteger(limitValue) || limitValue <= 0) {
+      return err(
+        new SpriteError(
+          "SESSION_LEARNING_REVIEW_INVALID_READ_LIMIT",
+          `Learning review ${limitName} must be a positive integer.`
+        )
+      );
+    }
+  }
+
+  if (!existsSync(sessionsDir)) {
+    return okSession([]);
+  }
+
+  try {
+    const candidates: StoredLearningReviewLessonCandidate[] = [];
+    let artifactsRead = 0;
+    const sessionEntries = sortDirectoryEntriesByRecency(
+      sessionsDir,
+      readdirSync(sessionsDir, {
+        withFileTypes: true
+      }).filter((entry) => entry.isDirectory())
+    ).slice(0, sessionLimit);
+
+    readLoop: for (const sessionEntry of sessionEntries) {
+      const sessionId = sessionEntry.name;
+      const learningReviewsDir = path.join(
+        sessionsDir,
+        sessionId,
+        "learning-reviews"
+      );
+
+      if (!existsSync(learningReviewsDir)) {
+        continue;
+      }
+
+      const reviewEntries = sortDirectoryEntriesByRecency(
+        learningReviewsDir,
+        readdirSync(learningReviewsDir, {
+          withFileTypes: true
+        }).filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      );
+
+      for (const reviewEntry of reviewEntries) {
+        if (artifactsRead >= artifactLimit || candidates.length >= candidateLimit) {
+          break readLoop;
+        }
+
+        artifactsRead += 1;
+        const artifactPath = path.join(learningReviewsDir, reviewEntry.name);
+        const parsed = parseLearningReviewArtifactSafely(artifactPath);
+
+        if (parsed === null) {
+          continue;
+        }
+
+        candidates.push(
+          ...extractLearningReviewLessonCandidates(
+            parsed,
+            candidateLimit - candidates.length
+          )
+        );
+      }
+    }
+
+    return okSession(candidates.slice(0, candidateLimit));
+  } catch (error: unknown) {
+    return err(
+      toSessionStorageError("SESSION_LEARNING_REVIEW_LESSONS_READ_FAILED", error)
+    );
+  }
+}
+
+function parseLearningReviewArtifactSafely(
+  artifactPath: string
+): StoredLearningReviewArtifact | null {
+  try {
+    const parsed = JSON.parse(readFileSync(artifactPath, "utf8")) as unknown;
+
+    if (!isLearningReviewArtifactRecord(parsed)) {
+      return null;
+    }
+
+    if (
+      containsSecretLikeValue(JSON.stringify(parsed)) ||
+      findForbiddenLearningReviewArtifactField(parsed, new WeakSet()) !== null
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function extractLearningReviewLessonCandidates(
+  review: StoredLearningReviewArtifact,
+  limit = DEFAULT_LEARNING_REVIEW_CANDIDATE_LIMIT
+): StoredLearningReviewLessonCandidate[] {
+  const candidates: StoredLearningReviewLessonCandidate[] = [];
+  const sections = [
+    ["lesson", review.lessons, "lesson"] as const,
+    ["fact", review.facts, "fact"] as const,
+    ["test_gap", review.testGaps, "test_gap"] as const
+  ];
+
+  for (const [section, items, sourceIdPrefix] of sections) {
+    for (const [index, item] of items.entries()) {
+      if (candidates.length >= limit) {
+        return candidates;
+      }
+
+      if (!isLearningReviewSectionItem(item)) {
+        continue;
+      }
+
+      const preview = createRedactedPreview(item.summary, 240);
+
+      if (preview.length === 0 || containsSecretLikeValue(preview)) {
+        continue;
+      }
+
+      candidates.push({
+        createdAt: review.createdAt,
+        mode: review.mode,
+        preview,
+        section,
+        sourceEventIds: item.evidenceEventIds,
+        sourceId: `${sourceIdPrefix}_${review.sessionId}_${review.taskId}_${String(index + 1)}`,
+        sourceSessionId: review.sessionId,
+        sourceTaskId: review.taskId
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function sortDirectoryEntriesByRecency(
+  directoryPath: string,
+  entries: readonly Dirent[]
+): Dirent[] {
+  return entries
+    .map((entry) => {
+      const entryPath = path.join(directoryPath, entry.name);
+
+      return {
+        entry,
+        mtimeMs: statSync(entryPath).mtimeMs
+      };
+    })
+    .sort((left, right) => {
+      if (right.mtimeMs !== left.mtimeMs) {
+        return right.mtimeMs - left.mtimeMs;
+      }
+
+      return right.entry.name.localeCompare(left.entry.name);
+    })
+    .map(({ entry }) => entry);
+}
+
+function isLearningReviewArtifactRecord(
+  value: unknown
+): value is StoredLearningReviewArtifact {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Partial<StoredLearningReviewArtifact>;
+
+  return (
+    record.schemaVersion === SESSION_STATE_SCHEMA_VERSION &&
+    typeof record.sessionId === "string" &&
+    typeof record.taskId === "string" &&
+    typeof record.createdAt === "string" &&
+    typeof record.mode === "string" &&
+    Array.isArray(record.lessons)
+  );
+}
+
+function isLearningReviewSectionItem(
+  value: object
+): value is { evidenceEventIds: string[]; summary: string } {
+  const item = value as Record<string, unknown>;
+
+  return (
+    typeof item.summary === "string" &&
+    Array.isArray(item.evidenceEventIds) &&
+    item.evidenceEventIds.every(
+      (eventId) => typeof eventId === "string" && eventId.trim().length > 0
+    )
+  );
+}
+
 function toSessionStorageError(code: string, error: unknown): SpriteError {
   if (error instanceof SpriteError) {
     return error;
@@ -601,6 +950,220 @@ function normalizeSessionStateSnapshot(
     ...snapshot,
     cwd: path.resolve(snapshot.cwd)
   };
+}
+
+function validateStoredLearningReviewArtifact(
+  sessionId: string,
+  review: StoredLearningReviewArtifact
+): Result<StoredLearningReviewArtifact, SpriteError> {
+  if (review.schemaVersion !== SESSION_STATE_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_SCHEMA_VERSION",
+        "Learning review artifact schemaVersion is unsupported."
+      )
+    );
+  }
+
+  if (review.sessionId !== sessionId) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_SCOPE_MISMATCH",
+        "Learning review sessionId must match the active session."
+      )
+    );
+  }
+
+  if (!/^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(review.sessionId)) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_SESSION_ID",
+        "Learning review sessionId must use the ses_ prefix."
+      )
+    );
+  }
+
+  if (!/^task_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(review.taskId)) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_TASK_ID",
+        "Learning review taskId must use the task_ prefix."
+      )
+    );
+  }
+
+  if (review.terminalStatus !== "completed") {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_TERMINAL_STATUS",
+        "Learning review artifacts in this workflow require completed terminal status."
+      )
+    );
+  }
+
+  if (Number.isNaN(Date.parse(review.createdAt))) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_TIMESTAMP",
+        "Learning review createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  const forbiddenField = findForbiddenLearningReviewArtifactField(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_UNSAFE_FIELD",
+        `Learning review artifact must not include raw or secret-bearing field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findUnsafeLearningReviewArtifactString(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_UNSAFE_VALUE",
+        "Learning review artifact must not include secret-looking values."
+      )
+    );
+  }
+
+  return okSession(review);
+}
+
+function findForbiddenLearningReviewArtifactField(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  const forbiddenFields = new Set([
+    "accessToken",
+    "apiKey",
+    "api_key",
+    "authorization",
+    "commandOutput",
+    "content",
+    "credential",
+    "credentials",
+    "diff",
+    "env",
+    "hunk",
+    "newText",
+    "oldText",
+    "output",
+    "password",
+    "patch",
+    "privateKey",
+    "private_key",
+    "rawCommandOutput",
+    "rawContent",
+    "rawOutput",
+    "rawSnippet",
+    "secret",
+    "snippet",
+    "snippets",
+    "stderr",
+    "stdout",
+    "token"
+  ]);
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findForbiddenLearningReviewArtifactField(item, seen);
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (forbiddenFields.has(key)) {
+      return key;
+    }
+
+    const nested = findForbiddenLearningReviewArtifactField(nestedValue, seen);
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+function findUnsafeLearningReviewArtifactString(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  if (typeof value === "string") {
+    return containsSecretLikeValue(value) ? value : null;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findUnsafeLearningReviewArtifactString(item, seen);
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const nestedValue of Object.values(value)) {
+    const nested = findUnsafeLearningReviewArtifactString(nestedValue, seen);
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
 }
 
 function readSessionStateSnapshot(

@@ -187,6 +187,236 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(event).ok).toBe(true);
   });
 
+  it("validates learning review created runtime events", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_learning_review",
+        sessionId: "ses_learning",
+        taskId: "task_learning",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:00:00.000Z"
+      },
+      "learning.review.created",
+      {
+        artifactPath:
+          ".sprite/sessions/ses_learning/learning-reviews/task_learning.json",
+        evidenceEventIds: ["evt_completed"],
+        factCount: 1,
+        lessonCount: 1,
+        memoryCandidateIds: ["memcand_learning"],
+        missedAssumptionCount: 0,
+        mistakeCount: 0,
+        mode: "compact",
+        skillSignalIds: ["skillsig_validation"],
+        status: "recorded",
+        summary: "Learning review for completed task.",
+        testGapCount: 0
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+  });
+
+  it("validates memory influence recorded runtime events for every audit status", () => {
+    const context = {
+      eventId: "evt_memory_influence",
+      sessionId: "ses_memory",
+      taskId: "task_memory",
+      correlationId: "corr_memory",
+      createdAt: "2026-05-09T12:08:00.000Z"
+    };
+    const basePayload = {
+      evidenceEventIds: ["evt_current_plan"],
+      preview: "Use rtk run for validation commands.",
+      sourceEventIds: ["evt_memory_entry"],
+      sourceId: "mem_rtk",
+      sourceTaskId: "task_4_2",
+      sourceType: "memory_entry" as const,
+      summary: "Memory influence recorded."
+    };
+
+    const used = createRuntimeEventRecord(context, "memory.influence.recorded", {
+      ...basePayload,
+      influenceSummary: "The plan chose rtk validation because memory said so.",
+      status: "used"
+    });
+    const ignored = createRuntimeEventRecord(
+      {
+        ...context,
+        eventId: "evt_memory_influence_ignored"
+      },
+      "memory.influence.recorded",
+      {
+        ...basePayload,
+        reason: "The hint was unrelated to the current runtime branch.",
+        status: "ignored"
+      }
+    );
+    const contradicted = createRuntimeEventRecord(
+      {
+        ...context,
+        eventId: "evt_memory_influence_contradicted"
+      },
+      "memory.influence.recorded",
+      {
+        ...basePayload,
+        reason: "Current evidence contradicted the prior lesson.",
+        sourceId: "lesson_story_4_4",
+        sourceSessionId: "ses_prior",
+        sourceTaskId: "task_4_4",
+        sourceType: "learning_review_lesson",
+        status: "contradicted"
+      }
+    );
+
+    expect(validateRuntimeEvent(used).ok).toBe(true);
+    expect(validateRuntimeEvent(ignored).ok).toBe(true);
+    expect(validateRuntimeEvent(contradicted).ok).toBe(true);
+  });
+
+  it("rejects unsafe or incomplete memory influence recorded events", () => {
+    const baseEvent = {
+      schemaVersion: 1 as const,
+      eventId: "evt_memory_influence_invalid",
+      sessionId: "ses_memory",
+      taskId: "task_memory",
+      correlationId: "corr_memory",
+      createdAt: "2026-05-09T12:08:00.000Z",
+      type: "memory.influence.recorded" as const,
+      payload: {
+        evidenceEventIds: ["evt_current_plan"],
+        preview: "Use rtk run for validation commands.",
+        sourceEventIds: ["evt_memory_entry"],
+        sourceId: "mem_rtk",
+        sourceTaskId: "task_4_2",
+        sourceType: "memory_entry",
+        status: "used",
+        summary: "Memory influence recorded."
+      }
+    };
+
+    expect(validateRuntimeEvent(baseEvent).ok).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_memory_influence_no_reason",
+        payload: {
+          ...baseEvent.payload,
+          status: "ignored"
+        }
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_memory_influence_secret",
+        payload: {
+          ...baseEvent.payload,
+          influenceSummary: "OPENAI_API_KEY=sk-test-secret",
+          status: "used"
+        }
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...baseEvent,
+        eventId: "evt_memory_influence_raw",
+        payload: {
+          ...baseEvent.payload,
+          influenceSummary: "Unsafe raw fields are rejected.",
+          rawOutput: "provider stdout",
+          status: "used"
+        }
+      }).ok
+    ).toBe(false);
+  });
+
+  it("rejects learning review created events with raw or secret-looking fields", () => {
+    const basePayload = {
+      artifactPath:
+        ".sprite/sessions/ses_learning/learning-reviews/task_learning.json",
+      evidenceEventIds: ["evt_completed"],
+      factCount: 1,
+      lessonCount: 1,
+      memoryCandidateIds: ["memcand_learning"],
+      missedAssumptionCount: 0,
+      mistakeCount: 0,
+      mode: "compact",
+      skillSignalIds: ["skillsig_validation"],
+      status: "recorded",
+      summary: "Learning review for completed task.",
+      testGapCount: 0
+    };
+
+    const raw = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_learning_raw",
+      sessionId: "ses_learning",
+      taskId: "task_learning",
+      correlationId: "corr_learning",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      type: "learning.review.created",
+      payload: {
+        ...basePayload,
+        rawOutput: "OPENAI_API_KEY=sk-test-secret"
+      }
+    });
+
+    expect(raw.ok).toBe(false);
+
+    const secret = validateRuntimeEvent({
+      schemaVersion: 1,
+      eventId: "evt_learning_secret",
+      sessionId: "ses_learning",
+      taskId: "task_learning",
+      correlationId: "corr_learning",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      type: "learning.review.created",
+      payload: {
+        ...basePayload,
+        summary: "OPENAI_API_KEY=sk-test-secret"
+      }
+    });
+
+    expect(secret.ok).toBe(false);
+  });
+
+  it("rejects learning review created events without evidence metadata", () => {
+    const basePayload = {
+      artifactPath:
+        ".sprite/sessions/ses_learning/learning-reviews/task_learning.json",
+      evidenceEventIds: ["evt_completed"],
+      factCount: 1,
+      lessonCount: 0,
+      memoryCandidateIds: [],
+      missedAssumptionCount: 0,
+      mistakeCount: 0,
+      mode: "compact",
+      skillSignalIds: [],
+      status: "recorded",
+      summary: "Learning review for completed task.",
+      testGapCount: 0
+    };
+
+    for (const payload of [
+      { ...basePayload, evidenceEventIds: [] },
+      { ...basePayload, factCount: 0 }
+    ]) {
+      const result = validateRuntimeEvent({
+        schemaVersion: 1,
+        eventId: "evt_learning_missing_evidence",
+        sessionId: "ses_learning",
+        taskId: "task_learning",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:00:00.000Z",
+        type: "learning.review.created",
+        payload
+      });
+
+      expect(result.ok).toBe(false);
+    }
+  });
+
   it("rejects memory runtime events that include raw content fields", () => {
     const result = validateRuntimeEvent({
       schemaVersion: 1,

@@ -46,6 +46,18 @@ export const MEMORY_CANDIDATE_REVIEW_ACTIONS = [
 export const DURABLE_MEMORY_TYPES = ["episodic", "semantic"] as const;
 export const MEMORY_CANDIDATE_SCHEMA_VERSION = 1 as const;
 export const MEMORY_ENTRY_SCHEMA_VERSION = 1 as const;
+export const LEARNING_REVIEW_SCHEMA_VERSION = 1 as const;
+export const LEARNING_REVIEW_MODES = ["compact", "full"] as const;
+export const MEMORY_INFLUENCE_SCHEMA_VERSION = 1 as const;
+export const MEMORY_INFLUENCE_STATUSES = [
+  "used",
+  "ignored",
+  "contradicted"
+] as const;
+export const MEMORY_INFLUENCE_SOURCE_TYPES = [
+  "memory_entry",
+  "learning_review_lesson"
+] as const;
 const DEFAULT_PREVIEW_LIMIT = 160;
 const MAX_MEMORY_CANDIDATE_CONTENT_LENGTH = 2_000;
 
@@ -61,6 +73,11 @@ export type MemoryCandidateRecommendedAction =
 export type MemoryCandidateReviewAction =
   (typeof MEMORY_CANDIDATE_REVIEW_ACTIONS)[number];
 export type SafetyEvaluationAction = "allow" | "block" | "redact";
+export type LearningReviewMode = (typeof LEARNING_REVIEW_MODES)[number];
+export type MemoryInfluenceStatus =
+  (typeof MEMORY_INFLUENCE_STATUSES)[number];
+export type MemoryInfluenceSourceType =
+  (typeof MEMORY_INFLUENCE_SOURCE_TYPES)[number];
 
 export interface SafetySensitiveContentRequest {
   content: string;
@@ -129,6 +146,159 @@ export interface MemoryEntry {
   sourceTaskId?: string;
   type: DurableMemoryType;
   updatedAt: string;
+}
+
+export interface LearningReviewSectionItem {
+  evidenceEventIds: string[];
+  summary: string;
+}
+
+export interface LearningReviewValidationResult {
+  command?: string;
+  eventId: string;
+  name?: string;
+  status: string;
+}
+
+export interface LearningReviewCommandEvidence {
+  command: string;
+  eventId: string;
+  status: string;
+}
+
+export interface LearningReviewEvidence {
+  commandsRun: LearningReviewCommandEvidence[];
+  eventIds: string[];
+  filesChanged: string[];
+  filesProposedForChange: string[];
+  filesRead: string[];
+  taskId: string;
+  userCorrections: LearningReviewSectionItem[];
+  validationResults: LearningReviewValidationResult[];
+}
+
+export interface LearningReviewMemoryCandidateReference {
+  candidateId: string;
+  confidence?: MemoryConfidence;
+  eventId: string;
+  memoryType?: MemoryType;
+  status?: string;
+}
+
+export interface LearningReviewSkillSignal {
+  evidenceEventIds: string[];
+  id: string;
+  signal: string;
+  triggerReason: string;
+}
+
+export interface LearningReview {
+  correlationId: string;
+  createdAt: string;
+  evidence: LearningReviewEvidence;
+  facts: LearningReviewSectionItem[];
+  lessons: LearningReviewSectionItem[];
+  memoryCandidates: LearningReviewMemoryCandidateReference[];
+  missedAssumptions: LearningReviewSectionItem[];
+  mistakes: LearningReviewSectionItem[];
+  mode: LearningReviewMode;
+  schemaVersion: typeof LEARNING_REVIEW_SCHEMA_VERSION;
+  sessionId: string;
+  skillSignals: LearningReviewSkillSignal[];
+  summary: string;
+  taskId: string;
+  terminalStatus: "completed";
+  testGaps: LearningReviewSectionItem[];
+}
+
+export interface LearningReviewEventInput {
+  eventId: string;
+  message?: string;
+  reason?: string;
+  summary?: string;
+  type: string;
+}
+
+export interface LearningReviewGenerationRequest {
+  commandsRun?: readonly LearningReviewCommandEvidence[];
+  correlationId: string;
+  createdAt?: string;
+  events: readonly LearningReviewEventInput[];
+  filesChanged?: readonly string[];
+  filesProposedForChange?: readonly string[];
+  filesRead?: readonly string[];
+  memoryCandidates?: readonly LearningReviewMemoryCandidateReference[];
+  mode?: LearningReviewMode;
+  sessionId: string;
+  skillSignals?: readonly LearningReviewSkillSignal[];
+  taskGoal: string;
+  taskId: string;
+  terminalStatus: "completed";
+  validationResults?: readonly LearningReviewValidationResult[];
+}
+
+export interface LearningReviewEventSummary {
+  evidenceEventIds: string[];
+  factCount: number;
+  lessonCount: number;
+  memoryCandidateIds: string[];
+  missedAssumptionCount: number;
+  mistakeCount: number;
+  mode: LearningReviewMode;
+  skillSignalIds: string[];
+  summary: string;
+  testGapCount: number;
+}
+
+export interface MemoryInfluenceSourceInput {
+  confidence?: MemoryConfidence;
+  content: string;
+  createdAt?: string;
+  provenance?: string;
+  sourceEventIds?: readonly string[];
+  sourceId: string;
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  sourceType: MemoryInfluenceSourceType;
+  type?: MemoryType | "lesson";
+}
+
+export interface MemoryInfluenceCandidate {
+  confidence?: MemoryConfidence;
+  preview: string;
+  provenance?: string;
+  retrievalReason: string;
+  score: number;
+  sourceEventIds: string[];
+  sourceId: string;
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  sourceType: MemoryInfluenceSourceType;
+  type?: MemoryType | "lesson";
+}
+
+export interface MemoryInfluenceSelectionRequest {
+  limit?: number;
+  sources: readonly MemoryInfluenceSourceInput[];
+  taskGoal: string;
+}
+
+export interface MemoryInfluenceRecord {
+  correlationId: string;
+  createdAt: string;
+  evidenceEventIds: string[];
+  influenceSummary?: string;
+  preview: string;
+  reason?: string;
+  schemaVersion: typeof MEMORY_INFLUENCE_SCHEMA_VERSION;
+  sessionId: string;
+  sourceEventIds: string[];
+  sourceId: string;
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  sourceType: MemoryInfluenceSourceType;
+  status: MemoryInfluenceStatus;
+  taskId: string;
 }
 
 export interface MemoryCandidateEvaluation {
@@ -642,6 +812,500 @@ export function createMemoryEntryFromCandidate(
   };
 }
 
+export function generateLearningReview(
+  request: LearningReviewGenerationRequest
+): Result<LearningReview, SpriteError> {
+  const validation = validateLearningReviewGenerationRequest(request);
+
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  const mode = request.mode ?? "compact";
+  const createdAt = request.createdAt ?? new Date().toISOString();
+  const events = request.events.map((event) => ({
+    ...event,
+    ...(event.message === undefined
+      ? {}
+      : { message: createSafePreview(event.message) }),
+    ...(event.reason === undefined
+      ? {}
+      : { reason: createSafePreview(event.reason) }),
+    ...(event.summary === undefined
+      ? {}
+      : { summary: createSafePreview(event.summary) })
+  }));
+  const evidenceEventIds = uniqueStrings(events.map((event) => event.eventId));
+  const commandsRun = normalizeLearningCommands(request.commandsRun ?? []);
+  const validationResults = normalizeLearningValidations(
+    request.validationResults ?? []
+  );
+  const memoryCandidates = normalizeLearningMemoryCandidates(
+    request.memoryCandidates ?? [],
+    mode
+  );
+  const skillSignals = normalizeLearningSkillSignals(
+    request.skillSignals ?? [],
+    mode
+  );
+  const filesRead = normalizeLearningStrings(request.filesRead ?? [], mode);
+  const filesChanged = normalizeLearningStrings(
+    request.filesChanged ?? [],
+    mode
+  );
+  const filesProposedForChange = normalizeLearningStrings(
+    request.filesProposedForChange ?? [],
+    mode
+  );
+  const completedEvent = events.find((event) => event.type === "task.completed");
+  const validationEventIds = validationResults.map((result) => result.eventId);
+  const facts = limitLearningItems(
+    [
+      createLearningItem(
+        `Task completed: ${request.taskGoal}`,
+        completedEvent === undefined ? evidenceEventIds : [completedEvent.eventId]
+      ),
+      ...(filesChanged.length === 0
+        ? []
+        : [
+            createLearningItem(
+              `Changed files were recorded: ${filesChanged.join(", ")}`,
+              evidenceEventIds
+            )
+          ]),
+      ...(validationResults.length === 0
+        ? []
+        : [
+            createLearningItem(
+              `Validation results were recorded: ${validationResults
+                .map((result) => `${result.name ?? result.command ?? result.eventId}:${result.status}`)
+                .join(", ")}`,
+              validationEventIds
+            )
+          ]),
+      ...(memoryCandidates.length === 0
+        ? []
+        : [
+            createLearningItem(
+              `Memory candidate references were produced: ${memoryCandidates
+                .map((candidate) => candidate.candidateId)
+                .join(", ")}`,
+              memoryCandidates.map((candidate) => candidate.eventId)
+            )
+          ])
+    ],
+    mode
+  );
+  const mistakes = limitLearningItems(
+    [
+      ...events
+        .filter(
+          (event) =>
+            event.type === "task.recovery.recorded" ||
+            event.type === "tool.call.failed" ||
+            event.type === "file.edit.failed"
+        )
+        .map((event) =>
+          createLearningItem(
+            event.summary ?? event.message ?? `${event.type} was recorded.`,
+            [event.eventId]
+          )
+        ),
+      ...validationResults
+        .filter((result) => result.status === "failed")
+        .map((result) =>
+          createLearningItem(
+            `Validation failed: ${result.name ?? result.command ?? result.eventId}`,
+            [result.eventId]
+          )
+        )
+    ],
+    mode
+  );
+  const missedAssumptions = limitLearningItems(
+    events
+      .filter((event) => event.type === "task.steering.received")
+      .map((event) =>
+        createLearningItem(
+          `User steering changed or clarified the task: ${event.summary ?? event.message ?? event.reason ?? event.type}`,
+          [event.eventId]
+        )
+      ),
+    mode
+  );
+  const testGaps = limitLearningItems(
+    validationResults.length === 0
+      ? [
+          createLearningItem(
+            "No validation result was recorded for this completed task.",
+            evidenceEventIds
+          )
+        ]
+      : validationResults
+          .filter((result) => result.status !== "passed")
+          .map((result) =>
+            createLearningItem(
+              `Validation did not pass cleanly: ${result.name ?? result.command ?? result.eventId} ended as ${result.status}.`,
+              [result.eventId]
+            )
+          ),
+    mode
+  );
+  const lessons = limitLearningItems(
+    [
+      ...(commandsRun.length === 0
+        ? []
+        : [
+            createLearningItem(
+              "Command and validation evidence should remain linked to review outputs.",
+              commandsRun.map((command) => command.eventId)
+            )
+          ]),
+      ...(memoryCandidates.length === 0
+        ? []
+        : [
+            createLearningItem(
+              "Memory-related learning stays candidate-first and reviewable.",
+              memoryCandidates.map((candidate) => candidate.eventId)
+            )
+          ]),
+      ...(skillSignals.length === 0
+        ? []
+        : [
+            createLearningItem(
+              "Repeated or validated workflow behavior was captured as a skill signal only.",
+              skillSignals.flatMap((signal) => signal.evidenceEventIds)
+            )
+          ])
+    ],
+    mode
+  );
+  const review: LearningReview = {
+    correlationId: createSafePreview(request.correlationId),
+    createdAt,
+    evidence: {
+      commandsRun,
+      eventIds: evidenceEventIds,
+      filesChanged,
+      filesProposedForChange,
+      filesRead,
+      taskId: createSafePreview(request.taskId),
+      userCorrections: missedAssumptions,
+      validationResults
+    },
+    facts,
+    lessons,
+    memoryCandidates,
+    missedAssumptions,
+    mistakes,
+    mode,
+    schemaVersion: LEARNING_REVIEW_SCHEMA_VERSION,
+    sessionId: createSafePreview(request.sessionId),
+    skillSignals,
+    summary: createSafePreview(
+      `Learning review for completed task ${request.taskId}: ${request.taskGoal}`,
+      mode === "compact" ? 160 : 320
+    ),
+    taskId: createSafePreview(request.taskId),
+    terminalStatus: request.terminalStatus,
+    testGaps
+  };
+
+  return validateLearningReview(review);
+}
+
+export function summarizeLearningReviewForEvent(
+  review: LearningReview
+): LearningReviewEventSummary {
+  return {
+    evidenceEventIds: [...review.evidence.eventIds],
+    factCount: review.facts.length,
+    lessonCount: review.lessons.length,
+    memoryCandidateIds: review.memoryCandidates.map(
+      (candidate) => candidate.candidateId
+    ),
+    missedAssumptionCount: review.missedAssumptions.length,
+    mistakeCount: review.mistakes.length,
+    mode: review.mode,
+    skillSignalIds: review.skillSignals.map((signal) => signal.id),
+    summary: createSafePreview(review.summary),
+    testGapCount: review.testGaps.length
+  };
+}
+
+export function validateLearningReview(
+  review: LearningReview
+): Result<LearningReview, SpriteError> {
+  if (review.schemaVersion !== LEARNING_REVIEW_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SCHEMA_VERSION",
+        "Learning review schemaVersion is unsupported."
+      )
+    );
+  }
+
+  if (!LEARNING_REVIEW_MODES.includes(review.mode)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_MODE",
+        "Learning review mode is unsupported."
+      )
+    );
+  }
+
+  if (review.terminalStatus !== "completed") {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_TERMINAL_STATUS",
+        "Successful task learning reviews require completed terminal status."
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["sessionId", review.sessionId],
+    ["taskId", review.taskId],
+    ["correlationId", review.correlationId],
+    ["summary", review.summary]
+  ] as const) {
+    if (!isNonEmptyString(value) || containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_UNSAFE_FIELD",
+          `Learning review ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  if (Number.isNaN(Date.parse(review.createdAt))) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_TIMESTAMP",
+        "Learning review createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  const forbiddenField = findForbiddenLearningReviewField(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_UNSAFE_FIELD",
+        `Learning review must not include raw or secret-bearing field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findSecretLearningReviewString(
+    review as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_UNSAFE_VALUE",
+        "Learning review must not include secret-looking values."
+      )
+    );
+  }
+
+  return { ok: true, value: review };
+}
+
+export function selectMemoryInfluenceCandidates(
+  request: MemoryInfluenceSelectionRequest
+): Result<MemoryInfluenceCandidate[], SpriteError> {
+  if (!isNonEmptyString(request.taskGoal)) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_TASK_GOAL",
+        "Memory influence selection requires a non-empty task goal."
+      )
+    );
+  }
+
+  if (
+    request.limit !== undefined &&
+    (!Number.isInteger(request.limit) || request.limit <= 0)
+  ) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_LIMIT",
+        "Memory influence selection limit must be a positive integer."
+      )
+    );
+  }
+
+  const goalTerms = tokenizeInfluenceText(request.taskGoal);
+  const limit = request.limit ?? 5;
+  const candidates = request.sources.flatMap((source) => {
+    const normalized = normalizeMemoryInfluenceSource(source, goalTerms);
+
+    return normalized === null ? [] : [normalized];
+  });
+
+  return {
+    ok: true,
+    value: candidates
+      .sort((left, right) => {
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+
+        return left.sourceId.localeCompare(right.sourceId);
+      })
+      .slice(0, limit)
+  };
+}
+
+export function validateMemoryInfluenceRecord(
+  record: MemoryInfluenceRecord
+): Result<MemoryInfluenceRecord, SpriteError> {
+  if (record.schemaVersion !== MEMORY_INFLUENCE_SCHEMA_VERSION) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_SCHEMA_VERSION",
+        "Memory influence schemaVersion is unsupported."
+      )
+    );
+  }
+
+  if (!MEMORY_INFLUENCE_STATUSES.includes(record.status)) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_STATUS",
+        "Memory influence status is unsupported."
+      )
+    );
+  }
+
+  if (!MEMORY_INFLUENCE_SOURCE_TYPES.includes(record.sourceType)) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_SOURCE_TYPE",
+        "Memory influence source type is unsupported."
+      )
+    );
+  }
+
+  const requiredStrings = [
+    ["sessionId", record.sessionId],
+    ["taskId", record.taskId],
+    ["correlationId", record.correlationId],
+    ["sourceId", record.sourceId],
+    ["preview", record.preview]
+  ] as const;
+
+  for (const [field, value] of requiredStrings) {
+    if (!isNonEmptyString(value) || containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "MEMORY_INFLUENCE_UNSAFE_FIELD",
+          `Memory influence ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  if (record.status === "used" && !isNonEmptyString(record.influenceSummary)) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_MISSING_SUMMARY",
+        "Used memory influence records require an influence summary."
+      )
+    );
+  }
+
+  if (
+    (record.status === "ignored" || record.status === "contradicted") &&
+    !isNonEmptyString(record.reason)
+  ) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_MISSING_REASON",
+        "Ignored or contradicted memory influence records require a reason."
+      )
+    );
+  }
+
+  if (Number.isNaN(Date.parse(record.createdAt))) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_TIMESTAMP",
+        "Memory influence createdAt must be a valid timestamp."
+      )
+    );
+  }
+
+  if (
+    record.sourceEventIds.length === 0 ||
+    record.sourceEventIds.some((eventId) => !isNonEmptyString(eventId))
+  ) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_SOURCE_EVENTS",
+        "Memory influence source event IDs must be non-empty strings."
+      )
+    );
+  }
+
+  if (
+    record.evidenceEventIds.length === 0 ||
+    record.evidenceEventIds.some((eventId) => !isNonEmptyString(eventId))
+  ) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_INVALID_EVIDENCE_EVENTS",
+        "Memory influence evidence event IDs must be non-empty strings."
+      )
+    );
+  }
+
+  const forbiddenField = findForbiddenLearningReviewField(
+    record as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_UNSAFE_FIELD",
+        `Memory influence records must not include raw or secret-bearing field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findSecretLearningReviewString(
+    record as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "MEMORY_INFLUENCE_UNSAFE_VALUE",
+        "Memory influence records must not include secret-looking values."
+      )
+    );
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...record,
+      evidenceEventIds: uniqueStrings(record.evidenceEventIds),
+      sourceEventIds: uniqueStrings(record.sourceEventIds)
+    }
+  };
+}
+
 export function createMemoryCandidateId(): string {
   return `memcand_${randomUUID()}`;
 }
@@ -885,6 +1549,373 @@ function validateMemoryCandidateRequest(
   });
 }
 
+function validateLearningReviewGenerationRequest(
+  request: LearningReviewGenerationRequest
+): Result<void, SpriteError> {
+  if (!isNonEmptyString(request.sessionId)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SESSION_ID",
+        "Learning review sessionId must be provided."
+      )
+    );
+  }
+
+  if (!isNonEmptyString(request.taskId)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_TASK_ID",
+        "Learning review taskId must be provided."
+      )
+    );
+  }
+
+  if (!isNonEmptyString(request.correlationId)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_CORRELATION_ID",
+        "Learning review correlationId must be provided."
+      )
+    );
+  }
+
+  if (!isNonEmptyString(request.taskGoal)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_TASK_GOAL",
+        "Learning review task goal must be provided."
+      )
+    );
+  }
+
+  if (request.mode !== undefined && !LEARNING_REVIEW_MODES.includes(request.mode)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_MODE",
+        "Learning review mode is unsupported."
+      )
+    );
+  }
+
+  if (
+    request.createdAt !== undefined &&
+    Number.isNaN(Date.parse(request.createdAt))
+  ) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_TIMESTAMP",
+        "Learning review createdAt must be a valid timestamp when provided."
+      )
+    );
+  }
+
+  if (request.terminalStatus !== "completed") {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_TERMINAL_STATUS",
+        "Learning review generation only supports completed task state."
+      )
+    );
+  }
+
+  if (request.events.length === 0) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_MISSING_EVIDENCE",
+        "Learning review generation requires at least one source event."
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
+}
+
+function normalizeMemoryInfluenceSource(
+  source: MemoryInfluenceSourceInput,
+  goalTerms: ReadonlySet<string>
+): MemoryInfluenceCandidate | null {
+  if (
+    !isNonEmptyString(source.sourceId) ||
+    !MEMORY_INFLUENCE_SOURCE_TYPES.includes(source.sourceType) ||
+    !isNonEmptyString(source.content)
+  ) {
+    return null;
+  }
+
+  const searchable = [
+    source.content,
+    source.provenance,
+    source.sourceTaskId,
+    source.type
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" ");
+  const sourceTerms = tokenizeInfluenceText(searchable);
+  const overlap = [...goalTerms].filter((term) => sourceTerms.has(term)).length;
+
+  if (overlap === 0) {
+    return null;
+  }
+
+  const confidenceScore =
+    source.confidence === "high" ? 2 : source.confidence === "medium" ? 1 : 0;
+  const lessonScore = source.sourceType === "learning_review_lesson" ? 1 : 0;
+  const score = overlap * 10 + confidenceScore + lessonScore;
+
+  if (score <= 0) {
+    return null;
+  }
+
+  return {
+    ...(source.confidence === undefined ? {} : { confidence: source.confidence }),
+    preview: createSafePreview(source.content),
+    ...(source.provenance === undefined
+      ? {}
+      : { provenance: createSafePreview(source.provenance) }),
+    retrievalReason: createSafePreview(
+      `Matched ${String(overlap)} task term${overlap === 1 ? "" : "s"} with ${source.sourceType.replace(/_/g, " ")}.`
+    ),
+    score,
+    sourceEventIds: uniqueStrings(
+      (source.sourceEventIds ?? []).map((eventId) => createSafePreview(eventId))
+    ),
+    sourceId: createSafePreview(source.sourceId),
+    ...(source.sourceSessionId === undefined
+      ? {}
+      : { sourceSessionId: createSafePreview(source.sourceSessionId) }),
+    ...(source.sourceTaskId === undefined
+      ? {}
+      : { sourceTaskId: createSafePreview(source.sourceTaskId) }),
+    sourceType: source.sourceType,
+    ...(source.type === undefined ? {} : { type: source.type })
+  };
+}
+
+function tokenizeInfluenceText(value: string): ReadonlySet<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9_]+/g)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3)
+  );
+}
+
+function normalizeLearningCommands(
+  commands: readonly LearningReviewCommandEvidence[]
+): LearningReviewCommandEvidence[] {
+  return commands.map((command) => ({
+    command: createSafePreview(command.command),
+    eventId: createSafePreview(command.eventId),
+    status: createSafePreview(command.status)
+  }));
+}
+
+function normalizeLearningValidations(
+  validations: readonly LearningReviewValidationResult[]
+): LearningReviewValidationResult[] {
+  return validations.map((validation) => ({
+    ...(validation.command === undefined
+      ? {}
+      : { command: createSafePreview(validation.command) }),
+    eventId: createSafePreview(validation.eventId),
+    ...(validation.name === undefined
+      ? {}
+      : { name: createSafePreview(validation.name) }),
+    status: createSafePreview(validation.status)
+  }));
+}
+
+function normalizeLearningMemoryCandidates(
+  candidates: readonly LearningReviewMemoryCandidateReference[],
+  mode: LearningReviewMode
+): LearningReviewMemoryCandidateReference[] {
+  return candidates.slice(0, mode === "compact" ? 5 : 20).map((candidate) => ({
+    candidateId: createSafePreview(candidate.candidateId),
+    ...(candidate.confidence === undefined
+      ? {}
+      : { confidence: candidate.confidence }),
+    eventId: createSafePreview(candidate.eventId),
+    ...(candidate.memoryType === undefined
+      ? {}
+      : { memoryType: candidate.memoryType }),
+    ...(candidate.status === undefined
+      ? {}
+      : { status: createSafePreview(candidate.status) })
+  }));
+}
+
+function normalizeLearningSkillSignals(
+  signals: readonly LearningReviewSkillSignal[],
+  mode: LearningReviewMode
+): LearningReviewSkillSignal[] {
+  return signals.slice(0, mode === "compact" ? 5 : 20).map((signal) => ({
+    evidenceEventIds: uniqueStrings(
+      signal.evidenceEventIds.map((eventId) => createSafePreview(eventId))
+    ),
+    id: createSafePreview(signal.id),
+    signal: createSafePreview(signal.signal, mode === "compact" ? 160 : 320),
+    triggerReason: createSafePreview(
+      signal.triggerReason,
+      mode === "compact" ? 160 : 320
+    )
+  }));
+}
+
+function normalizeLearningStrings(
+  values: readonly string[],
+  mode: LearningReviewMode
+): string[] {
+  return uniqueStrings(values.map((value) => createSafePreview(value))).slice(
+    0,
+    mode === "compact" ? 10 : 50
+  );
+}
+
+function createLearningItem(
+  summary: string,
+  evidenceEventIds: readonly string[]
+): LearningReviewSectionItem {
+  return {
+    evidenceEventIds: uniqueStrings(
+      evidenceEventIds.map((eventId) => createSafePreview(eventId))
+    ),
+    summary: createSafePreview(summary, 240)
+  };
+}
+
+function limitLearningItems(
+  items: readonly LearningReviewSectionItem[],
+  mode: LearningReviewMode
+): LearningReviewSectionItem[] {
+  return items.slice(0, mode === "compact" ? 5 : 20);
+}
+
+function findForbiddenLearningReviewField(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  const forbiddenFields = new Set([
+    "accessToken",
+    "apiKey",
+    "api_key",
+    "authorization",
+    "commandOutput",
+    "content",
+    "credential",
+    "credentials",
+    "diff",
+    "env",
+    "hunk",
+    "newText",
+    "oldText",
+    "output",
+    "password",
+    "patch",
+    "privateKey",
+    "private_key",
+    "rawCommandOutput",
+    "rawContent",
+    "rawOutput",
+    "rawSnippet",
+    "secret",
+    "snippet",
+    "snippets",
+    "stderr",
+    "stdout",
+    "token"
+  ]);
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findForbiddenLearningReviewField(item, seen);
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (forbiddenFields.has(key)) {
+      return key;
+    }
+
+    const nested = findForbiddenLearningReviewField(nestedValue, seen);
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+function findSecretLearningReviewString(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  if (typeof value === "string") {
+    return containsSecretLikeValue(value) ? value : null;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findSecretLearningReviewString(item, seen);
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const nestedValue of Object.values(value)) {
+    const nested = findSecretLearningReviewString(nestedValue, seen);
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 function evaluateMemoryCandidateBoundary(
   content: string,
   target: SpriteSafetyRuleTarget
@@ -1030,6 +2061,10 @@ function createSafePreview(content: string, maxLength?: number): string {
   return containsSecretLikeValue(preview)
     ? SECRET_REDACTION_MARKER
     : preview || SECRET_REDACTION_MARKER;
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 function summarizeMatchedRules(rules: readonly SpriteSafetyRule[]): string {

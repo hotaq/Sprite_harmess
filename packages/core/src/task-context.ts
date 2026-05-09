@@ -116,9 +116,16 @@ export interface TaskContextSessionStateInput {
 }
 
 export interface TaskContextMemoryInput {
+  confidence?: string;
   content: string;
+  id?: string;
   path?: string;
   provenance: string;
+  retrievalReason?: string;
+  sourceEventIds?: readonly string[];
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  sourceType?: string;
   type: MemoryType;
 }
 
@@ -407,7 +414,7 @@ function createRuntimeSelfModelSection({
         snapshot.memory.candidateStoreAvailable
           ? "Memory candidate storage is available through runtime APIs."
           : "Memory candidate storage is not available.",
-        "Durable memory retrieval is not implemented.",
+        "Durable memory retrieval is local, deterministic, and bounded.",
         `Provider streaming: ${snapshot.provider.supportsStreaming}.`,
         `Provider tool calls: ${snapshot.provider.supportsToolCalls}.`,
         `Context schema: ${snapshot.context.packetSchemaVersion}.`,
@@ -476,7 +483,6 @@ export function createRuntimeSelfModelSnapshot(
   const providerConfigured = provider !== null;
   const limitations = [
     "Provider-driven tool execution is not connected in this MVP loop.",
-    "Durable memory retrieval is not implemented.",
     skillEntries.length === 0
       ? "Skill registry integration is not loaded for this packet."
       : ""
@@ -495,7 +501,7 @@ export function createRuntimeSelfModelSnapshot(
     limitations,
     memory: {
       candidateStoreAvailable: true,
-      durableRetrievalAvailable: false,
+      durableRetrievalAvailable: true,
       providerName: "local-artifact",
       safetyRulesCount: input.startup.safetyRules.length,
       workingMemoryAvailable: input.workingMemory !== undefined
@@ -971,12 +977,12 @@ function createMemorySection({
       },
       priority,
       reason:
-        "Durable memory retrieval is not implemented yet; no raw memory was loaded.",
+        "No safe memory or lesson influence candidates were retrieved for this task.",
       redacted: false,
       source: "memory",
       status: "skipped",
       summary:
-        "Memory source is represented as skipped until durable retrieval is implemented.",
+        "No prior memory or learning-review lessons are included for this packet.",
       title: "Memory",
       trust: "governed"
     };
@@ -1011,6 +1017,16 @@ function createMemorySection({
         blockedCount: blockedEntries.length,
         entryCount: entries.length,
         includedCount: allowedEntries.length,
+        sourceIds: allowedEntries
+          .map((entry) => entry.entry.id)
+          .filter((id): id is string => id !== undefined),
+        sourceTypes: Array.from(
+          new Set(
+            entries
+              .map((entry) => entry.sourceType)
+              .filter((sourceType): sourceType is string => sourceType !== undefined)
+          )
+        ),
         types: Array.from(new Set(entries.map((entry) => entry.type)))
       },
       priority,
@@ -1030,7 +1046,10 @@ function createMemorySection({
       allowedEntries
         .map((entry) =>
           entry.evaluation.ok
-            ? `${entry.entry.type}: ${entry.evaluation.value.redactedPreview}`
+            ? formatMemoryContextEntry(
+                entry.entry,
+                entry.evaluation.value.redactedPreview
+              )
             : `${entry.entry.type}: [blocked]`
         )
         .join("\n"),
@@ -1040,6 +1059,22 @@ function createMemorySection({
       blockedCount: 0,
       entryCount: entries.length,
       includedCount: allowedEntries.length,
+      retrievalReasons: allowedEntries
+        .map((entry) => entry.entry.retrievalReason)
+        .filter((reason): reason is string => reason !== undefined),
+      sourceEventIds: Array.from(
+        new Set(allowedEntries.flatMap((entry) => entry.entry.sourceEventIds ?? []))
+      ),
+      sourceIds: allowedEntries
+        .map((entry) => entry.entry.id)
+        .filter((id): id is string => id !== undefined),
+      sourceTypes: Array.from(
+        new Set(
+          entries
+            .map((entry) => entry.sourceType)
+            .filter((sourceType): sourceType is string => sourceType !== undefined)
+        )
+      ),
       types: Array.from(new Set(entries.map((entry) => entry.type)))
     },
     priority,
@@ -1050,6 +1085,22 @@ function createMemorySection({
     title: "Memory",
     trust: "governed"
   };
+}
+
+function formatMemoryContextEntry(
+  entry: TaskContextMemoryInput,
+  redactedPreview: string
+): string {
+  const source =
+    entry.id === undefined
+      ? entry.type
+      : `${entry.sourceType ?? "memory"}:${entry.id}`;
+  const reason =
+    entry.retrievalReason === undefined
+      ? ""
+      : ` — ${entry.retrievalReason}`;
+
+  return `${source}: ${redactedPreview}${reason}`;
 }
 
 function createSkillsSection({

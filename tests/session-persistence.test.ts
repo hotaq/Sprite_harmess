@@ -224,6 +224,80 @@ describe("AgentRuntime session persistence", () => {
     }
   });
 
+  it("persists memory influence audit events for later inspection and resume", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask("persist influence");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const recorded = runtime.recordMemoryInfluence({
+        evidenceEventIds: [submitted.value.events[0].eventId],
+        influenceSummary:
+          "Used durable command memory to choose rtk validation.",
+        preview: "Use rtk run for validation commands.",
+        sourceEventIds: ["evt_memory_entry"],
+        sourceId: "mem_rtk",
+        sourceTaskId: "task_4_2",
+        sourceType: "memory_entry",
+        status: "used"
+      });
+
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok) {
+        return;
+      }
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+      const state = readJson(join(sessionDir, "state.json"));
+
+      expect(persistedEvents.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting",
+        "memory.influence.recorded"
+      ]);
+      expect(
+        persistedEvents.every((event) => validateRuntimeEvent(event).ok)
+      ).toBe(true);
+      expect(persistedEvents.at(-1)).toMatchObject({
+        payload: {
+          influenceSummary:
+            "Used durable command memory to choose rtk validation.",
+          sourceId: "mem_rtk",
+          status: "used"
+        },
+        type: "memory.influence.recorded"
+      });
+      expect(state).toMatchObject({
+        eventCount: 3,
+        lastEventType: "memory.influence.recorded"
+      });
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, submitted.value.sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok || resumed.value === undefined) {
+        return;
+      }
+      expect(resumed.value.restoredEventCount).toBe(3);
+      expect(JSON.stringify(persistedEvents)).not.toContain("sk-test-secret");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("persists candidate audit events before attempting auto-save entry append", () => {
     const { homeDir, projectDir, rootDir } = createTempWorkspace();
 
@@ -553,6 +627,83 @@ describe("AgentRuntime session persistence", () => {
         events.filter((event) => event.type === "memory.candidate.reviewed")
       ).toHaveLength(1);
       expect(JSON.stringify(events)).not.toContain("OPENAI_API_KEY=");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists one learning review and does not duplicate it on resume", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = runtime.submitInteractiveTask(
+        "persist learning review"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(changed.ok).toBe(true);
+
+      const completed = runtime.completeActiveTask(
+        "Task completed with learning evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        submitted.value.sessionId
+      );
+      const eventsPath = join(sessionDir, "events.ndjson");
+      const reviewPath = join(
+        sessionDir,
+        "learning-reviews",
+        `${submitted.value.taskId}.json`
+      );
+
+      expect(existsSync(reviewPath)).toBe(true);
+      expect(readJson(reviewPath)).toMatchObject({
+        sessionId: submitted.value.sessionId,
+        taskId: submitted.value.taskId,
+        terminalStatus: "completed"
+      });
+
+      const beforeResume = readNdjson(eventsPath);
+
+      expect(
+        beforeResume.filter((event) => event.type === "learning.review.created")
+      ).toHaveLength(1);
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumeSession(resumedRuntime, submitted.value.sessionId);
+
+      expect(resumed.ok).toBe(true);
+
+      const afterResume = readNdjson(eventsPath);
+
+      expect(
+        afterResume.filter((event) => event.type === "learning.review.created")
+      ).toHaveLength(1);
+      expect(
+        afterResume.filter((event) => event.type === "session.resumed")
+      ).toHaveLength(1);
+      expect(readJson(reviewPath)).toMatchObject({
+        taskId: submitted.value.taskId
+      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

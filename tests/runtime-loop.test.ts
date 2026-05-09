@@ -4,7 +4,14 @@ import {
   createFinalTaskSummary,
   runOneShotPrintTask
 } from "@sprite/core";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -331,6 +338,176 @@ describe("AgentRuntime interactive task flow", () => {
     );
   });
 
+  it("loads durable memory into a later task context without auto-marking influence used", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const first = runtime.submitInteractiveTask(
+        "remember validation command preference"
+      );
+
+      expect(first.ok).toBe(true);
+      if (!first.ok) {
+        return;
+      }
+
+      const recorded = runtime.recordMemoryCandidate({
+        confidence: "high",
+        content: "Use rtk run for Story 4.5 validation commands.",
+        provenance: "test durable memory",
+        sourceEventIds: [first.value.events[0]?.eventId ?? "evt_started"],
+        type: "semantic"
+      });
+
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok || recorded.value.entry === null) {
+        return;
+      }
+
+      const second = runtime.submitInteractiveTask(
+        "validate Story 4.5 with rtk run"
+      );
+
+      expect(second.ok).toBe(true);
+      if (!second.ok) {
+        return;
+      }
+
+      const memorySection = second.value.request.contextPacket.sections.find(
+        (section) => section.source === "memory"
+      );
+
+      expect(memorySection).toMatchObject({
+        metadata: expect.objectContaining({
+          sourceIds: [recorded.value.entry.id],
+          sourceTypes: ["memory_entry"]
+        }),
+        status: "included"
+      });
+      expect(memorySection?.content).toContain(
+        `memory_entry:${recorded.value.entry.id}`
+      );
+      expect(
+        second.value.events.filter(
+          (event) => event.type === "memory.influence.recorded"
+        )
+      ).toHaveLength(0);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records used, ignored, and contradicted memory influence states in history and summary", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "apply prior memory influence safely"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const used = runtime.recordMemoryInfluence({
+        evidenceEventIds: [submitted.value.events[0]?.eventId ?? "evt_started"],
+        influenceSummary:
+          "Used prior command memory to select rtk validation.",
+        preview: "Use rtk run for validation commands.",
+        sourceEventIds: ["evt_memory_saved"],
+        sourceId: "mem_rtk",
+        sourceTaskId: "task_4_2",
+        sourceType: "memory_entry",
+        status: "used"
+      });
+      const ignored = runtime.recordMemoryInfluence({
+        evidenceEventIds: [submitted.value.events[1]?.eventId ?? "evt_waiting"],
+        preview: "Use npm directly for every validation command.",
+        reason: "The current repository instruction requires rtk.",
+        sourceEventIds: ["evt_old_memory"],
+        sourceId: "mem_old",
+        sourceTaskId: "task_old",
+        sourceType: "memory_entry",
+        status: "ignored"
+      });
+      const contradicted = runtime.recordMemoryInfluence({
+        evidenceEventIds: [submitted.value.events[1]?.eventId ?? "evt_waiting"],
+        preview: "Prior lesson said validation can be skipped.",
+        reason: "Current story requires full targeted validation evidence.",
+        sourceEventIds: ["evt_learning_review"],
+        sourceId: "lesson_story_4_4",
+        sourceSessionId: "ses_prior",
+        sourceTaskId: "task_4_4",
+        sourceType: "learning_review_lesson",
+        status: "contradicted"
+      });
+
+      expect(used.ok).toBe(true);
+      expect(ignored.ok).toBe(true);
+      expect(contradicted.ok).toBe(true);
+      if (!used.ok || !ignored.ok || !contradicted.ok) {
+        return;
+      }
+
+      const active = runtime.getActiveTask();
+
+      expect(active.ok).toBe(true);
+      if (!active.ok) {
+        return;
+      }
+
+      const influenceEvents = active.value.events.filter(
+        (event) => event.type === "memory.influence.recorded"
+      );
+      const finalSummary = createFinalTaskSummary(active.value);
+
+      expect(influenceEvents.map((event) => event.payload.status)).toEqual([
+        "used",
+        "ignored",
+        "contradicted"
+      ]);
+      expect(finalSummary.memoryInfluences).toEqual([
+        expect.objectContaining({
+          sourceId: "mem_rtk",
+          sourceType: "memory_entry",
+          status: "used",
+          summary: "Used prior command memory to select rtk validation."
+        }),
+        expect.objectContaining({
+          reason: "The current repository instruction requires rtk.",
+          sourceId: "mem_old",
+          status: "ignored"
+        }),
+        expect.objectContaining({
+          reason: "Current story requires full targeted validation evidence.",
+          sourceId: "lesson_story_4_4",
+          sourceType: "learning_review_lesson",
+          status: "contradicted"
+        })
+      ]);
+      expect(finalSummary.importantEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            summary: "Used prior command memory to select rtk validation.",
+            type: "memory.influence.recorded"
+          })
+        ])
+      );
+      expect(JSON.stringify(finalSummary)).not.toContain("sk-test-secret");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("summarizes cancelled, completed, failed, and approval-required runtime boundaries", () => {
     const cancelledRuntime = new AgentRuntime({
       cwd: "/tmp/sprite-project",
@@ -610,6 +787,279 @@ describe("AgentRuntime interactive task flow", () => {
         fileCount: 2,
         sourceEventCountTotal: expect.any(Number)
       });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a persisted learning review for completed non-trivial tasks", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete learning review task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(changed.ok).toBe(true);
+
+      const completed = runtime.completeActiveTask(
+        "Task completed with file evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const learningEvent = completed.value.events.find(
+        (event) => event.type === "learning.review.created"
+      );
+
+      expect(learningEvent).toBeDefined();
+      expect(learningEvent?.payload).toMatchObject({
+        status: "recorded",
+        mode: "compact",
+        factCount: expect.any(Number),
+        testGapCount: expect.any(Number)
+      });
+
+      if (learningEvent?.type !== "learning.review.created") {
+        return;
+      }
+
+      const artifactPath = join(projectDir, learningEvent.payload.artifactPath);
+
+      expect(existsSync(artifactPath)).toBe(true);
+
+      const review = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+        evidence: { filesChanged: string[] };
+        facts: unknown[];
+        sessionId: string;
+        taskId: string;
+        terminalStatus: string;
+        testGaps: unknown[];
+      };
+
+      expect(review).toMatchObject({
+        sessionId: completed.value.sessionId,
+        taskId: completed.value.taskId,
+        terminalStatus: "completed"
+      });
+      expect(review.evidence.filesChanged).toEqual(["README.md"]);
+      expect(review.facts.length).toBeGreaterThan(0);
+      expect(review.testGaps.length).toBeGreaterThan(0);
+      expect(JSON.stringify(review)).not.toContain("rawOutput");
+      expect(JSON.stringify(review)).not.toContain("stdout");
+      expect(JSON.stringify(review)).not.toContain("stderr");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("honors the configured full learning review mode at runtime", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        learningReviewMode: "full"
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete full learning review task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md", "packages/core/src/agent-runtime.ts"]
+      });
+
+      expect(changed.ok).toBe(true);
+
+      const completed = runtime.completeActiveTask(
+        "Task completed with full-mode learning review evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const learningEvent = completed.value.events.find(
+        (event) => event.type === "learning.review.created"
+      );
+
+      expect(learningEvent?.payload).toMatchObject({
+        mode: "full",
+        status: "recorded"
+      });
+
+      if (learningEvent?.type !== "learning.review.created") {
+        return;
+      }
+
+      const artifactPath = join(projectDir, learningEvent.payload.artifactPath);
+      const review = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+        mode: string;
+        evidence: { filesChanged: string[] };
+        facts: unknown[];
+        lessons: unknown[];
+        memoryCandidates: unknown[];
+        missedAssumptions: unknown[];
+        mistakes: unknown[];
+        skillSignals: unknown[];
+        testGaps: unknown[];
+      };
+
+      expect(review.mode).toBe("full");
+      expect(review.evidence.filesChanged).toEqual([
+        "packages/core/src/agent-runtime.ts",
+        "README.md"
+      ]);
+      expect(review).toMatchObject({
+        facts: expect.any(Array),
+        lessons: expect.any(Array),
+        memoryCandidates: expect.any(Array),
+        missedAssumptions: expect.any(Array),
+        mistakes: expect.any(Array),
+        skillSignals: expect.any(Array),
+        testGaps: expect.any(Array)
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fabricate learning reviews for trivial completed tasks", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask("complete trivial task");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const completed = runtime.completeActiveTask(
+        "Task completed without additional evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+      expect(
+        completed.value.events.some(
+          (event) => event.type === "learning.review.created"
+        )
+      ).toBe(false);
+      expect(
+        existsSync(
+          join(
+            projectDir,
+            ".sprite",
+            "sessions",
+            completed.value.sessionId,
+            "learning-reviews",
+            `${completed.value.taskId}.json`
+          )
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fabricate successful-task reviews for failed, cancelled, or max-iteration tasks", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      for (const scenario of [
+        {
+          goal: "cancel with evidence",
+          finish: (runtime: AgentRuntime) =>
+            runtime.cancelActiveTask("User cancelled the task.")
+        },
+        {
+          goal: "fail with evidence",
+          finish: (runtime: AgentRuntime) =>
+            runtime.failActiveTask("Provider failed before completion.")
+        },
+        {
+          goal: "max iterations with evidence",
+          finish: (runtime: AgentRuntime) =>
+            runtime.stopActiveTaskForMaxIterations(
+              "Task stopped at max iterations before successful completion."
+            )
+        }
+      ]) {
+        const runtime = new AgentRuntime({
+          cwd: projectDir,
+          homeDir: join(rootDir, "home")
+        });
+        const submitted = runtime.submitInteractiveTask(scenario.goal);
+
+        expect(submitted.ok).toBe(true);
+        if (!submitted.ok) {
+          return;
+        }
+
+        const changed = runtime.recordFileActivity({
+          kind: "changed",
+          paths: ["README.md"]
+        });
+
+        expect(changed.ok).toBe(true);
+
+        const terminal = scenario.finish(runtime);
+
+        expect(terminal.ok).toBe(true);
+        if (!terminal.ok) {
+          return;
+        }
+
+        expect(
+          terminal.value.events.some(
+            (event) => event.type === "learning.review.created"
+          )
+        ).toBe(false);
+        expect(
+          existsSync(
+            join(
+              projectDir,
+              ".sprite",
+              "sessions",
+              terminal.value.sessionId,
+              "learning-reviews",
+              `${terminal.value.taskId}.json`
+            )
+          )
+        ).toBe(false);
+      }
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

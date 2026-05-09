@@ -407,7 +407,7 @@ describe("task context packet assembly", () => {
       metadata: expect.objectContaining({
         approvalPolicy: "policy-governed",
         candidateStoreAvailable: true,
-        durableRetrievalAvailable: false,
+        durableRetrievalAvailable: true,
         fileEditApproval: "policy-governed",
         pendingApprovalCount: 0,
         providerConfigured: false,
@@ -433,7 +433,7 @@ describe("task context packet assembly", () => {
       "Provider-driven tool execution is not connected"
     );
     expect(selfModelSection?.content).toContain(
-      "Durable memory retrieval is not implemented"
+      "Durable memory retrieval is local, deterministic, and bounded"
     );
     expect(selfModelSection?.content).toContain(
       "Memory candidate storage is available through runtime APIs"
@@ -570,6 +570,61 @@ describe("task context packet assembly", () => {
     });
     expect(JSON.stringify(compactedSection)).not.toContain("sk-test-secret");
     expect(JSON.stringify(compactedSection)).toContain("[REDACTED]");
+  });
+
+  it("includes memory influence candidates with source metadata without marking them used", () => {
+    const packet = assembleTaskContextPacket(
+      createAssemblyInput({
+        memoryEntries: [
+          {
+            confidence: "high",
+            content: "Use rtk run for validation commands.",
+            id: "mem_rtk",
+            provenance: "durable memory entry",
+            retrievalReason:
+              "Matched 3 task terms with durable project memory.",
+            sourceEventIds: ["evt_memory_entry"],
+            sourceTaskId: "task_4_2",
+            sourceType: "memory_entry",
+            type: "semantic"
+          },
+          {
+            content:
+              "Prior lesson: cite evidence before recording influence state.",
+            id: "lesson_story_4_4",
+            provenance: "learning review lesson",
+            retrievalReason:
+              "Matched 2 task terms with learning review lesson.",
+            sourceEventIds: ["evt_learning_review"],
+            sourceSessionId: "ses_prior",
+            sourceTaskId: "task_4_4",
+            sourceType: "learning_review_lesson",
+            type: "semantic"
+          }
+        ],
+        task: "validate memory influence with rtk and cite evidence"
+      })
+    );
+
+    const memorySection = packet.sections.find(
+      (section) => section.source === "memory"
+    );
+
+    expect(memorySection).toMatchObject({
+      metadata: expect.objectContaining({
+        includedCount: 2,
+        sourceEventIds: ["evt_memory_entry", "evt_learning_review"],
+        sourceIds: ["mem_rtk", "lesson_story_4_4"],
+        sourceTypes: ["memory_entry", "learning_review_lesson"]
+      }),
+      redacted: false,
+      status: "included"
+    });
+    expect(memorySection?.content).toContain("memory_entry:mem_rtk");
+    expect(memorySection?.content).toContain(
+      "learning_review_lesson:lesson_story_4_4"
+    );
+    expect(JSON.stringify(memorySection)).not.toContain('"status":"used"');
   });
 
   it("redacts secret-like user input and blocks unsafe memory entries", () => {

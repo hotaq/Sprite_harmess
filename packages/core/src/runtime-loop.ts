@@ -17,6 +17,7 @@ import type {
 } from "./task-state.js";
 import {
   assembleTaskContextPacket,
+  type TaskContextMemoryInput,
   type TaskContextSessionStateInput,
   type WorkingMemorySnapshot
 } from "./task-context.js";
@@ -25,6 +26,7 @@ const DEFAULT_MAX_ITERATIONS = 1;
 
 export interface TaskRequestContextOptions {
   compactedContext?: CompactedSessionContext;
+  memoryEntries?: readonly TaskContextMemoryInput[];
   sessionState?: TaskContextSessionStateInput;
   workingMemory?: WorkingMemorySnapshot;
 }
@@ -42,6 +44,7 @@ export function createTaskRequest(
     contextPacket: assembleTaskContextPacket({
       projectContext: bootstrapState.projectContext,
       compactedContext: options.compactedContext,
+      memoryEntries: options.memoryEntries,
       provider: bootstrapState.provider,
       sessionState: options.sessionState,
       startup: bootstrapState.startup,

@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  MEMORY_INFLUENCE_SCHEMA_VERSION,
   createMemoryCandidate,
   createMemoryEntryFromCandidate,
   evaluateSafetySensitiveContent,
+  generateLearningReview,
   getMemoryCandidateLifecycleStatus,
   reviewMemoryCandidate,
+  selectMemoryInfluenceCandidates,
   shouldAutoSaveMemoryCandidate,
+  summarizeLearningReviewForEvent,
   summarizeMemoryCandidateForReview,
-  validateMemoryCandidateEdit
+  validateLearningReview,
+  validateMemoryCandidateEdit,
+  validateMemoryInfluenceRecord
 } from "@sprite/memory";
 
 describe("memory safety evaluation", () => {
@@ -490,5 +496,320 @@ describe("memory safety evaluation", () => {
     expect(unsafeEdit.value.candidate).toBeNull();
     expect(JSON.stringify(unsafeEdit.value)).not.toContain("sk-test-secret");
     expect(JSON.stringify(unsafeEdit.value)).not.toContain("OPENAI_API_KEY=");
+  });
+
+  it("generates compact and full learning reviews with required safe sections", () => {
+    const compact = generateLearningReview({
+      commandsRun: [
+        {
+          command: "npm test -- --run",
+          eventId: "evt_validation_completed",
+          status: "passed"
+        }
+      ],
+      correlationId: "corr_learning",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      events: [
+        {
+          eventId: "evt_started",
+          type: "task.started"
+        },
+        {
+          eventId: "evt_validation_completed",
+          summary: "Validation passed.",
+          type: "validation.completed"
+        },
+        {
+          eventId: "evt_completed",
+          message: "Task completed with validation.",
+          type: "task.completed"
+        }
+      ],
+      filesChanged: ["packages/core/src/agent-runtime.ts"],
+      filesRead: ["packages/memory/src/index.ts"],
+      memoryCandidates: [
+        {
+          candidateId: "memcand_learning",
+          confidence: "medium",
+          eventId: "evt_memory_candidate",
+          memoryType: "semantic",
+          status: "recorded"
+        }
+      ],
+      sessionId: "ses_learning",
+      skillSignals: [
+        {
+          evidenceEventIds: ["evt_validation_completed"],
+          id: "skillsig_validation",
+          signal: "Validation workflow succeeded.",
+          triggerReason: "A repeatable validation command passed."
+        }
+      ],
+      taskGoal: "Generate a post-task learning review",
+      taskId: "task_learning",
+      terminalStatus: "completed",
+      validationResults: [
+        {
+          command: "npm test -- --run",
+          eventId: "evt_validation_completed",
+          name: "test",
+          status: "passed"
+        }
+      ]
+    });
+
+    expect(compact.ok).toBe(true);
+    if (!compact.ok) {
+      return;
+    }
+
+    expect(compact.value).toMatchObject({
+      mode: "compact",
+      schemaVersion: 1,
+      sessionId: "ses_learning",
+      taskId: "task_learning",
+      terminalStatus: "completed"
+    });
+    expect(compact.value.facts.length).toBeGreaterThan(0);
+    expect(compact.value.lessons.length).toBeGreaterThan(0);
+    expect(compact.value.evidence.validationResults).toEqual([
+      expect.objectContaining({ status: "passed" })
+    ]);
+    expect(compact.value.memoryCandidates).toEqual([
+      expect.objectContaining({ candidateId: "memcand_learning" })
+    ]);
+    expect(compact.value.skillSignals).toEqual([
+      expect.objectContaining({ id: "skillsig_validation" })
+    ]);
+
+    const summary = summarizeLearningReviewForEvent(compact.value);
+
+    expect(summary).toMatchObject({
+      factCount: compact.value.facts.length,
+      memoryCandidateIds: ["memcand_learning"],
+      mode: "compact",
+      skillSignalIds: ["skillsig_validation"]
+    });
+
+    const full = generateLearningReview({
+      ...compact.value,
+      events: [
+        {
+          eventId: "evt_started",
+          type: "task.started"
+        },
+        {
+          eventId: "evt_completed",
+          message: "Task completed with validation.",
+          type: "task.completed"
+        }
+      ],
+      mode: "full",
+      taskGoal: "Generate a post-task learning review"
+    });
+
+    expect(full.ok).toBe(true);
+    if (!full.ok) {
+      return;
+    }
+    expect(full.value.mode).toBe("full");
+    expect(full.value).toHaveProperty("facts");
+    expect(full.value).toHaveProperty("lessons");
+    expect(full.value).toHaveProperty("mistakes");
+    expect(full.value).toHaveProperty("missedAssumptions");
+    expect(full.value).toHaveProperty("testGaps");
+  });
+
+  it("redacts or rejects unsafe learning review material", () => {
+    const generated = generateLearningReview({
+      correlationId: "corr_learning_secret",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      events: [
+        {
+          eventId: "evt_completed",
+          message: "OPENAI_API_KEY=sk-test-secret",
+          type: "task.completed"
+        }
+      ],
+      sessionId: "ses_learning_secret",
+      taskGoal: "Review secret-looking output OPENAI_API_KEY=sk-test-secret",
+      taskId: "task_learning_secret",
+      terminalStatus: "completed"
+    });
+
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) {
+      return;
+    }
+    expect(JSON.stringify(generated.value)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(generated.value)).not.toContain("OPENAI_API_KEY=");
+
+    const unsafe = validateLearningReview({
+      ...generated.value,
+      facts: [
+        {
+          evidenceEventIds: ["evt_completed"],
+          summary: "OPENAI_API_KEY=sk-test-secret"
+        }
+      ]
+    });
+
+    expect(unsafe.ok).toBe(false);
+  });
+
+  it("selects bounded deterministic memory influence candidates without exposing secrets", () => {
+    const result = selectMemoryInfluenceCandidates({
+      limit: 2,
+      taskGoal: "validate story 4.5 memory influence with rtk commands",
+      sources: [
+        {
+          confidence: "medium",
+          content: "Use rtk run for validation commands in this repository.",
+          provenance: "durable project memory",
+          sourceEventIds: ["evt_memory_saved"],
+          sourceId: "mem_rtk",
+          sourceTaskId: "task_4_2",
+          sourceType: "memory_entry",
+          type: "semantic"
+        },
+        {
+          content:
+            "Story 4.4 lesson: memory influence should cite event evidence.",
+          provenance: "learning review lesson",
+          sourceEventIds: ["evt_learning_review"],
+          sourceId: "lesson_story_4_4",
+          sourceSessionId: "ses_prior",
+          sourceTaskId: "task_4_4",
+          sourceType: "learning_review_lesson",
+          type: "lesson"
+        },
+        {
+          confidence: "high",
+          content: "OPENAI_API_KEY=sk-test-secret should never leak.",
+          sourceEventIds: ["evt_secret"],
+          sourceId: "mem_secret",
+          sourceType: "memory_entry",
+          type: "semantic"
+        },
+        {
+          confidence: "high",
+          content: "Completely unrelated release note.",
+          sourceId: "mem_unrelated",
+          sourceType: "memory_entry",
+          type: "semantic"
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.map((candidate) => candidate.sourceId)).toEqual([
+      "lesson_story_4_4",
+      "mem_rtk"
+    ]);
+    expect(result.value).toHaveLength(2);
+    expect(JSON.stringify(result.value)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(result.value)).not.toContain("OPENAI_API_KEY=");
+  });
+
+  it("does not select influence candidates that have no task-term overlap", () => {
+    const result = selectMemoryInfluenceCandidates({
+      taskGoal: "validate runtime event evidence",
+      sources: [
+        {
+          confidence: "high",
+          content: "Completely unrelated release note.",
+          sourceEventIds: ["evt_unrelated_memory"],
+          sourceId: "mem_unrelated_high",
+          sourceType: "memory_entry",
+          type: "semantic"
+        },
+        {
+          content: "Prior lesson about visual polish and copywriting.",
+          sourceEventIds: ["evt_unrelated_lesson"],
+          sourceId: "lesson_unrelated",
+          sourceSessionId: "ses_prior",
+          sourceTaskId: "task_prior",
+          sourceType: "learning_review_lesson",
+          type: "lesson"
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value).toEqual([]);
+  });
+
+  it("validates memory influence records by status and rejects raw or secret-looking values", () => {
+    const baseRecord = {
+      correlationId: "corr_memory_influence",
+      createdAt: "2026-05-09T12:30:00.000Z",
+      evidenceEventIds: ["evt_current_plan"],
+      preview: "Use rtk run for validation commands.",
+      schemaVersion: MEMORY_INFLUENCE_SCHEMA_VERSION,
+      sessionId: "ses_memory_influence",
+      sourceEventIds: ["evt_memory_saved"],
+      sourceId: "mem_rtk",
+      sourceTaskId: "task_4_2",
+      sourceType: "memory_entry" as const,
+      taskId: "task_4_5"
+    };
+
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        influenceSummary:
+          "The plan selected rtk validation because memory said so.",
+        status: "used"
+      }).ok
+    ).toBe(true);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        reason: "The stored hint did not apply to this runtime path.",
+        status: "ignored"
+      }).ok
+    ).toBe(true);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        reason: "Current evidence showed direct npm execution was unsafe here.",
+        sourceType: "learning_review_lesson",
+        status: "contradicted"
+      }).ok
+    ).toBe(true);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        status: "used"
+      }).ok
+    ).toBe(false);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        status: "ignored"
+      }).ok
+    ).toBe(false);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        influenceSummary: "OPENAI_API_KEY=sk-test-secret",
+        status: "used"
+      }).ok
+    ).toBe(false);
+    expect(
+      validateMemoryInfluenceRecord({
+        ...baseRecord,
+        influenceSummary: "Unsafe raw field should be rejected.",
+        rawOutput: "provider stdout",
+        status: "used"
+      } as unknown as Parameters<typeof validateMemoryInfluenceRecord>[0]).ok
+    ).toBe(false);
   });
 });
