@@ -1,6 +1,6 @@
 # Story 5.1: List Available Skills from Manual Skill Registry
 
-Status: ready-for-dev
+Status: in-progress
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -212,6 +212,7 @@ GPT-5.5
 - 2026-05-09: Story created from Epic 5 backlog using BMAD create-story flow after Epic 4 retrospective closeout.
 - 2026-05-09: Loaded Epic 5 Story 5.1 requirements, PRD FR52 and skill lifecycle NFRs, architecture skill evolution guidance, Epic 4 retrospective guardrails, current `packages/skills` placeholder, CLI command patterns, task-context skills placeholder, and recent GitNexus context/impact for `createProgram` and `assembleTaskContextPacket`.
 - 2026-05-09: No web research needed; implementation should use existing TypeScript/Vitest/Node filesystem APIs and no new dependencies.
+- 2026-05-09: Development started. First step is baseline validation before implementation, then confirm function/contract list and GitNexus impact before code edits.
 
 ### Completion Notes List
 
@@ -224,3 +225,4 @@ GPT-5.5
 ## Change Log
 
 - 2026-05-09: Created story context for listing available skills from the manual skill registry.
+- 2026-05-09: Started development and moved story to in-progress.
