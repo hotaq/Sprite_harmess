@@ -267,6 +267,8 @@ export function invokeManualSkill(
       return createFailedSkillInvocationResult(
         unavailable.warning.code === "SKILL_PATH_ESCAPE"
           ? "SKILL_PATH_ESCAPE"
+          : unavailable.warning.code === "SKILL_MANIFEST_UNSAFE"
+            ? "SKILL_BLOCKED_BY_POLICY"
           : "SKILL_UNAVAILABLE",
         reference,
         unavailable.warning.message,
@@ -983,7 +985,7 @@ function loadSkillContextContent(
 
   if (containsSecretLikeValue(body)) {
     return {
-      code: "SKILL_CONTENT_UNSAFE",
+      code: "SKILL_BLOCKED_BY_POLICY",
       message: "Skill content contains secret-looking or unsafe values.",
       ok: false
     };

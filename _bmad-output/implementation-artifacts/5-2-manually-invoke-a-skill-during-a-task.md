@@ -1,6 +1,6 @@
 # Story 5.2: Manually Invoke a Skill During a Task
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -73,6 +73,10 @@ so that I can reuse a known workflow when I decide it is relevant.
   - [x] Run targeted validation before review: skills package tests, task-context tests, runtime-events tests, CLI smoke tests, and typecheck.
   - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
   - [x] Run GitNexus detect-changes before committing implementation changes when available; if CLI still lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+
+### Review Findings
+
+- [x] [Review][Decision] Define and cover policy-blocked manual skill invocation semantics — Resolved by treating unsafe manifest metadata and unsafe skill body content as policy-blocked manual invocation failures (`SKILL_BLOCKED_BY_POLICY`) and by expanding skills package regression coverage for missing, malformed, policy-blocked, and path-escaping invocation failures. Evidence: `packages/skills/src/index.ts`, `tests/skill-registry.test.ts`.
 
 ## Dev Notes
 
@@ -261,6 +265,8 @@ GPT-5.5 (Codex)
 - 2026-05-09: Confirmed RED phase by adding failing regression tests for skills, task context, runtime events, and CLI smoke behavior.
 - 2026-05-10: Targeted validation passed: `rtk run 'npm test -- --run tests/task-context.test.ts tests/skill-registry.test.ts tests/runtime-events.test.ts tests/cli-smoke.test.ts'` (4 files, 129 tests).
 - 2026-05-10: Full validation passed: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` (17 files, 294 tests).
+- 2026-05-10: Review follow-up validation passed: `rtk run 'npm test -- --run tests/skill-registry.test.ts tests/runtime-events.test.ts tests/cli-smoke.test.ts'` (3 files, 114 tests).
+- 2026-05-10: Review follow-up full validation passed: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'` (17 files, 294 tests).
 
 ### Completion Notes List
 
@@ -270,6 +276,7 @@ GPT-5.5 (Codex)
 - Added repeatable task-level `--skill <name-or-source-qualified-name>` CLI support for interactive and `--print` tasks through shared runtime/core wiring.
 - Added safe `skill.invoked` and `skill.invocation.failed` runtime events that reject raw content, paths, secrets, stdout/stderr, diffs, and patch-like fields.
 - Added regression coverage for valid invocation, source disambiguation, ambiguous/missing/unsafe/path-escaping failures, task context integration, event validation, and CLI smoke behavior.
+- Resolved code review finding by mapping unsafe manifest metadata and unsafe body content to `SKILL_BLOCKED_BY_POLICY` during manual invocation and adding regression coverage for the policy-blocked path.
 - Remaining limitation: this story intentionally does not implement automatic skill selection, influence analytics, usage tracking, skill candidates, or promotion; those remain in later Epic 5 stories.
 
 ### File List
@@ -294,3 +301,4 @@ GPT-5.5 (Codex)
 | --- | --- | --- | --- |
 | 2026-05-09 | 0.1 | Created ready-for-dev story for manual skill invocation during tasks. | Codex |
 | 2026-05-10 | 0.2 | Implemented manual skill invocation, safe context loading, runtime events, CLI `--skill`, and regression coverage. | Codex |
+| 2026-05-10 | 0.3 | Resolved code review finding for policy-blocked manual invocation semantics and marked story done. | Codex |

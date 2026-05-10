@@ -479,7 +479,7 @@ description: Global workflow.
     }
   });
 
-  it("returns structured recoverable errors for missing, unsafe, and escaped skills", () => {
+  it("returns structured recoverable errors for missing, malformed, policy-blocked, and escaped skills", () => {
     const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
     const projectSkillsRoot = join(projectDir, ".sprite", "skills");
     const outsideSkill = join(rootDir, "outside-skill");
@@ -493,6 +493,23 @@ name: unsafe-body
 description: Metadata is safe but body is not.
 `,
         "Do not load OPENAI_API_KEY=sk-test-secret into context."
+      );
+      writeSkillManifest(
+        projectSkillsRoot,
+        "unsafe-metadata",
+        `
+name: unsafe-metadata
+description: Unsafe metadata should be policy-blocked.
+apiToken: placeholder
+`,
+        "Metadata blocked before this body can load."
+      );
+      writeRaw(
+        join(projectSkillsRoot, "malformed", "SKILL.md"),
+        `---
+name: malformed-skill
+description: Missing closing frontmatter.
+`
       );
       writeSkillManifest(
         outsideSkill,
@@ -516,12 +533,28 @@ description: This skill is outside the trusted root.
         homeDir,
         reference: "unsafe-body"
       });
+      const unsafeMetadata = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "unsafe-metadata"
+      });
+      const malformed = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "malformed"
+      });
       const escaped = invokeManualSkill({
         cwd: projectDir,
         homeDir,
         reference: "escaped"
       });
-      const serialized = JSON.stringify({ escaped, missing, unsafe });
+      const serialized = JSON.stringify({
+        escaped,
+        malformed,
+        missing,
+        unsafe,
+        unsafeMetadata
+      });
 
       expect(missing).toMatchObject({
         ok: false,
@@ -533,7 +566,21 @@ description: This skill is outside the trusted root.
       expect(unsafe).toMatchObject({
         ok: false,
         error: expect.objectContaining({
-          code: "SKILL_CONTENT_UNSAFE",
+          code: "SKILL_BLOCKED_BY_POLICY",
+          recoverable: true
+        })
+      });
+      expect(unsafeMetadata).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({
+          code: "SKILL_BLOCKED_BY_POLICY",
+          recoverable: true
+        })
+      });
+      expect(malformed).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({
+          code: "SKILL_UNAVAILABLE",
           recoverable: true
         })
       });
