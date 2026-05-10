@@ -1,6 +1,6 @@
 # Story 5.5: Propose Skill Candidates with Evidence and Trigger Reason
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -20,76 +20,76 @@ so that repeated procedures can become reusable drafts.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-5)
-  - [ ] Report exact functions/contracts to add or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially `validateRuntimeEvent`, `AgentRuntime.createLearningReviewForCompletedTask()`, `collectLearningReviewSkillSignals()`, `generateLearningReview()`, session-store artifact writers, and skill registry listing/invocation code.
-  - [ ] Keep this story candidate-proposal-only: no edit/reject/draft/promote lifecycle, no active skill file writes, no `.sprite/skills/<name>/SKILL.md` writes, no autonomous routing, and no policy grants.
-  - [ ] Preserve Story 5.4 boundary: only `skillSignals` with `signalStatus: "signal_only"` may feed candidate generation; never consume raw skill content or raw tool output.
+- [x] Confirm implementation function list before code edits (AC: 1-5)
+  - [x] Report exact functions/contracts to add or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially `validateRuntimeEvent`, `AgentRuntime.createLearningReviewForCompletedTask()`, `collectLearningReviewSkillSignals()`, `generateLearningReview()`, session-store artifact writers, and skill registry listing/invocation code.
+  - [x] Keep this story candidate-proposal-only: no edit/reject/draft/promote lifecycle, no active skill file writes, no `.sprite/skills/<name>/SKILL.md` writes, no autonomous routing, and no policy grants.
+  - [x] Preserve Story 5.4 boundary: only `skillSignals` with `signalStatus: "signal_only"` may feed candidate generation; never consume raw skill content or raw tool output.
 
-- [ ] Define the safe skill candidate domain contract (AC: 1, 4-5)
-  - [ ] Add skill candidate schema version and lifecycle/status constants, initially `proposed` only.
-  - [ ] Add `SkillCandidate` with `candidateId`, `name`, `summary`, `triggerReason`, `intendedActivationConditions`, `workflowSteps`, `requiredTools`, `supportingEvidence`, `examples`, `counterexamples`, `knownRisks`, `confidence`, `lifecycleStatus`, `createdAt`, and source session/task/correlation metadata.
-  - [ ] Use ID prefix `skillcand_`; reject invalid IDs or unsafe names.
-  - [ ] Keep candidate text and arrays bounded deterministically.
-  - [ ] Add `validateSkillCandidate()` and reject forbidden fields such as `rawSkillContent`, `promotedSkillPath`, `activationRule`, `routingRule`, `stdout`, `stderr`, `diff`, `patch`, `secret`, and `token`.
+- [x] Define the safe skill candidate domain contract (AC: 1, 4-5)
+  - [x] Add skill candidate schema version and lifecycle/status constants, initially `proposed` only.
+  - [x] Add `SkillCandidate` with `candidateId`, `name`, `summary`, `triggerReason`, `intendedActivationConditions`, `workflowSteps`, `requiredTools`, `supportingEvidence`, `examples`, `counterexamples`, `knownRisks`, `confidence`, `lifecycleStatus`, `createdAt`, and source session/task/correlation metadata.
+  - [x] Use ID prefix `skillcand_`; reject invalid IDs or unsafe names.
+  - [x] Keep candidate text and arrays bounded deterministically.
+  - [x] Add `validateSkillCandidate()` and reject forbidden fields such as `rawSkillContent`, `promotedSkillPath`, `activationRule`, `routingRule`, `stdout`, `stderr`, `diff`, `patch`, `secret`, and `token`.
 
-- [ ] Define deterministic candidate generation from skill signals (AC: 1, 3, 5)
-  - [ ] Add `SkillCandidateGenerationRequest` that consumes safe `LearningReviewSkillSignal[]`, learning review/session context, and optional existing candidate summaries for dedupe.
-  - [ ] Add `generateSkillCandidatesFromSignals()` or equivalent in the skills domain.
-  - [ ] Treat evidence as sufficient only when either:
-    - [ ] two or more compatible skill signals share a normalized workflow identity, or
-    - [ ] one explicit correction/recovery signal has strong supporting evidence, for example `corrected_workflow`/`recovered_workflow`, multiple evidence event IDs, and a non-empty tool sequence.
-  - [ ] Do not create candidates from `loaded` skill usage alone, low-information single successful validation signals, unsafe signals, or signals lacking source session/task/correlation IDs.
-  - [ ] Record skipped signal groups with reason codes such as `insufficient_evidence`, `unsafe_signal`, `conflicting_evidence`, `duplicate_candidate`, or `unsupported_signal_status`.
-  - [ ] Keep confidence conservative; do not produce `high` confidence in this story unless the implementation has explicit deterministic multi-session evidence.
+- [x] Define deterministic candidate generation from skill signals (AC: 1, 3, 5)
+  - [x] Add `SkillCandidateGenerationRequest` that consumes safe `LearningReviewSkillSignal[]`, learning review/session context, and optional existing candidate summaries for dedupe.
+  - [x] Add `generateSkillCandidatesFromSignals()` or equivalent in the skills domain.
+  - [x] Treat evidence as sufficient only when either:
+    - [x] two or more compatible skill signals share a normalized workflow identity, or
+    - [x] one explicit correction/recovery signal has strong supporting evidence, for example `corrected_workflow`/`recovered_workflow`, multiple evidence event IDs, and a non-empty tool sequence.
+  - [x] Do not create candidates from `loaded` skill usage alone, low-information single successful validation signals, unsafe signals, or signals lacking source session/task/correlation IDs.
+  - [x] Record skipped signal groups with reason codes such as `insufficient_evidence`, `unsafe_signal`, `conflicting_evidence`, `duplicate_candidate`, or `unsupported_signal_status`.
+  - [x] Keep confidence conservative; do not produce `high` confidence in this story unless the implementation has explicit deterministic multi-session evidence.
 
-- [ ] Add runtime event contracts for candidate creation and skipped generation (AC: 2-3, 5)
-  - [ ] Add `skill.candidate.created` to `RUNTIME_EVENT_TYPES`.
-  - [ ] Add typed payload with `candidateId`, `name`, `lifecycleStatus: "proposed"`, `candidateArtifactPath`, `sourceSkillSignalIds`, `sourceSessionIds`, `sourceTaskIds`, `sourceEventIds`, `triggerReason`, `intendedActivationSummary`, `workflowStepCount`, `requiredTools`, `confidence`, `knownRisks`, `status: "created"`, and `summary`.
-  - [ ] Add a bounded no-artifact record for skipped generation. Prefer a typed `skill.candidate.skipped` event unless implementation evidence shows a better existing audit surface.
-  - [ ] Validate candidate artifact paths as project-relative safe paths.
-  - [ ] Reject raw paths, secrets, raw output fields, candidate promotion fields, and unbounded strings/arrays.
+- [x] Add runtime event contracts for candidate creation and skipped generation (AC: 2-3, 5)
+  - [x] Add `skill.candidate.created` to `RUNTIME_EVENT_TYPES`.
+  - [x] Add typed payload with `candidateId`, `name`, `lifecycleStatus: "proposed"`, `candidateArtifactPath`, `sourceSkillSignalIds`, `sourceSessionIds`, `sourceTaskIds`, `sourceEventIds`, `triggerReason`, `intendedActivationSummary`, `workflowStepCount`, `requiredTools`, `confidence`, `knownRisks`, `status: "created"`, and `summary`.
+  - [x] Add a bounded no-artifact record for skipped generation. Prefer a typed `skill.candidate.skipped` event unless implementation evidence shows a better existing audit surface.
+  - [x] Validate candidate artifact paths as project-relative safe paths.
+  - [x] Reject raw paths, secrets, raw output fields, candidate promotion fields, and unbounded strings/arrays.
 
-- [ ] Persist candidate artifacts separately from promoted/manual skills (AC: 2, 4-5)
-  - [ ] Store project skill candidate artifacts under a candidate-only location such as `.sprite/skill-candidates/<candidate-id>.json`.
-  - [ ] Do not place candidates under `.sprite/skills`, `~/.sprite/skills`, `.codex/skills`, or `.agents/skills`.
-  - [ ] Add storage helpers for candidate path resolution, safe writes, reads if needed by tests, and validation before write.
-  - [ ] Use atomic writes like existing session artifacts.
-  - [ ] Ensure candidate artifacts are not scanned by `listAvailableSkills()` and cannot be invoked by `invokeManualSkill()`.
+- [x] Persist candidate artifacts separately from promoted/manual skills (AC: 2, 4-5)
+  - [x] Store project skill candidate artifacts under a candidate-only location such as `.sprite/skill-candidates/<candidate-id>.json`.
+  - [x] Do not place candidates under `.sprite/skills`, `~/.sprite/skills`, `.codex/skills`, or `.agents/skills`.
+  - [x] Add storage helpers for candidate path resolution, safe writes, reads if needed by tests, and validation before write.
+  - [x] Use atomic writes like existing session artifacts.
+  - [x] Ensure candidate artifacts are not scanned by `listAvailableSkills()` and cannot be invoked by `invokeManualSkill()`.
 
-- [ ] Wire candidate generation through the shared runtime boundary (AC: 1-4)
-  - [ ] Add a focused runtime method such as `AgentRuntime.createSkillCandidatesForCompletedTask()` or integrate candidate generation after learning review creation.
-  - [ ] Run candidate generation only after the learning review artifact and `skill.signal.recorded` events exist.
-  - [ ] Emit `skill.candidate.created` after the candidate artifact path is known.
-  - [ ] Emit skipped-generation audit records when candidate generation runs but evidence is insufficient.
-  - [ ] Preserve idempotency: if a candidate already exists for the same normalized evidence group, do not duplicate artifacts or events.
-  - [ ] Keep adapters thin; CLI/print/TUI/RPC should consume shared runtime events and artifacts, not duplicate candidate generation logic.
+- [x] Wire candidate generation through the shared runtime boundary (AC: 1-4)
+  - [x] Add a focused runtime method such as `AgentRuntime.createSkillCandidatesForCompletedTask()` or integrate candidate generation after learning review creation.
+  - [x] Run candidate generation only after the learning review artifact and `skill.signal.recorded` events exist.
+  - [x] Emit `skill.candidate.created` after the candidate artifact path is known.
+  - [x] Emit skipped-generation audit records when candidate generation runs but evidence is insufficient.
+  - [x] Preserve idempotency: if a candidate already exists for the same normalized evidence group, do not duplicate artifacts or events.
+  - [x] Keep adapters thin; CLI/print/TUI/RPC should consume shared runtime events and artifacts, not duplicate candidate generation logic.
 
-- [ ] Preserve later Epic 5 boundaries (AC: 4)
-  - [ ] Do not implement review/edit/reject/draft/promote actions; Story 5.6 owns lifecycle transitions.
-  - [ ] Do not implement candidate-active-skill separation behavior beyond this story's direct scope guards; Story 5.7 owns the full separation story.
-  - [ ] Do not write promoted `SKILL.md` files.
-  - [ ] Do not add automatic skill selection or task-context loading from candidates.
-  - [ ] Do not grant sandbox, command, file-edit, or policy authority based on a candidate.
+- [x] Preserve later Epic 5 boundaries (AC: 4)
+  - [x] Do not implement review/edit/reject/draft/promote actions; Story 5.6 owns lifecycle transitions.
+  - [x] Do not implement candidate-active-skill separation behavior beyond this story's direct scope guards; Story 5.7 owns the full separation story.
+  - [x] Do not write promoted `SKILL.md` files.
+  - [x] Do not add automatic skill selection or task-context loading from candidates.
+  - [x] Do not grant sandbox, command, file-edit, or policy authority based on a candidate.
 
-- [ ] Add regression tests (AC: 1-5)
-  - [ ] Skills tests: candidate generation creates a proposed candidate from repeated compatible safe signals.
-  - [ ] Skills tests: explicit correction/recovery signal with strong support can produce a proposed candidate.
-  - [ ] Skills tests: insufficient single weak signal creates no candidate and records a skipped reason.
-  - [ ] Skills tests: unsafe raw fields, secrets, raw paths, stdout/stderr, diffs, patches, raw skill content, and unbounded values are rejected.
-  - [ ] Runtime event tests: `skill.candidate.created` accepts a safe payload and rejects invalid IDs, missing evidence, raw paths, secrets, raw output fields, promotion fields, and unbounded content.
-  - [ ] Runtime/session tests: completed tasks with enough skill signal evidence emit `skill.candidate.created` and write a candidate artifact.
-  - [ ] Runtime/session tests: insufficient evidence emits or records a skipped reason without writing a candidate artifact.
-  - [ ] Storage tests: candidate artifacts are validated before write and stored separately from active skill registries.
-  - [ ] Skill registry tests: candidates are not listed as available skills and cannot be invoked manually.
-  - [ ] Scope guard tests: no `SKILL.md` is written, no promoted skill appears, and no candidate influences task context.
+- [x] Add regression tests (AC: 1-5)
+  - [x] Skills tests: candidate generation creates a proposed candidate from repeated compatible safe signals.
+  - [x] Skills tests: explicit correction/recovery signal with strong support can produce a proposed candidate.
+  - [x] Skills tests: insufficient single weak signal creates no candidate and records a skipped reason.
+  - [x] Skills tests: unsafe raw fields, secrets, raw paths, stdout/stderr, diffs, patches, raw skill content, and unbounded values are rejected.
+  - [x] Runtime event tests: `skill.candidate.created` accepts a safe payload and rejects invalid IDs, missing evidence, raw paths, secrets, raw output fields, promotion fields, and unbounded content.
+  - [x] Runtime/session tests: completed tasks with enough skill signal evidence emit `skill.candidate.created` and write a candidate artifact.
+  - [x] Runtime/session tests: insufficient evidence emits or records a skipped reason without writing a candidate artifact.
+  - [x] Storage tests: candidate artifacts are validated before write and stored separately from active skill registries.
+  - [x] Skill registry tests: candidates are not listed as available skills and cannot be invoked manually.
+  - [x] Scope guard tests: no `SKILL.md` is written, no promoted skill appears, and no candidate influences task context.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-5)
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
-  - [ ] Record implementation notes, changed files, validation evidence, GitNexus impact/detect fallback, and remaining limitations in this story file.
-  - [ ] Run targeted validation before review: skill candidate tests, runtime-events tests, runtime-loop tests, session-store tests, skill-registry tests.
-  - [ ] Run full validation before marking done: `rtk run 'npm run typecheck -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-5)
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
+  - [x] Record implementation notes, changed files, validation evidence, GitNexus impact/detect fallback, and remaining limitations in this story file.
+  - [x] Run targeted validation before review: skill candidate tests, runtime-events tests, runtime-loop tests, session-store tests, skill-registry tests.
+  - [x] Run full validation before marking done: `rtk run 'npm run typecheck -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
 
 ## Dev Notes
 
@@ -336,6 +336,11 @@ GPT-5.5
 - Pre-development research inspected current learning review, skill signal, runtime event, storage, memory candidate, and manual skill registry patterns; `omx explore` produced no useful output and the fallback used bounded read-only `rtk run` commands plus GitNexus query.
 - GitNexus status was stale during research (`39a51ab` indexed, `66f2d34` current); rerun analyze/status plus symbol impact before implementation edits.
 - Follow-up Hermes Agent research cloned `https://github.com/NousResearch/hermes-agent` read-only to `/tmp/hermes-agent-inspect` at commit `d4b26df`, inspected skill manager, skill usage telemetry, curator, and prompt guidance, and did not install Hermes.
+- Development impact analysis before code edits:
+  - `validateRuntimeEvent`: CRITICAL impact, 42 impacted items, direct callers and 27 process flows affected.
+  - `AgentRuntime`: HIGH impact, 10 impacted items across runtime task entrypoints.
+  - `RUNTIME_EVENT_TYPES`, `RuntimeEventPayloadMap`, `createLearningReviewForCompletedTask`, `listAvailableSkills`, and `invokeManualSkill` were reviewed as narrower lower-risk surfaces.
+- Red phase: `npm run typecheck -- --pretty false` failed because `skill.candidate.*`, skill-candidate APIs, and candidate storage exports did not exist yet.
 
 ### Completion Notes List
 
@@ -345,19 +350,51 @@ GPT-5.5
 - Added implementation guardrails for fail-closed raw signal validation, evidence thresholds, skipped generation audit, and candidate/active-skill separation.
 - Completed pre-development research and recommended a candidate-only pipeline: `packages/skills/src/skill-candidates.ts`, focused storage helper under `.sprite/skill-candidates`, runtime candidate created/skipped events, and gated generation after learning review creation.
 - Incorporated Hermes Agent lessons: active skill writes and skill curation should remain later-story behavior; Story 5.5 should only produce reviewable candidate artifacts plus audit events.
+- Added safe skill candidate domain contracts in `packages/skills/src/skill-candidates.ts`, including proposed-only lifecycle, deterministic IDs, conservative confidence, skipped reasons, bounded summaries, and fail-closed validation.
+- Added deterministic candidate generation from signal-only learning review skill signals:
+  - repeated compatible workflow identities produce medium-confidence proposed candidates;
+  - single corrected/recovered signals with multiple evidence event IDs can produce low-confidence proposed candidates;
+  - weak, unsafe, duplicate, or unsupported signal groups create skipped records instead of artifacts.
+- Added `.sprite/skill-candidates/<candidate-id>.json` storage via `LocalSkillCandidateStore`, with candidate-only path resolution, atomic writes, reads, listing, duplicate rejection, and artifact validation before write.
+- Added `skill.candidate.created` and `skill.candidate.skipped` runtime event contracts and validators with safe project-relative artifact paths, source signal/session/task/event metadata, bounded arrays, and raw/promotion-field rejection.
+- Wired candidate generation after learning review creation in `AgentRuntime.createLearningReviewForCompletedTask()`; emitted candidate events only after artifact paths are known and emitted skipped audit events for insufficient evidence.
+- Preserved candidate-proposal boundary: no `SKILL.md` writes, no active skill registry scan, no automatic candidate loading into task context, no promotion/review lifecycle transitions, and no sandbox/policy grants.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/5-5-propose-skill-candidates-with-evidence-and-trigger-reason.md`
 - `_bmad-output/implementation-artifacts/5-5-skill-candidate-research.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/skills/src/skill-candidates.ts`
+- `packages/skills/src/index.ts`
+- `packages/storage/src/skill-candidate-store.ts`
+- `packages/storage/src/index.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/core/src/agent-runtime.ts`
+- `tests/skill-candidates.test.ts`
+- `tests/skill-candidate-store.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/runtime-loop.test.ts`
+- `tests/skill-registry.test.ts`
 
 ### Change Log
 
 - 2026-05-10: Created ready-for-dev Story 5.5 context for proposed skill candidates with evidence, trigger reason, storage/event boundaries, and safety guardrails.
 - 2026-05-10: Added pre-development research artifact for skill candidate proposal design, storage separation, event contracts, and implementation stop conditions.
 - 2026-05-10: Added Hermes Agent follow-up research and updated design implications for candidate-before-active-skill separation.
+- 2026-05-10: Implemented proposed skill candidate generation, candidate-only storage, runtime created/skipped events, runtime integration after learning reviews, and regression coverage.
+- 2026-05-10: Final review passed with no blocking findings; story closed as done.
 
 ### Validation Evidence
 
-- Story creation and pre-development research only; implementation validation not run yet.
+- `rtk run 'npm run typecheck -- --pretty false'` — passed.
+- `rtk run 'npx vitest run tests/skill-candidates.test.ts tests/skill-candidate-store.test.ts tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/skill-registry.test.ts'` — passed, 5 files / 128 tests.
+- `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run tests/skill-candidates.test.ts tests/skill-candidate-store.test.ts tests/runtime-events.test.ts tests/runtime-loop.test.ts'` — passed, 4 files / 120 tests.
+- `rtk run 'npm test -- --run'` — passed, 19 files / 313 tests.
+- `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'` — passed; repository indexed successfully and status up-to-date at commit `b808a55`.
+
+### Remaining Risks / Follow-ups
+
+- Candidate review/edit/reject/promotion remains intentionally deferred to Story 5.6.
+- Full candidate/active-skill separation lifecycle remains intentionally deferred to Story 5.7; this story only guards direct listing/invocation/loading paths.
+- Cross-session candidate aggregation is not implemented; this story supports deterministic same-learning-review evidence and duplicate suppression by normalized evidence identity.

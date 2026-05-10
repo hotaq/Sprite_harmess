@@ -273,9 +273,9 @@ description: Path metadata must not leak secret-like parent directories.
 
       expect(result.skills).toHaveLength(1);
       expect(serialized).not.toContain("sk-test-secret");
-      expect(result.registryRoots.every((root) => root.path.includes("[REDACTED]"))).toBe(
-        true
-      );
+      expect(
+        result.registryRoots.every((root) => root.path.includes("[REDACTED]"))
+      ).toBe(true);
       expect(result.skills[0]?.registryRoot).toContain("[REDACTED]");
       expect(result.skills[0]?.manifestPath).toContain("[REDACTED]");
     } finally {
@@ -357,9 +357,9 @@ description: This must not be listed as a Sprite runtime skill.
       expect(listedNames).not.toContain("codex-orchestration-skill");
       expect(listedNames).not.toContain("bmad-orchestration-skill");
       expect(listedNames).not.toContain("procedural-candidate");
-      expect(
-        existsSync(join(projectDir, ".sprite", "skill-candidates"))
-      ).toBe(false);
+      expect(existsSync(join(projectDir, ".sprite", "skill-candidates"))).toBe(
+        false
+      );
       expect(existsSync(join(projectDir, ".sprite", "sessions"))).toBe(false);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
@@ -594,6 +594,60 @@ description: This skill is outside the trusted root.
       expect(serialized).not.toContain("sk-test-secret");
       expect(serialized).not.toContain("OPENAI_API_KEY");
       expect(serialized).not.toContain(outsideSkill);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not list or invoke proposed skill candidate artifacts as active skills", () => {
+    const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
+    const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+
+    try {
+      writeSkillManifest(
+        projectSkillsRoot,
+        "active-review",
+        `
+name: active-review
+description: Active review skill remains the only invokable skill.
+`
+      );
+      writeRaw(
+        join(
+          projectDir,
+          ".sprite",
+          "skill-candidates",
+          "skillcand_active_review.json"
+        ),
+        JSON.stringify(
+          {
+            id: "skillcand_active_review",
+            lifecycleStatus: "proposed",
+            name: "candidate-review",
+            schemaVersion: 1
+          },
+          null,
+          2
+        )
+      );
+
+      const listed = listAvailableSkills({ cwd: projectDir, homeDir });
+      const invokedCandidate = invokeManualSkill({
+        cwd: projectDir,
+        homeDir,
+        reference: "candidate-review"
+      });
+
+      expect(listed.skills.map((skill) => skill.name)).toEqual([
+        "active-review"
+      ]);
+      expect(JSON.stringify(listed)).not.toContain("candidate-review");
+      expect(invokedCandidate).toMatchObject({
+        ok: false,
+        error: expect.objectContaining({
+          code: "SKILL_NOT_FOUND"
+        })
+      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateRuntimeEvent } from "@sprite/core";
+import { AgentRuntime, validateRuntimeEvent } from "@sprite/core";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -51,6 +51,77 @@ function parseNdjsonOutput(stdout: string): Record<string, unknown>[] {
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function createCliReviewCandidate(projectDir: string, homeDir: string): Promise<{
+  candidateId: string;
+  sessionId: string;
+}> {
+  writeJson(join(projectDir, "package.json"), {
+    scripts: {
+      check: "node -e \"process.stdout.write('ok')\""
+    }
+  });
+  writeJson(join(projectDir, ".sprite", "config.json"), {
+    validation: {
+      commands: [
+        {
+          args: ["run", "check"],
+          command: "npm",
+          name: "check",
+          timeoutMs: 30_000
+        }
+      ]
+    }
+  });
+
+  const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+  const submitted = runtime.submitInteractiveTask(
+    "complete repeated validation workflow task"
+  );
+
+  expect(submitted.ok).toBe(true);
+  if (!submitted.ok) {
+    throw new Error("task submission failed");
+  }
+
+  expect((await runtime.runConfiguredValidationCommands()).ok).toBe(true);
+  expect((await runtime.runConfiguredValidationCommands()).ok).toBe(true);
+  expect(
+    runtime.recordFileActivity({
+      kind: "changed",
+      paths: ["README.md"]
+    }).ok
+  ).toBe(true);
+
+  const completed = runtime.completeActiveTask(
+    "Task completed with repeated validation evidence."
+  );
+
+  expect(completed.ok).toBe(true);
+  if (!completed.ok) {
+    throw new Error("task completion failed");
+  }
+
+  const candidateEvent = completed.value.events.find(
+    (event) => event.type === "skill.candidate.created"
+  ) as
+    | {
+        payload: {
+          candidateId: string;
+        };
+      }
+    | undefined;
+
+  expect(candidateEvent).toBeDefined();
+  if (candidateEvent === undefined) {
+    throw new Error("skill candidate was not created");
+  }
+
+  return {
+    candidateId: candidateEvent.payload.candidateId,
+    sessionId: submitted.value.sessionId
+  };
 }
 
 describe("sprite cli smoke tests", () => {
@@ -269,6 +340,185 @@ description: Path redaction should protect CLI output.
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("[REDACTED]");
       expect(result.stdout).not.toContain("sk-test-secret");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists and shows skill candidates as safe CLI review views", async () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const { candidateId } = await createCliReviewCandidate(
+        projectDir,
+        homeDir
+      );
+
+      const listed = spawnSync(
+        "node",
+        [cliPath, "skills", "candidates", "list", "--output", "json"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+      const shown = spawnSync(
+        "node",
+        [cliPath, "skills", "candidates", "show", candidateId],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(listed.status).toBe(0);
+      expect(shown.status).toBe(0);
+      expect(listed.stdout).not.toContain("rawSkillContent");
+      expect(shown.stdout).not.toContain("rawSkillContent");
+
+      const output = parseJsonOutput(listed.stdout) as {
+        candidates?: Array<Record<string, unknown>>;
+      };
+
+      expect(output.candidates).toEqual([
+        expect.objectContaining({
+          candidateId,
+          lifecycleStatus: "proposed",
+          sourceEventIds: expect.any(Array),
+          sourceSkillSignalIds: expect.any(Array)
+        })
+      ]);
+      expect(shown.stdout).toContain(`Skill candidate ${candidateId}:`);
+      expect(shown.stdout).toContain("Intended activation:");
+      expect(shown.stdout).toContain("Workflow steps:");
+      expect(shown.stdout).toContain("Source evidence:");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reviews and rejects a skill candidate through a resumed CLI session", async () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const { candidateId, sessionId } = await createCliReviewCandidate(
+        projectDir,
+        homeDir
+      );
+      const reviewed = spawnSync(
+        "node",
+        [
+          cliPath,
+          "skills",
+          "candidates",
+          "review",
+          candidateId,
+          "--action",
+          "reject",
+          "--reason",
+          "Human review rejected this broad validation workflow.",
+          "--session",
+          sessionId,
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(reviewed.status).toBe(0);
+      const output = parseJsonOutput(reviewed.stdout) as {
+        events?: Array<{ payload: Record<string, unknown>; type: string }>;
+        view?: Record<string, unknown>;
+      };
+
+      expect(output.view).toMatchObject({
+        candidateId,
+        lifecycleStatus: "rejected",
+        rejectionReason: "Human review rejected this broad validation workflow."
+      });
+      expect(output.events?.at(-1)).toMatchObject({
+        payload: {
+          action: "reject",
+          candidateId,
+          lifecycleStatus: "rejected"
+        },
+        type: "skill.candidate.reviewed"
+      });
+      expect(existsSync(join(projectDir, ".sprite", "skills"))).toBe(false);
+      expect(JSON.stringify(output)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(output)).not.toContain("promotedSkillPath");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("edits a skill candidate through bounded CLI review flags", async () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const { candidateId, sessionId } = await createCliReviewCandidate(
+        projectDir,
+        homeDir
+      );
+      const reviewed = spawnSync(
+        "node",
+        [
+          cliPath,
+          "skills",
+          "candidates",
+          "review",
+          candidateId,
+          "--action",
+          "edit",
+          "--reason",
+          "Human review narrowed this validation workflow.",
+          "--summary",
+          "Reviewed candidate remains a draft until explicit promotion.",
+          "--activation",
+          "Use after repeated validation success signals.",
+          "--workflow-step",
+          "Run the configured validation command.",
+          "--required-tool",
+          "npm",
+          "--session",
+          sessionId,
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(reviewed.status).toBe(0);
+      const output = parseJsonOutput(reviewed.stdout) as {
+        events?: Array<{ payload: Record<string, unknown>; type: string }>;
+        view?: Record<string, unknown>;
+      };
+
+      expect(output.view).toMatchObject({
+        candidateId,
+        lifecycleStatus: "draft",
+        summary: "Reviewed candidate remains a draft until explicit promotion."
+      });
+      expect(output.events?.at(-1)).toMatchObject({
+        payload: {
+          action: "edit",
+          candidateId,
+          lifecycleStatus: "draft"
+        },
+        type: "skill.candidate.reviewed"
+      });
+      expect(JSON.stringify(output)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(output)).not.toContain("promotedSkillPath");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

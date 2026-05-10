@@ -1,7 +1,4 @@
-import {
-  containsSecretLikeValue,
-  createRedactedPreview
-} from "@sprite/shared";
+import { containsSecretLikeValue, createRedactedPreview } from "@sprite/shared";
 import {
   existsSync,
   readdirSync,
@@ -10,6 +7,8 @@ import {
   statSync
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+
+export * from "./skill-candidates.js";
 
 export const SKILL_REGISTRY_SCHEMA_VERSION = 1 as const;
 export const SKILL_REGISTRY_SOURCES = ["project", "global"] as const;
@@ -41,8 +40,7 @@ const FORBIDDEN_METADATA_FIELD_FRAGMENTS = [
 export type SkillRegistrySource = (typeof SKILL_REGISTRY_SOURCES)[number];
 export type SkillLifecycleState = (typeof SKILL_LIFECYCLE_STATES)[number];
 export type SkillInvocationMode = (typeof SKILL_INVOCATION_MODES)[number];
-export type SkillInvocationStatus =
-  (typeof SKILL_INVOCATION_STATUSES)[number];
+export type SkillInvocationStatus = (typeof SKILL_INVOCATION_STATUSES)[number];
 
 export type SkillRegistryWarningCode =
   | "SKILL_ENTRY_INVALID"
@@ -269,7 +267,7 @@ export function invokeManualSkill(
           ? "SKILL_PATH_ESCAPE"
           : unavailable.warning.code === "SKILL_MANIFEST_UNSAFE"
             ? "SKILL_BLOCKED_BY_POLICY"
-          : "SKILL_UNAVAILABLE",
+            : "SKILL_UNAVAILABLE",
         reference,
         unavailable.warning.message,
         unavailable.source,
@@ -946,9 +944,8 @@ function loadSkillContextContent(
   skill: SkillRegistryEntry,
   maxContentLength: number
 ): SkillContentLoadResult {
-  const normalizedMaxContentLength = normalizeSkillContentMaxLength(
-    maxContentLength
-  );
+  const normalizedMaxContentLength =
+    normalizeSkillContentMaxLength(maxContentLength);
 
   try {
     const rootRealPath = realpathSync(skill.registryRoot);

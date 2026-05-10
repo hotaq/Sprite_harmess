@@ -4,12 +4,15 @@ import {
   createFinalTaskSummary,
   runOneShotPrintTask
 } from "@sprite/core";
+import { listAvailableSkills } from "@sprite/skills";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +25,111 @@ function createTempProject(): { projectDir: string; rootDir: string } {
   mkdirSync(projectDir, { recursive: true });
 
   return { projectDir, rootDir };
+}
+
+async function completeRuntimeTaskWithSkillCandidate(): Promise<{
+  artifactPath: string;
+  candidateId: string;
+  homeDir: string;
+  projectDir: string;
+  rootDir: string;
+  runtime: AgentRuntime;
+  sessionId: string;
+}> {
+  const { projectDir, rootDir } = createTempProject();
+  const homeDir = join(rootDir, "home");
+
+  writeFileSync(
+    join(projectDir, "package.json"),
+    JSON.stringify(
+      {
+        scripts: {
+          check: "node -e \"process.stdout.write('ok')\""
+        }
+      },
+      null,
+      2
+    )
+  );
+  mkdirSync(join(projectDir, ".sprite"), { recursive: true });
+  writeFileSync(
+    join(projectDir, ".sprite", "config.json"),
+    JSON.stringify(
+      {
+        validation: {
+          commands: [
+            {
+              args: ["run", "check"],
+              command: "npm",
+              name: "check",
+              timeoutMs: 30_000
+            }
+          ]
+        }
+      },
+      null,
+      2
+    )
+  );
+
+  const runtime = new AgentRuntime({
+    cwd: projectDir,
+    homeDir
+  });
+  const submitted = runtime.submitInteractiveTask(
+    "complete repeated validation workflow task"
+  );
+
+  expect(submitted.ok).toBe(true);
+  if (!submitted.ok) {
+    throw new Error("task submission failed");
+  }
+
+  const firstValidation = await runtime.runConfiguredValidationCommands();
+  const secondValidation = await runtime.runConfiguredValidationCommands();
+  const changed = runtime.recordFileActivity({
+    kind: "changed",
+    paths: ["README.md"]
+  });
+
+  expect(firstValidation.ok).toBe(true);
+  expect(secondValidation.ok).toBe(true);
+  expect(changed.ok).toBe(true);
+
+  const completed = runtime.completeActiveTask(
+    "Task completed with repeated validation evidence."
+  );
+
+  expect(completed.ok).toBe(true);
+  if (!completed.ok) {
+    throw new Error("task completion failed");
+  }
+
+  const candidateEvent = completed.value.events.find(
+    (event) => (event as { type: string }).type === "skill.candidate.created"
+  ) as
+    | {
+        payload: {
+          candidateArtifactPath: string;
+          candidateId: string;
+        };
+      }
+    | undefined;
+
+  expect(candidateEvent).toBeDefined();
+  if (candidateEvent === undefined) {
+    throw new Error("candidate event missing");
+  }
+
+  return {
+    artifactPath: join(projectDir, candidateEvent.payload.candidateArtifactPath),
+    candidateId: candidateEvent.payload.candidateId,
+    homeDir,
+    projectDir,
+    rootDir,
+    runtime,
+    sessionId: submitted.value.sessionId
+  };
 }
 
 describe("AgentRuntime interactive task flow", () => {
@@ -420,8 +528,7 @@ describe("AgentRuntime interactive task flow", () => {
 
       const used = runtime.recordMemoryInfluence({
         evidenceEventIds: [submitted.value.events[0]?.eventId ?? "evt_started"],
-        influenceSummary:
-          "Used prior command memory to select rtk validation.",
+        influenceSummary: "Used prior command memory to select rtk validation.",
         preview: "Use rtk run for validation commands.",
         sourceEventIds: ["evt_memory_saved"],
         sourceId: "mem_rtk",
@@ -681,12 +788,7 @@ Check regressions before committing.
       expect(missingEvidence.ok).toBe(false);
       expect(rawPathUsage.ok).toBe(false);
       expect(unboundedUsage.ok).toBe(false);
-      if (
-        !used.ok ||
-        !ignored.ok ||
-        !contradicted.ok ||
-        !suggestedIgnored.ok
-      ) {
+      if (!used.ok || !ignored.ok || !contradicted.ok || !suggestedIgnored.ok) {
         return;
       }
 
@@ -820,7 +922,10 @@ Check regressions before committing.
       }
 
       const review = JSON.parse(
-        readFileSync(join(projectDir, learningEvent.payload.artifactPath), "utf8")
+        readFileSync(
+          join(projectDir, learningEvent.payload.artifactPath),
+          "utf8"
+        )
       ) as { skillSignals: unknown[] };
 
       expect(review.skillSignals).toEqual([]);
@@ -931,9 +1036,33 @@ Check regressions before committing.
       );
       expect(
         completed.value.events.some(
-          (event) => (event as { type: string }).type === "skill.candidate.created"
+          (event) =>
+            (event as { type: string }).type === "skill.candidate.created"
         )
       ).toBe(false);
+
+      const skippedEvents = completed.value.events.filter(
+        (event) =>
+          (event as { type: string }).type === "skill.candidate.skipped"
+      ) as Array<{ payload: Record<string, unknown> }>;
+      const candidateDir = join(projectDir, ".sprite", "skill-candidates");
+      const candidateArtifactNames = existsSync(candidateDir)
+        ? readdirSync(candidateDir).filter((fileName) =>
+            fileName.endsWith(".json")
+          )
+        : [];
+
+      expect(skippedEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              reason: "insufficient_evidence",
+              status: "skipped"
+            })
+          })
+        ])
+      );
+      expect(candidateArtifactNames).toEqual([]);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -991,7 +1120,8 @@ Check regressions before committing.
         evidenceEventIds: [waitingEvent.eventId],
         invocationMode: "manual",
         name: "project-review",
-        reason: "Ignored because this review skill did not match the active task.",
+        reason:
+          "Ignored because this review skill did not match the active task.",
         skillId: invokedEvent.payload.skillId,
         source: "project",
         sourceEventIds: [invokedEvent.eventId],
@@ -1064,7 +1194,7 @@ Check regressions before committing.
         JSON.stringify(
           {
             scripts: {
-              check: "node -e \"process.exit(1)\""
+              check: 'node -e "process.exit(1)"'
             }
           },
           null,
@@ -1650,7 +1780,10 @@ Check regressions before committing.
       }
 
       const review = JSON.parse(
-        readFileSync(join(projectDir, learningEvent.payload.artifactPath), "utf8")
+        readFileSync(
+          join(projectDir, learningEvent.payload.artifactPath),
+          "utf8"
+        )
       ) as {
         proceduralOutputs: Array<{
           knownRisks: string[];
@@ -1687,6 +1820,505 @@ Check regressions before committing.
       ]);
       expect(review.proceduralOutputs[0]?.knownRisks.length).toBeGreaterThan(0);
       expect(existsSync(join(projectDir, ".sprite", "skills"))).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("proposes skill candidates from repeated compatible learning review signals", async () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      writeFileSync(
+        join(projectDir, "package.json"),
+        JSON.stringify(
+          {
+            scripts: {
+              check: "node -e \"process.stdout.write('ok')\""
+            }
+          },
+          null,
+          2
+        )
+      );
+      mkdirSync(join(projectDir, ".sprite"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".sprite", "config.json"),
+        JSON.stringify(
+          {
+            validation: {
+              commands: [
+                {
+                  args: ["run", "check"],
+                  command: "npm",
+                  name: "check",
+                  timeoutMs: 30_000
+                }
+              ]
+            }
+          },
+          null,
+          2
+        )
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete repeated validation workflow task"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const firstValidation = await runtime.runConfiguredValidationCommands();
+      const secondValidation = await runtime.runConfiguredValidationCommands();
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(firstValidation.ok).toBe(true);
+      expect(secondValidation.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+
+      const completed = runtime.completeActiveTask(
+        "Task completed with repeated validation evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const candidateEvent = completed.value.events.find(
+        (event) =>
+          (event as { type: string }).type === "skill.candidate.created"
+      ) as
+        | {
+            payload: {
+              candidateArtifactPath: string;
+              candidateId: string;
+              confidence: string;
+              lifecycleStatus: string;
+              sourceEventIds: string[];
+              sourceSkillSignalIds: string[];
+              status: string;
+            };
+          }
+        | undefined;
+      const learningReviewIndex = completed.value.events.findIndex(
+        (event) => event.type === "learning.review.created"
+      );
+      const candidateIndex = completed.value.events.findIndex(
+        (event) =>
+          (event as { type: string }).type === "skill.candidate.created"
+      );
+
+      expect(learningReviewIndex).toBeGreaterThanOrEqual(0);
+      expect(candidateIndex).toBeGreaterThan(learningReviewIndex);
+      expect(candidateEvent?.payload).toMatchObject({
+        confidence: "medium",
+        lifecycleStatus: "proposed",
+        sourceSkillSignalIds: [
+          expect.stringMatching(/^skillsig_/),
+          expect.stringMatching(/^skillsig_/)
+        ],
+        status: "created"
+      });
+      expect(candidateEvent?.payload.sourceEventIds).toHaveLength(2);
+
+      if (candidateEvent === undefined) {
+        return;
+      }
+
+      const artifactPath = join(
+        projectDir,
+        candidateEvent.payload.candidateArtifactPath
+      );
+      expect(artifactPath).toContain(".sprite/skill-candidates");
+      expect(artifactPath).not.toContain(".sprite/skills");
+      expect(existsSync(artifactPath)).toBe(true);
+
+      const candidate = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+        confidence: string;
+        id: string;
+        lifecycleStatus: string;
+        requiredTools: string[];
+        sourceEventIds: string[];
+        sourceSkillSignalIds: string[];
+      };
+
+      expect(candidate).toMatchObject({
+        confidence: "medium",
+        id: candidateEvent.payload.candidateId,
+        lifecycleStatus: "proposed",
+        requiredTools: ["npm"]
+      });
+      expect(candidate.sourceEventIds).toHaveLength(2);
+      expect(candidate.sourceSkillSignalIds).toHaveLength(2);
+      expect(JSON.stringify(candidate)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(candidate)).not.toContain("promotedSkillPath");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reviews and rejects skill candidates through runtime without activating a skill", async () => {
+    const { artifactPath, candidateId, projectDir, rootDir, runtime } =
+      await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const listed = runtime.listSkillCandidates();
+      const opened = runtime.openSkillCandidate(candidateId);
+
+      expect(listed.ok).toBe(true);
+      expect(opened.ok).toBe(true);
+      if (!listed.ok || !opened.ok) {
+        return;
+      }
+      expect(listed.value).toEqual([
+        expect.objectContaining({
+          candidateId,
+          lifecycleStatus: "proposed"
+        })
+      ]);
+      expect(opened.value).toMatchObject({
+        candidateId,
+        lifecycleStatus: "proposed"
+      });
+
+      const reviewed = runtime.reviewSkillCandidate({
+        action: "reject",
+        candidateId,
+        reason: "Human review rejected this broad validation workflow.",
+        reviewedAt: "2026-05-10T15:40:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+
+      expect(reviewed.value.view).toMatchObject({
+        candidateId,
+        lifecycleStatus: "rejected",
+        rejectionReason: "Human review rejected this broad validation workflow."
+      });
+      expect(reviewed.value.promotedSkillReference).toBeUndefined();
+      expect(
+        reviewed.value.events.at(-1) as {
+          payload: Record<string, unknown>;
+          type: string;
+        }
+      ).toMatchObject({
+        payload: {
+          action: "reject",
+          candidateId,
+          lifecycleStatus: "rejected",
+          status: "rejected"
+        },
+        type: "skill.candidate.reviewed"
+      });
+
+      const stored = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+        lifecycleStatus: string;
+        rejectionReason?: string;
+      };
+      expect(stored).toMatchObject({
+        lifecycleStatus: "rejected",
+        rejectionReason: "Human review rejected this broad validation workflow."
+      });
+      expect(existsSync(join(projectDir, ".sprite", "skills"))).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("promotes a reviewed skill candidate into the manual project registry only after explicit approval", async () => {
+    const { artifactPath, candidateId, projectDir, rootDir, runtime } =
+      await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const unconfirmed = runtime.reviewSkillCandidate({
+        action: "promote",
+        candidateId,
+        reason: "Manual review accepts this validation workflow.",
+        reviewedAt: "2026-05-10T15:45:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(unconfirmed.ok).toBe(false);
+      expect(existsSync(join(projectDir, ".sprite", "skills"))).toBe(false);
+
+      const promoted = runtime.reviewSkillCandidate({
+        action: "promote",
+        candidateId,
+        confirmPromotion: true,
+        promotionTarget: "project",
+        reason: "Manual review accepts this validation workflow.",
+        reviewedAt: "2026-05-10T15:46:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(promoted.ok).toBe(true);
+      if (!promoted.ok) {
+        return;
+      }
+
+      expect(promoted.value).toMatchObject({
+        promotedSkillReference: expect.stringMatching(/^project:/),
+        view: expect.objectContaining({
+          candidateId,
+          lifecycleStatus: "promoted",
+          promotedSkillReference: expect.stringMatching(/^project:/),
+          promotionTarget: "project"
+        })
+      });
+      const promotedEvent = promoted.value.events.at(-1) as {
+        payload: Record<string, unknown>;
+        type: string;
+      };
+      expect(promotedEvent).toMatchObject({
+        payload: {
+          action: "promote",
+          candidateId,
+          lifecycleStatus: "promoted",
+          status: "promoted"
+        },
+        type: "skill.candidate.reviewed"
+      });
+      expect(JSON.stringify(promotedEvent)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(promotedEvent)).not.toContain("promotedSkillPath");
+
+      const stored = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+        lifecycleStatus: string;
+        promotedSkillReference?: string;
+      };
+      expect(stored.lifecycleStatus).toBe("promoted");
+      expect(stored.promotedSkillReference).toBe(
+        promoted.value.promotedSkillReference
+      );
+
+      const listed = listAvailableSkills({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      expect(listed.skills).toEqual([
+        expect.objectContaining({
+          lifecycleState: "manual",
+          name: promoted.value.view.name,
+          source: "project"
+        })
+      ]);
+      expect(JSON.stringify(listed)).not.toContain(candidateId);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects skill candidate promotion through symlinked skill directories", async () => {
+    const { artifactPath, candidateId, projectDir, rootDir, runtime } =
+      await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const opened = runtime.openSkillCandidate(candidateId);
+
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) {
+        return;
+      }
+
+      const promotedSkillDirectory = opened.value.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80);
+      const outsideDirectory = join(rootDir, "outside-promoted-skill");
+
+      mkdirSync(join(projectDir, ".sprite", "skills"), { recursive: true });
+      mkdirSync(outsideDirectory, { recursive: true });
+      symlinkSync(
+        outsideDirectory,
+        join(projectDir, ".sprite", "skills", promotedSkillDirectory),
+        "dir"
+      );
+
+      const promoted = runtime.reviewSkillCandidate({
+        action: "promote",
+        candidateId,
+        confirmPromotion: true,
+        promotionTarget: "project",
+        reason: "Manual review accepts this validation workflow.",
+        reviewedAt: "2026-05-10T15:48:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(promoted.ok).toBe(false);
+      expect(existsSync(join(outsideDirectory, "SKILL.md"))).toBe(false);
+
+      const stored = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+        lifecycleStatus: string;
+        promotedSkillReference?: string;
+      };
+
+      expect(stored.lifecycleStatus).toBe("proposed");
+      expect(stored.promotedSkillReference).toBeUndefined();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replay skill candidate review or promotion side effects on session resume", async () => {
+    const { candidateId, homeDir, projectDir, rootDir, runtime, sessionId } =
+      await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const promoted = runtime.reviewSkillCandidate({
+        action: "promote",
+        candidateId,
+        confirmPromotion: true,
+        promotionTarget: "project",
+        reason: "Manual review accepts this validation workflow.",
+        reviewedAt: "2026-05-10T15:50:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(promoted.ok).toBe(true);
+      if (!promoted.ok) {
+        return;
+      }
+
+      const listedBeforeResume = listAvailableSkills({ cwd: projectDir, homeDir });
+      expect(listedBeforeResume.skills).toHaveLength(1);
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumed = resumedRuntime.resumeSession(sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+
+      const listedAfterResume = listAvailableSkills({ cwd: projectDir, homeDir });
+      const reviewedEvents = resumedRuntime
+        .getEventHistory()
+        .filter((event) => event.type === "skill.candidate.reviewed");
+      const repeatedPromotion = resumedRuntime.reviewSkillCandidate({
+        action: "promote",
+        candidateId,
+        confirmPromotion: true,
+        promotionTarget: "project",
+        reason: "Try to promote the already promoted candidate again.",
+        reviewedAt: "2026-05-10T15:51:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(listedAfterResume.skills).toEqual(listedBeforeResume.skills);
+      expect(reviewedEvents).toHaveLength(1);
+      expect(repeatedPromotion.ok).toBe(false);
+      if (!repeatedPromotion.ok) {
+        expect((repeatedPromotion.error as { code?: string }).code).toBe(
+          "SKILL_CANDIDATE_ALREADY_REVIEWED"
+        );
+      }
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps task completion successful when candidate cache is unreadable", async () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      writeFileSync(
+        join(projectDir, "package.json"),
+        JSON.stringify(
+          {
+            scripts: {
+              check: "node -e \"process.stdout.write('ok')\""
+            }
+          },
+          null,
+          2
+        )
+      );
+      mkdirSync(join(projectDir, ".sprite", "skill-candidates"), {
+        recursive: true
+      });
+      writeFileSync(
+        join(projectDir, ".sprite", "skill-candidates", "bad.json"),
+        "{ not valid candidate json"
+      );
+      writeFileSync(
+        join(projectDir, ".sprite", "config.json"),
+        JSON.stringify(
+          {
+            validation: {
+              commands: [
+                {
+                  args: ["run", "check"],
+                  command: "npm",
+                  name: "check",
+                  timeoutMs: 30_000
+                }
+              ]
+            }
+          },
+          null,
+          2
+        )
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete despite optional candidate cache failure"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const firstValidation = await runtime.runConfiguredValidationCommands();
+      const secondValidation = await runtime.runConfiguredValidationCommands();
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(firstValidation.ok).toBe(true);
+      expect(secondValidation.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+
+      const completed = runtime.completeActiveTask(
+        "Task completed even though optional skill candidate cache is invalid."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      expect(
+        completed.value.events.some(
+          (event) => event.type === "learning.review.created"
+        )
+      ).toBe(true);
+      expect(
+        completed.value.events.some(
+          (event) =>
+            (event as { type: string }).type === "skill.candidate.created"
+        )
+      ).toBe(false);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

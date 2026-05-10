@@ -14,8 +14,11 @@ import {
   type ManualSessionCompactionResult,
   type OneShotPrintOutputFormat,
   type OneShotPrintTaskResult,
+  type RuntimeSkillCandidateReviewRequest,
+  type RuntimeSkillCandidateReviewResult,
   type SessionInspectionView,
   type SessionResumeResult,
+  type SkillCandidateReviewView,
   type SkillRegistryEntry,
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
@@ -37,8 +40,36 @@ function writeMessage(io: CliIO, message: string): void {
 
 const OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
 const SESSION_TEXT_JSON_OUTPUT_FORMATS = ["text", "json"] as const;
+const SKILL_CANDIDATE_REVIEW_ACTIONS = [
+  "edit",
+  "draft",
+  "reject",
+  "promote"
+] as const;
 type SessionTextJsonOutputFormat =
   (typeof SESSION_TEXT_JSON_OUTPUT_FORMATS)[number];
+type SkillCandidateReviewAction =
+  (typeof SKILL_CANDIDATE_REVIEW_ACTIONS)[number];
+
+interface SkillCandidateReviewCliOptions {
+  action?: string;
+  activation?: string[];
+  confirmPromotion?: boolean;
+  counterexample?: string[];
+  example?: string[];
+  knownRisk?: string[];
+  name?: string;
+  output?: string;
+  promotionTarget?: string;
+  reason?: string;
+  requiredTool?: string[];
+  reviewedBy?: string;
+  session?: string;
+  summary?: string;
+  triggerReason?: string;
+  workflowStep?: string[];
+  workflowSummary?: string;
+}
 
 function parseOutputFormat(
   value: string | undefined
@@ -89,6 +120,61 @@ function parseRecentEventLimit(value: string | undefined): number | undefined {
   }
 
   return parsed;
+}
+
+function parseSkillCandidateReviewAction(
+  value: string | undefined
+): SkillCandidateReviewAction {
+  if (value === undefined) {
+    throw new Error(
+      `Skill candidate review action must be one of: ${SKILL_CANDIDATE_REVIEW_ACTIONS.join(", ")}.`
+    );
+  }
+
+  if (!SKILL_CANDIDATE_REVIEW_ACTIONS.includes(value as SkillCandidateReviewAction)) {
+    throw new Error(
+      `Skill candidate review action must be one of: ${SKILL_CANDIDATE_REVIEW_ACTIONS.join(", ")}.`
+    );
+  }
+
+  return value as SkillCandidateReviewAction;
+}
+
+function collectRepeatableOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function buildSkillCandidateCliEdits(
+  options: SkillCandidateReviewCliOptions
+): RuntimeSkillCandidateReviewRequest["edits"] | undefined {
+  const edits: RuntimeSkillCandidateReviewRequest["edits"] = {
+    ...(options.activation === undefined
+      ? {}
+      : { intendedActivationConditions: options.activation }),
+    ...(options.counterexample === undefined
+      ? {}
+      : { counterexamples: options.counterexample }),
+    ...(options.example === undefined ? {} : { examples: options.example }),
+    ...(options.knownRisk === undefined
+      ? {}
+      : { knownRisks: options.knownRisk }),
+    ...(options.name === undefined ? {} : { name: options.name }),
+    ...(options.requiredTool === undefined
+      ? {}
+      : { requiredTools: options.requiredTool }),
+    ...(options.summary === undefined ? {} : { summary: options.summary }),
+    ...(options.triggerReason === undefined
+      ? {}
+      : { triggerReason: options.triggerReason }),
+    ...(options.workflowStep === undefined
+      ? {}
+      : { workflowSteps: options.workflowStep }),
+    ...(options.workflowSummary === undefined
+      ? {}
+      : { workflowSummary: options.workflowSummary })
+  };
+
+  return Object.keys(edits).length === 0 ? undefined : edits;
 }
 
 function collectSkillReference(value: string, previous: string[] = []): string[] {
@@ -212,6 +298,90 @@ function renderSkillWarnings(result: ListSkillsResult): string[] {
 
     return `- ${warning.code}${pathLabel}: ${warning.message}`;
   });
+}
+
+function renderSkillCandidateListJson(
+  candidates: SkillCandidateReviewView[]
+): string {
+  return JSON.stringify({ candidates }, null, 2);
+}
+
+function renderSkillCandidateListText(
+  candidates: SkillCandidateReviewView[]
+): string {
+  return [
+    "Skill candidates:",
+    ...(candidates.length === 0
+      ? ["- none"]
+      : candidates.flatMap((candidate) => [
+          `- ${candidate.candidateId} [${candidate.lifecycleStatus}]`,
+          `  name: ${candidate.name}`,
+          `  confidence: ${candidate.confidence}`,
+          `  trigger: ${candidate.triggerReason}`,
+          `  required tools: ${candidate.requiredTools.join(", ")}`
+        ]))
+  ].join("\n");
+}
+
+function renderSkillCandidateViewJson(
+  candidate: SkillCandidateReviewView
+): string {
+  return JSON.stringify(candidate, null, 2);
+}
+
+function renderSkillCandidateViewText(
+  candidate: SkillCandidateReviewView
+): string {
+  return [
+    `Skill candidate ${candidate.candidateId}:`,
+    `- name: ${candidate.name}`,
+    `- lifecycle: ${candidate.lifecycleStatus}`,
+    `- confidence: ${candidate.confidence}`,
+    `- summary: ${candidate.summary}`,
+    `- trigger: ${candidate.triggerReason}`,
+    "Intended activation:",
+    ...candidate.intendedActivationConditions.map((value) => `- ${value}`),
+    "Workflow steps:",
+    ...candidate.workflowSteps.map((value) => `- ${value}`),
+    "Required tools:",
+    ...candidate.requiredTools.map((value) => `- ${value}`),
+    "Known risks:",
+    ...candidate.knownRisks.map((value) => `- ${value}`),
+    "Examples:",
+    ...candidate.examples.map((value) => `- ${value}`),
+    "Counterexamples:",
+    ...candidate.counterexamples.map((value) => `- ${value}`),
+    "Source evidence:",
+    `- events: ${candidate.sourceEventIds.join(", ")}`,
+    `- skill signals: ${candidate.sourceSkillSignalIds.join(", ")}`,
+    `- sessions: ${candidate.sourceSessionIds.join(", ")}`,
+    `- tasks: ${candidate.sourceTaskIds.join(", ")}`,
+    ...(candidate.rejectionReason === undefined
+      ? []
+      : [`- rejection reason: ${candidate.rejectionReason}`]),
+    ...(candidate.promotedSkillReference === undefined
+      ? []
+      : [`- promoted skill: ${candidate.promotedSkillReference}`])
+  ].join("\n");
+}
+
+function renderSkillCandidateReviewJson(
+  result: RuntimeSkillCandidateReviewResult
+): string {
+  return JSON.stringify(result, null, 2);
+}
+
+function renderSkillCandidateReviewText(
+  result: RuntimeSkillCandidateReviewResult
+): string {
+  return [
+    `Skill candidate ${result.view.candidateId} reviewed.`,
+    `- lifecycle: ${result.view.lifecycleStatus}`,
+    ...(result.promotedSkillReference === undefined
+      ? []
+      : [`- promoted skill: ${result.promotedSkillReference}`]),
+    `- event: ${result.events[0]?.eventId ?? "not emitted"}`
+  ].join("\n");
 }
 
 function renderProjectContextText(
@@ -584,6 +754,177 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
           : renderSkillsListText(result)
       );
     });
+
+  const skillCandidatesCommand = skillsCommand
+    .command("candidates")
+    .description("review inert skill candidates before promotion");
+
+  skillCandidatesCommand
+    .command("list")
+    .description("list project-local inert skill candidates")
+    .option("--output <format>", "print output format: text or json")
+    .action((options: { output?: string }, command: Command) => {
+      const optionValues = command.optsWithGlobals<{ output?: string }>();
+      const outputFormat = parseSessionTextJsonOutputFormat(
+        options.output ?? optionValues.output,
+        "Skill candidates list"
+      );
+      const runtime = new AgentRuntime();
+      const candidates = runtime.listSkillCandidates();
+
+      if (!candidates.ok) {
+        throw candidates.error;
+      }
+
+      writeMessage(
+        io,
+        outputFormat === "json"
+          ? renderSkillCandidateListJson(candidates.value)
+          : renderSkillCandidateListText(candidates.value)
+      );
+    });
+
+  skillCandidatesCommand
+    .command("show <candidateId>")
+    .description("show a safe skill candidate review view")
+    .option("--output <format>", "print output format: text or json")
+    .action(
+      (candidateId: string, options: { output?: string }, command: Command) => {
+        const optionValues = command.optsWithGlobals<{ output?: string }>();
+        const outputFormat = parseSessionTextJsonOutputFormat(
+          options.output ?? optionValues.output,
+          "Skill candidates show"
+        );
+        const runtime = new AgentRuntime();
+        const candidate = runtime.openSkillCandidate(candidateId);
+
+        if (!candidate.ok) {
+          throw candidate.error;
+        }
+
+        writeMessage(
+          io,
+          outputFormat === "json"
+            ? renderSkillCandidateViewJson(candidate.value)
+            : renderSkillCandidateViewText(candidate.value)
+        );
+      }
+    );
+
+  skillCandidatesCommand
+    .command("review <candidateId>")
+    .description(
+      "review a skill candidate as draft, reject, edit, or promote within a resumed session"
+    )
+    .requiredOption("--action <action>", "review action: edit, draft, reject, promote")
+    .requiredOption("--reason <reason>", "bounded human review reason")
+    .requiredOption(
+      "--session <sessionId>",
+      "session id that produced or owns the review audit context"
+    )
+    .option("--reviewed-by <label>", "bounded reviewer label")
+    .option("--name <name>", "safe edited skill candidate name")
+    .option("--summary <summary>", "safe edited skill candidate summary")
+    .option(
+      "--trigger-reason <reason>",
+      "safe edited skill candidate trigger reason"
+    )
+    .option(
+      "--workflow-summary <summary>",
+      "safe edited skill candidate workflow summary"
+    )
+    .option(
+      "--activation <condition>",
+      "safe edited activation condition; repeatable",
+      collectRepeatableOption
+    )
+    .option(
+      "--workflow-step <step>",
+      "safe edited workflow step; repeatable",
+      collectRepeatableOption
+    )
+    .option(
+      "--required-tool <tool>",
+      "safe edited required tool; repeatable",
+      collectRepeatableOption
+    )
+    .option(
+      "--known-risk <risk>",
+      "safe edited known risk; repeatable",
+      collectRepeatableOption
+    )
+    .option(
+      "--example <example>",
+      "safe edited example; repeatable",
+      collectRepeatableOption
+    )
+    .option(
+      "--counterexample <counterexample>",
+      "safe edited counterexample; repeatable",
+      collectRepeatableOption
+    )
+    .option(
+      "--confirm-promotion",
+      "required when action is promote before writing a manual skill"
+    )
+    .option("--promotion-target <target>", "promotion target: project")
+    .option("--output <format>", "print output format: text or json")
+    .action(
+      (
+        candidateId: string,
+        options: SkillCandidateReviewCliOptions,
+        command: Command
+      ) => {
+        const optionValues = command.optsWithGlobals<{ output?: string }>();
+        const outputFormat = parseSessionTextJsonOutputFormat(
+          options.output ?? optionValues.output,
+          "Skill candidates review"
+        );
+        const action = parseSkillCandidateReviewAction(options.action);
+        const edits = buildSkillCandidateCliEdits(options);
+
+        if (action === "edit" && edits === undefined) {
+          throw new Error(
+            "Skill candidate edit requires at least one safe edit option."
+          );
+        }
+
+        const runtime = new AgentRuntime();
+        const resumed = runtime.resumeSession(options.session ?? "");
+
+        if (!resumed.ok) {
+          throw resumed.error;
+        }
+
+        const reviewRequest: RuntimeSkillCandidateReviewRequest = {
+          action,
+          candidateId,
+          ...(options.confirmPromotion === undefined
+            ? {}
+            : { confirmPromotion: options.confirmPromotion }),
+          ...(options.promotionTarget === undefined
+            ? {}
+            : { promotionTarget: options.promotionTarget as "project" }),
+          ...(edits === undefined ? {} : { edits }),
+          reason: options.reason ?? "",
+          ...(options.reviewedBy === undefined
+            ? {}
+            : { reviewedBy: options.reviewedBy })
+        };
+        const reviewed = runtime.reviewSkillCandidate(reviewRequest);
+
+        if (!reviewed.ok) {
+          throw reviewed.error;
+        }
+
+        writeMessage(
+          io,
+          outputFormat === "json"
+            ? renderSkillCandidateReviewJson(reviewed.value)
+            : renderSkillCandidateReviewText(reviewed.value)
+        );
+      }
+    );
 
   sessionCommand
     .command("inspect <sessionId>")

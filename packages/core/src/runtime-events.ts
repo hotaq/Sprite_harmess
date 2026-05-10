@@ -28,7 +28,29 @@ import {
   type SkillSignalLifecycleStatus,
   type SkillSignalOutcome
 } from "@sprite/memory";
-import { SpriteError, err, type Result } from "@sprite/shared";
+import {
+  FORBIDDEN_SKILL_CANDIDATE_PAYLOAD_FIELDS,
+  SKILL_CANDIDATE_ARRAY_MAX_LENGTH,
+  SKILL_CANDIDATE_CONFIDENCE_VALUES,
+  SKILL_CANDIDATE_EVENT_ID_PATTERN,
+  SKILL_CANDIDATE_ID_PATTERN,
+  SKILL_CANDIDATE_LIFECYCLE_STATUSES,
+  SKILL_CANDIDATE_PROMOTION_TARGETS,
+  SKILL_CANDIDATE_RAW_FILESYSTEM_PATH_PATTERN as RAW_FILESYSTEM_PATH_PATTERN,
+  SKILL_CANDIDATE_REVIEW_ACTIONS,
+  SKILL_CANDIDATE_SESSION_ID_PATTERN,
+  SKILL_CANDIDATE_SIGNAL_ID_PATTERN,
+  SKILL_CANDIDATE_SKIPPED_REASONS,
+  SKILL_CANDIDATE_TASK_ID_PATTERN,
+  SpriteError,
+  err,
+  type Result,
+  type SkillCandidateConfidence,
+  type SkillCandidateLifecycleStatus,
+  type SkillCandidatePromotionTarget,
+  type SkillCandidateReviewAction,
+  type SkillCandidateSkippedReason
+} from "@sprite/shared";
 import {
   FILE_ACTIVITY_KINDS,
   containsSecretLikeValue,
@@ -156,8 +178,6 @@ const SKILL_USAGE_TRIGGERS = [
 const SKILL_SIGNAL_EVENT_STATUSES = ["recorded"] as const;
 const SKILL_USAGE_SAFE_TEXT_MAX_LENGTH = 320;
 const SKILL_SIGNAL_ARRAY_MAX_LENGTH = 50;
-const RAW_FILESYSTEM_PATH_PATTERN =
-  /(?:^|[\s("'`])(?:~\/|\/(?:Applications|Users|Volumes|home|opt|private|tmp|var)\/|[A-Za-z]:\\)[^\s"'`)]+/;
 const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "commandOutput",
   "content",
@@ -219,7 +239,6 @@ const FORBIDDEN_SKILL_SIGNAL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "routingRule",
   "skillCandidateId"
 ]);
-
 const RUNTIME_EVENT_TYPES = [
   "task.started",
   "task.waiting",
@@ -238,6 +257,9 @@ const RUNTIME_EVENT_TYPES = [
   "skill.invoked",
   "skill.usage.recorded",
   "skill.signal.recorded",
+  "skill.candidate.created",
+  "skill.candidate.reviewed",
+  "skill.candidate.skipped",
   "skill.invocation.failed",
   "session.resumed",
   "session.compacted",
@@ -445,6 +467,50 @@ export interface RuntimeEventPayloadMap {
     toolSequence: string[];
     triggerReason: string;
     workflowSummary: string;
+  };
+  "skill.candidate.created": {
+    candidateArtifactPath: string;
+    candidateId: string;
+    confidence: SkillCandidateConfidence;
+    intendedActivationSummary: string;
+    knownRisks: string[];
+    lifecycleStatus: SkillCandidateLifecycleStatus;
+    name: string;
+    requiredTools: string[];
+    sourceEventIds: string[];
+    sourceSessionIds: string[];
+    sourceSkillSignalIds: string[];
+    sourceTaskIds: string[];
+    status: "created";
+    summary: string;
+    triggerReason: string;
+    workflowStepCount: number;
+  };
+  "skill.candidate.reviewed": {
+    action: SkillCandidateReviewAction;
+    candidateArtifactPath: string;
+    candidateId: string;
+    confidence: SkillCandidateConfidence;
+    lifecycleStatus: SkillCandidateLifecycleStatus;
+    promotedSkillReference?: string;
+    promotionTarget?: SkillCandidatePromotionTarget;
+    reason?: string;
+    reviewedBy?: string;
+    sourceEventIds: string[];
+    sourceSessionIds: string[];
+    sourceSkillSignalIds: string[];
+    sourceTaskIds: string[];
+    status: SkillCandidateLifecycleStatus;
+    summary: string;
+  };
+  "skill.candidate.skipped": {
+    consideredSignalIds: string[];
+    reason: SkillCandidateSkippedReason;
+    sourceEventIds: string[];
+    sourceSessionIds: string[];
+    sourceTaskIds: string[];
+    status: "skipped";
+    summary: string;
   };
   "skill.invocation.failed": {
     code: (typeof SKILL_INVOCATION_ERROR_CODES)[number];
@@ -1019,6 +1085,27 @@ export function validateRuntimeEvent(
         event.payload
       );
     }
+    case "skill.candidate.created": {
+      return validateSkillCandidateCreatedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "skill.candidate.reviewed": {
+      return validateSkillCandidateReviewedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "skill.candidate.skipped": {
+      return validateSkillCandidateSkippedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
     case "skill.invocation.failed": {
       return validateSkillInvocationFailedEvent(
         context,
@@ -1405,7 +1492,12 @@ function validateLearningReviewCreatedEvent(
     "missedAssumptionCount"
   );
   const mistakeCount = requireNonNegativeInteger(type, payload, "mistakeCount");
-  const mode = requirePayloadLiteral(type, payload, "mode", LEARNING_REVIEW_MODES);
+  const mode = requirePayloadLiteral(
+    type,
+    payload,
+    "mode",
+    LEARNING_REVIEW_MODES
+  );
   const proceduralOutputIds = requirePayloadStringArray(
     type,
     payload,
@@ -2107,7 +2199,10 @@ function validateMemoryInfluenceRecordedEvent(
     );
   }
 
-  if (evidenceEventIds.value.length === 0 || sourceEventIds.value.length === 0) {
+  if (
+    evidenceEventIds.value.length === 0 ||
+    sourceEventIds.value.length === 0
+  ) {
     return err(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
@@ -2178,9 +2273,7 @@ function validateMemoryInfluenceRecordedEvent(
     ...(influenceSummary.value === undefined
       ? []
       : [["influenceSummary", influenceSummary.value] as const]),
-    ...(reason.value === undefined
-      ? []
-      : [["reason", reason.value] as const]),
+    ...(reason.value === undefined ? [] : [["reason", reason.value] as const]),
     ...(sourceSessionId.value === undefined
       ? []
       : [["sourceSessionId", sourceSessionId.value] as const]),
@@ -2246,7 +2339,11 @@ function validateSkillInvokedEvent(
     );
   }
 
-  const contentLength = requireNonNegativeInteger(type, payload, "contentLength");
+  const contentLength = requireNonNegativeInteger(
+    type,
+    payload,
+    "contentLength"
+  );
   const contentTruncated = requirePayloadBoolean(
     type,
     payload,
@@ -2452,7 +2549,10 @@ function validateSkillUsageRecordedEvent(
     );
   }
 
-  if (evidenceEventIds.value.length === 0 || sourceEventIds.value.length === 0) {
+  if (
+    evidenceEventIds.value.length === 0 ||
+    sourceEventIds.value.length === 0
+  ) {
     return err(
       new SpriteError(
         "INVALID_RUNTIME_EVENT",
@@ -2502,9 +2602,7 @@ function validateSkillUsageRecordedEvent(
     ...(influenceSummary.value === undefined
       ? []
       : [["influenceSummary", influenceSummary.value] as const]),
-    ...(reason.value === undefined
-      ? []
-      : [["reason", reason.value] as const]),
+    ...(reason.value === undefined ? [] : [["reason", reason.value] as const]),
     ...evidenceEventIds.value.map(
       (eventId) => ["evidenceEventIds", eventId] as const
     ),
@@ -2607,7 +2705,11 @@ function validateSkillSignalRecordedEvent(
   const summary = requirePayloadString(type, payload, "summary");
   const toolSequence = requirePayloadStringArray(type, payload, "toolSequence");
   const triggerReason = requirePayloadString(type, payload, "triggerReason");
-  const workflowSummary = requirePayloadString(type, payload, "workflowSummary");
+  const workflowSummary = requirePayloadString(
+    type,
+    payload,
+    "workflowSummary"
+  );
   const checks = [
     confidence,
     evidenceEventIds,
@@ -2754,8 +2856,758 @@ function validateSkillSignalRecordedEvent(
   });
 }
 
+function validateSkillCandidateCreatedEvent(
+  context: RuntimeEventContext,
+  type: "skill.candidate.created",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.candidate.created">, SpriteError> {
+  const forbiddenField = findForbiddenSkillCandidatePayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw or activation field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const candidateArtifactPath = requirePayloadString(
+    type,
+    payload,
+    "candidateArtifactPath"
+  );
+  const candidateId = requirePayloadString(type, payload, "candidateId");
+  const confidence = requirePayloadLiteral(
+    type,
+    payload,
+    "confidence",
+    SKILL_CANDIDATE_CONFIDENCE_VALUES
+  );
+  const intendedActivationSummary = requirePayloadString(
+    type,
+    payload,
+    "intendedActivationSummary"
+  );
+  const knownRisks = requirePayloadStringArray(type, payload, "knownRisks");
+  const lifecycleStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "lifecycleStatus",
+    SKILL_CANDIDATE_LIFECYCLE_STATUSES
+  );
+  const name = requirePayloadString(type, payload, "name");
+  const requiredTools = requirePayloadStringArray(
+    type,
+    payload,
+    "requiredTools"
+  );
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const sourceSessionIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceSessionIds"
+  );
+  const sourceSkillSignalIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceSkillSignalIds"
+  );
+  const sourceTaskIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceTaskIds"
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "created"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const triggerReason = requirePayloadString(type, payload, "triggerReason");
+  const workflowStepCount = requireNonNegativeInteger(
+    type,
+    payload,
+    "workflowStepCount"
+  );
+  const checks = [
+    candidateArtifactPath,
+    candidateId,
+    confidence,
+    intendedActivationSummary,
+    knownRisks,
+    lifecycleStatus,
+    name,
+    requiredTools,
+    sourceEventIds,
+    sourceSessionIds,
+    sourceSkillSignalIds,
+    sourceTaskIds,
+    status,
+    summary,
+    triggerReason,
+    workflowStepCount
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !candidateArtifactPath.ok ||
+    !candidateId.ok ||
+    !confidence.ok ||
+    !intendedActivationSummary.ok ||
+    !knownRisks.ok ||
+    !lifecycleStatus.ok ||
+    !name.ok ||
+    !requiredTools.ok ||
+    !sourceEventIds.ok ||
+    !sourceSessionIds.ok ||
+    !sourceSkillSignalIds.ok ||
+    !sourceTaskIds.ok ||
+    !status.ok ||
+    !summary.ok ||
+    !triggerReason.ok ||
+    !workflowStepCount.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (lifecycleStatus.value !== "proposed") {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' created lifecycleStatus must be proposed.`
+      )
+    );
+  }
+
+  const artifactPathValidation = validateFileActivityPath(
+    candidateArtifactPath.value
+  );
+
+  if (
+    !artifactPathValidation.ok ||
+    !artifactPathValidation.value.startsWith(".sprite/skill-candidates/") ||
+    !artifactPathValidation.value.endsWith(".json")
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' candidateArtifactPath must stay under .sprite/skill-candidates.`
+      )
+    );
+  }
+
+  if (
+    knownRisks.value.length === 0 ||
+    knownRisks.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    requiredTools.value.length === 0 ||
+    requiredTools.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceEventIds.value.length === 0 ||
+    sourceEventIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceSessionIds.value.length === 0 ||
+    sourceSessionIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceSkillSignalIds.value.length === 0 ||
+    sourceSkillSignalIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceTaskIds.value.length === 0 ||
+    sourceTaskIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    workflowStepCount.value === 0
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include bounded candidate evidence metadata.`
+      )
+    );
+  }
+
+  if (!SKILL_CANDIDATE_ID_PATTERN.test(candidateId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' candidateId must use the skillcand_ prefix.`
+      )
+    );
+  }
+
+  const idValidation = validateSkillCandidateSourceIdentifiers(type, {
+    sourceEventIds: sourceEventIds.value,
+    sourceSessionIds: sourceSessionIds.value,
+    sourceSkillSignalIds: sourceSkillSignalIds.value,
+    sourceTaskIds: sourceTaskIds.value
+  });
+
+  if (!idValidation.ok) {
+    return err(idValidation.error);
+  }
+
+  const secretCheckedFields = [
+    ["candidateArtifactPath", artifactPathValidation.value],
+    ["candidateId", candidateId.value],
+    ["confidence", confidence.value],
+    ["intendedActivationSummary", intendedActivationSummary.value],
+    ["lifecycleStatus", lifecycleStatus.value],
+    ["name", name.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ["triggerReason", triggerReason.value],
+    ...knownRisks.value.map((risk) => ["knownRisks", risk] as const),
+    ...requiredTools.value.map((tool) => ["requiredTools", tool] as const),
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    ),
+    ...sourceSessionIds.value.map(
+      (sessionId) => ["sourceSessionIds", sessionId] as const
+    ),
+    ...sourceSkillSignalIds.value.map(
+      (signalId) => ["sourceSkillSignalIds", signalId] as const
+    ),
+    ...sourceTaskIds.value.map((taskId) => ["sourceTaskIds", taskId] as const)
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    const safeText = validateSkillAuditSafeText(type, field, value);
+
+    if (!safeText.ok) {
+      return err(safeText.error);
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    candidateArtifactPath: artifactPathValidation.value,
+    candidateId: candidateId.value,
+    confidence: confidence.value,
+    intendedActivationSummary: intendedActivationSummary.value,
+    knownRisks: knownRisks.value,
+    lifecycleStatus: lifecycleStatus.value,
+    name: name.value,
+    requiredTools: requiredTools.value,
+    sourceEventIds: sourceEventIds.value,
+    sourceSessionIds: sourceSessionIds.value,
+    sourceSkillSignalIds: sourceSkillSignalIds.value,
+    sourceTaskIds: sourceTaskIds.value,
+    status: status.value,
+    summary: summary.value,
+    triggerReason: triggerReason.value,
+    workflowStepCount: workflowStepCount.value
+  });
+}
+
+function validateSkillCandidateReviewedEvent(
+  context: RuntimeEventContext,
+  type: "skill.candidate.reviewed",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.candidate.reviewed">, SpriteError> {
+  const forbiddenField = findForbiddenSkillCandidatePayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw or activation field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const action = requirePayloadLiteral(
+    type,
+    payload,
+    "action",
+    SKILL_CANDIDATE_REVIEW_ACTIONS
+  );
+  const candidateArtifactPath = requirePayloadString(
+    type,
+    payload,
+    "candidateArtifactPath"
+  );
+  const candidateId = requirePayloadString(type, payload, "candidateId");
+  const confidence = requirePayloadLiteral(
+    type,
+    payload,
+    "confidence",
+    SKILL_CANDIDATE_CONFIDENCE_VALUES
+  );
+  const lifecycleStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "lifecycleStatus",
+    SKILL_CANDIDATE_LIFECYCLE_STATUSES
+  );
+  const promotedSkillReference = optionalPayloadString(
+    type,
+    payload,
+    "promotedSkillReference"
+  );
+  const promotionTarget = optionalPayloadLiteral(
+    type,
+    payload,
+    "promotionTarget",
+    SKILL_CANDIDATE_PROMOTION_TARGETS
+  );
+  const reason = optionalPayloadString(type, payload, "reason");
+  const reviewedBy = optionalPayloadString(type, payload, "reviewedBy");
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const sourceSessionIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceSessionIds"
+  );
+  const sourceSkillSignalIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceSkillSignalIds"
+  );
+  const sourceTaskIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceTaskIds"
+  );
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    SKILL_CANDIDATE_LIFECYCLE_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const checks = [
+    action,
+    candidateArtifactPath,
+    candidateId,
+    confidence,
+    lifecycleStatus,
+    promotedSkillReference,
+    promotionTarget,
+    reason,
+    reviewedBy,
+    sourceEventIds,
+    sourceSessionIds,
+    sourceSkillSignalIds,
+    sourceTaskIds,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !action.ok ||
+    !candidateArtifactPath.ok ||
+    !candidateId.ok ||
+    !confidence.ok ||
+    !lifecycleStatus.ok ||
+    !promotedSkillReference.ok ||
+    !promotionTarget.ok ||
+    !reason.ok ||
+    !reviewedBy.ok ||
+    !sourceEventIds.ok ||
+    !sourceSessionIds.ok ||
+    !sourceSkillSignalIds.ok ||
+    !sourceTaskIds.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  const artifactPathValidation = validateFileActivityPath(
+    candidateArtifactPath.value
+  );
+
+  if (
+    !artifactPathValidation.ok ||
+    !artifactPathValidation.value.startsWith(".sprite/skill-candidates/") ||
+    !artifactPathValidation.value.endsWith(".json")
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' candidateArtifactPath must stay under .sprite/skill-candidates.`
+      )
+    );
+  }
+
+  if (!SKILL_CANDIDATE_ID_PATTERN.test(candidateId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' candidateId must use the skillcand_ prefix.`
+      )
+    );
+  }
+
+  if (status.value !== lifecycleStatus.value) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' status must match lifecycleStatus.`
+      )
+    );
+  }
+
+  if (
+    !isSkillCandidateReviewLifecycleConsistent(
+      action.value,
+      lifecycleStatus.value
+    )
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' action must match lifecycleStatus.`
+      )
+    );
+  }
+
+  if (
+    action.value === "promote" &&
+    (promotedSkillReference.value === undefined ||
+      promotionTarget.value === undefined)
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' promote action requires promotion metadata.`
+      )
+    );
+  }
+
+  if (
+    action.value !== "promote" &&
+    (promotedSkillReference.value !== undefined ||
+      promotionTarget.value !== undefined)
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' promotion metadata is only valid for promote reviews.`
+      )
+    );
+  }
+
+  if (
+    sourceEventIds.value.length === 0 ||
+    sourceEventIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceSessionIds.value.length === 0 ||
+    sourceSessionIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceSkillSignalIds.value.length === 0 ||
+    sourceSkillSignalIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceTaskIds.value.length === 0 ||
+    sourceTaskIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include bounded review evidence metadata.`
+      )
+    );
+  }
+
+  const idValidation = validateSkillCandidateSourceIdentifiers(type, {
+    sourceEventIds: sourceEventIds.value,
+    sourceSessionIds: sourceSessionIds.value,
+    sourceSkillSignalIds: sourceSkillSignalIds.value,
+    sourceTaskIds: sourceTaskIds.value
+  });
+
+  if (!idValidation.ok) {
+    return err(idValidation.error);
+  }
+
+  const secretCheckedFields = [
+    ["action", action.value],
+    ["candidateArtifactPath", artifactPathValidation.value],
+    ["candidateId", candidateId.value],
+    ["confidence", confidence.value],
+    ["lifecycleStatus", lifecycleStatus.value],
+    ...(promotedSkillReference.value === undefined
+      ? []
+      : [["promotedSkillReference", promotedSkillReference.value] as const]),
+    ...(promotionTarget.value === undefined
+      ? []
+      : [["promotionTarget", promotionTarget.value] as const]),
+    ...(reason.value === undefined ? [] : [["reason", reason.value] as const]),
+    ...(reviewedBy.value === undefined
+      ? []
+      : [["reviewedBy", reviewedBy.value] as const]),
+    ["status", status.value],
+    ["summary", summary.value],
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    ),
+    ...sourceSessionIds.value.map(
+      (sessionId) => ["sourceSessionIds", sessionId] as const
+    ),
+    ...sourceSkillSignalIds.value.map(
+      (signalId) => ["sourceSkillSignalIds", signalId] as const
+    ),
+    ...sourceTaskIds.value.map((taskId) => ["sourceTaskIds", taskId] as const)
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    const safeText = validateSkillAuditSafeText(type, field, value);
+
+    if (!safeText.ok) {
+      return err(safeText.error);
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    action: action.value,
+    candidateArtifactPath: artifactPathValidation.value,
+    candidateId: candidateId.value,
+    confidence: confidence.value,
+    lifecycleStatus: lifecycleStatus.value,
+    ...(promotedSkillReference.value === undefined
+      ? {}
+      : { promotedSkillReference: promotedSkillReference.value }),
+    ...(promotionTarget.value === undefined
+      ? {}
+      : { promotionTarget: promotionTarget.value }),
+    ...(reason.value === undefined ? {} : { reason: reason.value }),
+    ...(reviewedBy.value === undefined
+      ? {}
+      : { reviewedBy: reviewedBy.value }),
+    sourceEventIds: sourceEventIds.value,
+    sourceSessionIds: sourceSessionIds.value,
+    sourceSkillSignalIds: sourceSkillSignalIds.value,
+    sourceTaskIds: sourceTaskIds.value,
+    status: status.value,
+    summary: summary.value
+  });
+}
+
+function isSkillCandidateReviewLifecycleConsistent(
+  action: SkillCandidateReviewAction,
+  lifecycleStatus: SkillCandidateLifecycleStatus
+): boolean {
+  switch (action) {
+    case "edit":
+    case "draft":
+      return lifecycleStatus === "draft";
+    case "reject":
+      return lifecycleStatus === "rejected";
+    case "promote":
+      return lifecycleStatus === "promoted";
+  }
+}
+
+function validateSkillCandidateSkippedEvent(
+  context: RuntimeEventContext,
+  type: "skill.candidate.skipped",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.candidate.skipped">, SpriteError> {
+  const forbiddenField = findForbiddenSkillCandidatePayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw or activation field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const consideredSignalIds = requirePayloadStringArray(
+    type,
+    payload,
+    "consideredSignalIds"
+  );
+  const reason = requirePayloadLiteral(
+    type,
+    payload,
+    "reason",
+    SKILL_CANDIDATE_SKIPPED_REASONS
+  );
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const sourceSessionIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceSessionIds"
+  );
+  const sourceTaskIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceTaskIds"
+  );
+  const status = requirePayloadLiteral(type, payload, "status", [
+    "skipped"
+  ] as const);
+  const summary = requirePayloadString(type, payload, "summary");
+  const checks = [
+    consideredSignalIds,
+    reason,
+    sourceEventIds,
+    sourceSessionIds,
+    sourceTaskIds,
+    status,
+    summary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !consideredSignalIds.ok ||
+    !reason.ok ||
+    !sourceEventIds.ok ||
+    !sourceSessionIds.ok ||
+    !sourceTaskIds.ok ||
+    !status.ok ||
+    !summary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (
+    consideredSignalIds.value.length === 0 ||
+    consideredSignalIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceEventIds.value.length === 0 ||
+    sourceEventIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceSessionIds.value.length === 0 ||
+    sourceSessionIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH ||
+    sourceTaskIds.value.length === 0 ||
+    sourceTaskIds.value.length > SKILL_CANDIDATE_ARRAY_MAX_LENGTH
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include bounded skip evidence metadata.`
+      )
+    );
+  }
+
+  const idValidation = validateSkillCandidateSourceIdentifiers(type, {
+    sourceEventIds: sourceEventIds.value,
+    sourceSessionIds: sourceSessionIds.value,
+    sourceSkillSignalIds: consideredSignalIds.value,
+    sourceTaskIds: sourceTaskIds.value
+  });
+
+  if (!idValidation.ok) {
+    return err(idValidation.error);
+  }
+
+  const secretCheckedFields = [
+    ["reason", reason.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ...consideredSignalIds.value.map(
+      (signalId) => ["consideredSignalIds", signalId] as const
+    ),
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    ),
+    ...sourceSessionIds.value.map(
+      (sessionId) => ["sourceSessionIds", sessionId] as const
+    ),
+    ...sourceTaskIds.value.map((taskId) => ["sourceTaskIds", taskId] as const)
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    const safeText = validateSkillAuditSafeText(type, field, value);
+
+    if (!safeText.ok) {
+      return err(safeText.error);
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    consideredSignalIds: consideredSignalIds.value,
+    reason: reason.value,
+    sourceEventIds: sourceEventIds.value,
+    sourceSessionIds: sourceSessionIds.value,
+    sourceTaskIds: sourceTaskIds.value,
+    status: status.value,
+    summary: summary.value
+  });
+}
+
+function validateSkillCandidateSourceIdentifiers(
+  type:
+    | "skill.candidate.created"
+    | "skill.candidate.reviewed"
+    | "skill.candidate.skipped",
+  input: {
+    sourceEventIds: readonly string[];
+    sourceSessionIds: readonly string[];
+    sourceSkillSignalIds: readonly string[];
+    sourceTaskIds: readonly string[];
+  }
+): Result<void, SpriteError> {
+  if (
+    input.sourceEventIds.some(
+      (eventId) => !SKILL_CANDIDATE_EVENT_ID_PATTERN.test(eventId)
+    ) ||
+    input.sourceSessionIds.some(
+      (sessionId) => !SKILL_CANDIDATE_SESSION_ID_PATTERN.test(sessionId)
+    ) ||
+    input.sourceSkillSignalIds.some(
+      (signalId) => !SKILL_CANDIDATE_SIGNAL_ID_PATTERN.test(signalId)
+    ) ||
+    input.sourceTaskIds.some(
+      (taskId) => !SKILL_CANDIDATE_TASK_ID_PATTERN.test(taskId)
+    )
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' source identifiers must use runtime prefixes.`
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
+}
+
 function validateSkillAuditSafeText(
-  type: "skill.signal.recorded" | "skill.usage.recorded",
+  type:
+    | "skill.candidate.created"
+    | "skill.candidate.reviewed"
+    | "skill.candidate.skipped"
+    | "skill.signal.recorded"
+    | "skill.usage.recorded",
   field: string,
   value: string
 ): Result<void, SpriteError> {
@@ -4878,6 +5730,23 @@ function findForbiddenSkillSignalPayloadField(
   return findForbiddenPayloadFieldFromSet(
     value,
     FORBIDDEN_SKILL_SIGNAL_PAYLOAD_FIELDS,
+    new WeakSet()
+  );
+}
+
+function findForbiddenSkillCandidatePayloadField(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  const policyField = findForbiddenPolicyPayloadField(value, seen);
+
+  if (policyField !== null) {
+    return policyField;
+  }
+
+  return findForbiddenPayloadFieldFromSet(
+    value,
+    FORBIDDEN_SKILL_CANDIDATE_PAYLOAD_FIELDS,
     new WeakSet()
   );
 }

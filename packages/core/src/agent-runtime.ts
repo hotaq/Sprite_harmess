@@ -73,8 +73,22 @@ import {
   type Result
 } from "@sprite/shared";
 import {
+  generateSkillCandidatesFromSignals,
+  reviewSkillCandidate as applySkillCandidateReview,
+  summarizeSkillCandidateForReview,
+  summarizeSkillCandidateForEvent,
+  summarizeSkillCandidateSkippedForEvent,
+  type PromotedSkillManifest,
+  type SkillCandidate,
+  type SkillCandidateReviewRequest,
+  type SkillCandidateReviewView,
+  type SkillCandidateSourceSignal
+} from "@sprite/skills";
+export type { SkillCandidateReviewView } from "@sprite/skills";
+import {
   SESSION_STATE_SCHEMA_VERSION,
   createLocalMemoryStore,
+  createLocalSkillCandidateStore,
   createLocalSessionStore,
   createSessionId,
   readLearningReviewLessonCandidates,
@@ -84,7 +98,8 @@ import {
   type SessionStateSnapshot,
   type StoredLearningReviewLessonCandidate,
   type StoredMemoryCandidate,
-  type StoredMemoryEntry
+  type StoredMemoryEntry,
+  type StoredSkillCandidate
 } from "@sprite/storage";
 import {
   createToolRegistry,
@@ -95,6 +110,15 @@ import {
   type ToolName
 } from "@sprite/tools";
 import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import path from "node:path";
 import {
   containsSecretLikeValue,
@@ -245,6 +269,18 @@ export interface RuntimeMemoryCandidateReviewResult {
   candidate: MemoryCandidate;
   entry: MemoryEntry | null;
   view: MemoryCandidateReviewView;
+}
+
+export type RuntimeSkillCandidateReviewRequest =
+  SkillCandidateReviewRequest & {
+    candidateId: string;
+  };
+
+export interface RuntimeSkillCandidateReviewResult {
+  candidate: SkillCandidate;
+  events: RuntimeEventRecord<"skill.candidate.reviewed">[];
+  promotedSkillReference?: string;
+  view: SkillCandidateReviewView;
 }
 
 export interface RuntimeMemoryInfluenceRequest {
@@ -437,6 +473,7 @@ export class AgentRuntime {
   private readonly pendingApprovals = new Map<string, PendingApprovalRecord>();
   private readonly restoredPendingApprovalCounts = new Map<string, number>();
   private readonly memoryStore = createLocalMemoryStore();
+  private readonly skillCandidateStore = createLocalSkillCandidateStore();
   private readonly sessionStore = createLocalSessionStore();
   private readonly toolRegistry = createToolRegistry();
   private sessionCreatedAt: string | null = null;
@@ -1175,7 +1212,10 @@ export class AgentRuntime {
       },
       "retrospective.review.created",
       {
-        artifactPath: path.relative(task.request.cwd, written.value.artifactPath),
+        artifactPath: path.relative(
+          task.request.cwd,
+          written.value.artifactPath
+        ),
         commandCount: eventSummary.commandCount,
         evidenceEventIds: eventSummary.evidenceEventIds,
         fileCount: eventSummary.fileCount,
@@ -2217,6 +2257,130 @@ export class AgentRuntime {
     });
   }
 
+  listSkillCandidates(): Result<SkillCandidateReviewView[]> {
+    const cwd = this.getRuntimeCwd();
+
+    if (!cwd.ok) {
+      return err(cwd.error);
+    }
+
+    const candidates = this.skillCandidateStore.listCandidates(cwd.value);
+
+    if (!candidates.ok) {
+      return err(candidates.error);
+    }
+
+    return ok(
+      candidates.value.map((candidate) =>
+        summarizeSkillCandidateForReview(toSkillCandidate(candidate))
+      )
+    );
+  }
+
+  openSkillCandidate(candidateId: string): Result<SkillCandidateReviewView> {
+    const cwd = this.getRuntimeCwd();
+
+    if (!cwd.ok) {
+      return err(cwd.error);
+    }
+
+    const candidate = this.skillCandidateStore.readCandidate(
+      cwd.value,
+      candidateId
+    );
+
+    if (!candidate.ok) {
+      return err(candidate.error);
+    }
+
+    return ok(summarizeSkillCandidateForReview(toSkillCandidate(candidate.value)));
+  }
+
+  reviewSkillCandidate(
+    request: RuntimeSkillCandidateReviewRequest
+  ): Result<RuntimeSkillCandidateReviewResult> {
+    const activeTask = this.getActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const candidateRead = this.skillCandidateStore.readCandidate(
+      activeTask.value.request.cwd,
+      request.candidateId
+    );
+
+    if (!candidateRead.ok) {
+      return err(candidateRead.error);
+    }
+
+    const reviewed = applySkillCandidateReview(
+      toSkillCandidate(candidateRead.value),
+      request
+    );
+
+    if (!reviewed.ok) {
+      return err(reviewed.error);
+    }
+
+    const reviewEvent = this.createSkillCandidateReviewedEvent(
+      activeTask.value,
+      reviewed.value.candidate,
+      request.action
+    );
+    const validatedEvent = validateRuntimeEvent(reviewEvent);
+
+    if (!validatedEvent.ok) {
+      return err(validatedEvent.error);
+    }
+
+    const reviewedEvent =
+      validatedEvent.value as RuntimeEventRecord<"skill.candidate.reviewed">;
+    let promotedSkillPath: string | null = null;
+
+    if (reviewed.value.promotedSkillManifest !== undefined) {
+      const promotedSkill = writePromotedSkillManifest(
+        activeTask.value.request.cwd,
+        reviewed.value.promotedSkillManifest
+      );
+
+      if (!promotedSkill.ok) {
+        return err(promotedSkill.error);
+      }
+
+      promotedSkillPath = promotedSkill.value.path;
+    }
+
+    const candidateUpdated = this.skillCandidateStore.updateCandidate(
+      activeTask.value.request.cwd,
+      reviewed.value.candidate
+    );
+
+    if (!candidateUpdated.ok) {
+      if (promotedSkillPath !== null) {
+        removeSkillCandidateArtifacts([promotedSkillPath]);
+      }
+
+      return err(candidateUpdated.error);
+    }
+
+    const emitted = this.emitNewEvents([reviewedEvent]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return ok({
+      candidate: reviewed.value.candidate,
+      events: [reviewedEvent],
+      ...(reviewed.value.promotedSkillReference === undefined
+        ? {}
+        : { promotedSkillReference: reviewed.value.promotedSkillReference }),
+      view: reviewed.value.view
+    });
+  }
+
   recordMemoryInfluence(
     request: RuntimeMemoryInfluenceRequest
   ): Result<MemoryInfluenceRecord> {
@@ -2238,7 +2402,9 @@ export class AgentRuntime {
       evidenceEventIds,
       ...(request.influenceSummary === undefined
         ? {}
-        : { influenceSummary: createRedactedPreview(request.influenceSummary) }),
+        : {
+            influenceSummary: createRedactedPreview(request.influenceSummary)
+          }),
       preview: createRedactedPreview(request.preview),
       ...(request.reason === undefined
         ? {}
@@ -3416,9 +3582,7 @@ export class AgentRuntime {
     record: MemoryInfluenceRecord
   ): RuntimeEventRecord<"memory.influence.recorded"> {
     const summary =
-      record.status === "used"
-        ? record.influenceSummary
-        : record.reason;
+      record.status === "used" ? record.influenceSummary : record.reason;
 
     return createRuntimeEventRecord(
       {
@@ -3485,6 +3649,48 @@ export class AgentRuntime {
           : { sourceTaskId: candidate.sourceTaskId }),
         status: candidate.lifecycleStatus,
         summary: `${candidate.type} memory candidate ${candidate.lifecycleStatus}.`
+      }
+    );
+  }
+
+  private createSkillCandidateReviewedEvent(
+    task: PlannedExecutionFlow,
+    candidate: SkillCandidate,
+    action: RuntimeSkillCandidateReviewRequest["action"]
+  ): RuntimeEventRecord<"skill.candidate.reviewed"> {
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "skill.candidate.reviewed",
+      {
+        action,
+        candidateArtifactPath: toSkillCandidateArtifactEventPath(candidate.id),
+        candidateId: candidate.id,
+        confidence: candidate.confidence,
+        lifecycleStatus: candidate.lifecycleStatus,
+        ...(candidate.promotedSkillReference === undefined
+          ? {}
+          : { promotedSkillReference: candidate.promotedSkillReference }),
+        ...(candidate.promotionTarget === undefined
+          ? {}
+          : { promotionTarget: candidate.promotionTarget }),
+        ...(candidate.reviewReason === undefined
+          ? {}
+          : { reason: candidate.reviewReason }),
+        ...(candidate.reviewedBy === undefined
+          ? {}
+          : { reviewedBy: candidate.reviewedBy }),
+        sourceEventIds: [...candidate.sourceEventIds],
+        sourceSessionIds: [...candidate.sourceSessionIds],
+        sourceSkillSignalIds: [...candidate.sourceSkillSignalIds],
+        sourceTaskIds: [...candidate.sourceTaskIds],
+        status: candidate.lifecycleStatus,
+        summary: `Skill candidate ${candidate.lifecycleStatus}.`
       }
     );
   }
@@ -4295,9 +4501,9 @@ export class AgentRuntime {
           outcome: signal.outcome ?? "successful_workflow",
           signalStatus: signal.status ?? "signal_only",
           skillSignalId: signal.id,
-          sourceCorrelationId: signal.sourceCorrelationId ?? task.correlationId,
-          sourceSessionId: signal.sourceSessionId ?? task.sessionId,
-          sourceTaskId: signal.sourceTaskId ?? task.taskId,
+          sourceCorrelationId: signal.sourceCorrelationId as string,
+          sourceSessionId: signal.sourceSessionId as string,
+          sourceTaskId: signal.sourceTaskId as string,
           status: "recorded",
           summary: createSkillSignalRecordedSummary(signal),
           toolSequence: signal.toolSequence ?? signal.evidenceEventIds,
@@ -4338,19 +4544,149 @@ export class AgentRuntime {
       return err(emitted.error);
     }
 
-    const nextTask = this.withUpdatedWorkingMemory({
+    const reviewedTask = this.withUpdatedWorkingMemory({
       ...task,
       events: this.eventBus.getHistory(task.taskId)
     });
-    const persisted = this.persistSessionSnapshot(nextTask);
+    const persisted = this.persistSessionSnapshot(reviewedTask);
 
     if (!persisted.ok) {
       return err(persisted.error);
     }
 
-    this.activeTask = nextTask;
+    this.activeTask = reviewedTask;
 
-    return ok(nextTask);
+    return ok(
+      this.createSkillCandidateSideChannel(
+        reviewedTask,
+        review.value.skillSignals,
+        learningReviewArtifactPath
+      )
+    );
+  }
+
+  private createSkillCandidateSideChannel(
+    task: PlannedExecutionFlow,
+    signals: readonly LearningReviewSkillSignal[],
+    learningReviewArtifactPath: string
+  ): PlannedExecutionFlow {
+    const skillCandidateSignals = toSkillCandidateSourceSignals(signals);
+
+    if (skillCandidateSignals.length === 0) {
+      return task;
+    }
+
+    const existingSkillCandidates = this.skillCandidateStore.listCandidates(
+      task.request.cwd
+    );
+
+    if (!existingSkillCandidates.ok) {
+      return task;
+    }
+
+    const generatedSkillCandidates = generateSkillCandidatesFromSignals({
+      correlationId: task.correlationId,
+      createdAt: this.now(),
+      existingCandidateIds: existingSkillCandidates.value.map(
+        (candidate) => candidate.id
+      ),
+      learningReviewArtifactPath,
+      sessionId: task.sessionId,
+      signals: skillCandidateSignals,
+      taskId: task.taskId
+    });
+
+    if (!generatedSkillCandidates.ok) {
+      return task;
+    }
+
+    const skillCandidateEvents: RuntimeEventRecord[] = [];
+    const writtenCandidatePaths: string[] = [];
+
+    for (const candidate of generatedSkillCandidates.value.candidates) {
+      const candidateEvent = createRuntimeEventRecord(
+        {
+          sessionId: task.sessionId,
+          taskId: task.taskId,
+          correlationId: task.correlationId,
+          eventId: this.nextEventId(),
+          createdAt: this.now()
+        },
+        "skill.candidate.created",
+        summarizeSkillCandidateForEvent(
+          candidate,
+          toSkillCandidateArtifactEventPath(candidate.id)
+        )
+      );
+      const validation = validateRuntimeEvent(candidateEvent);
+
+      if (!validation.ok) {
+        continue;
+      }
+
+      const writtenCandidate = this.skillCandidateStore.writeCandidate(
+        task.request.cwd,
+        candidate
+      );
+
+      if (!writtenCandidate.ok) {
+        continue;
+      }
+
+      writtenCandidatePaths.push(writtenCandidate.value.path);
+      skillCandidateEvents.push(validation.value);
+    }
+
+    const skillCandidateSkippedEvents = generatedSkillCandidates.value.skipped
+      .filter(
+        (skipped) =>
+          skipped.consideredSignalIds.length > 0 &&
+          skipped.sourceEventIds.length > 0 &&
+          skipped.sourceSessionIds.length > 0 &&
+          skipped.sourceTaskIds.length > 0
+      )
+      .flatMap((skipped): RuntimeEventRecord[] => {
+        const skippedEvent = createRuntimeEventRecord(
+          {
+            sessionId: task.sessionId,
+            taskId: task.taskId,
+            correlationId: task.correlationId,
+            eventId: this.nextEventId(),
+            createdAt: this.now()
+          },
+          "skill.candidate.skipped",
+          summarizeSkillCandidateSkippedForEvent(skipped)
+        );
+        const validation = validateRuntimeEvent(skippedEvent);
+
+        return validation.ok ? [validation.value] : [];
+      });
+
+    const candidateEvents = [
+      ...skillCandidateEvents,
+      ...skillCandidateSkippedEvents
+    ];
+
+    if (candidateEvents.length === 0) {
+      return task;
+    }
+
+    const emitted = this.emitNewEvents(candidateEvents);
+
+    if (!emitted.ok) {
+      removeSkillCandidateArtifacts(writtenCandidatePaths);
+      return task;
+    }
+
+    const nextTask = this.withUpdatedWorkingMemory({
+      ...task,
+      events: this.eventBus.getHistory(task.taskId)
+    });
+
+    this.activeTask = nextTask;
+    this.persistSessionSnapshot(nextTask);
+
+    return nextTask;
   }
 
   private validateRecoveryActionRequest(
@@ -5322,7 +5658,9 @@ function collectLearningReviewValidationResults(
           ? {}
           : { command: event.payload.command }),
         eventId: event.eventId,
-        ...(event.payload.name === undefined ? {} : { name: event.payload.name }),
+        ...(event.payload.name === undefined
+          ? {}
+          : { name: event.payload.name }),
         status: event.payload.status
       }
     ];
@@ -5364,6 +5702,222 @@ function createSkillSignalRecordedSummary(
   );
 }
 
+function toSkillCandidateSourceSignals(
+  signals: readonly LearningReviewSkillSignal[]
+): SkillCandidateSourceSignal[] {
+  return signals.flatMap((signal): SkillCandidateSourceSignal[] => {
+    if (
+      signal.sourceCorrelationId === undefined ||
+      signal.sourceSessionId === undefined ||
+      signal.sourceTaskId === undefined
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        confidence: signal.confidence ?? "low",
+        evidenceEventIds: signal.evidenceEventIds,
+        id: signal.id,
+        knownRisks: signal.knownRisks ?? [
+          "This is signal-only evidence and must not be promoted automatically."
+        ],
+        outcome: signal.outcome ?? "successful_workflow",
+        ...(signal.signal === undefined ? {} : { signal: signal.signal }),
+        sourceCorrelationId: signal.sourceCorrelationId,
+        sourceSessionId: signal.sourceSessionId,
+        sourceTaskId: signal.sourceTaskId,
+        status: signal.status ?? "signal_only",
+        toolSequence: signal.toolSequence ?? signal.evidenceEventIds,
+        triggerReason: signal.triggerReason,
+        workflowSummary:
+          signal.workflowSummary ?? signal.signal ?? signal.triggerReason
+      }
+    ];
+  });
+}
+
+function toSkillCandidateArtifactEventPath(candidateId: string): string {
+  return `.sprite/skill-candidates/${candidateId}.json`;
+}
+
+function toSkillCandidate(candidate: StoredSkillCandidate): SkillCandidate {
+  return candidate as unknown as SkillCandidate;
+}
+
+function writePromotedSkillManifest(
+  cwd: string,
+  manifest: PromotedSkillManifest
+): Result<{ path: string }> {
+  if (manifest.source !== "project" || !manifest.relativePath.endsWith("SKILL.md")) {
+    return err(
+      new SpriteError(
+        "SKILL_CANDIDATE_PROMOTION_INVALID",
+        "Skill candidate promotion currently supports only project manual skill manifests."
+      )
+    );
+  }
+
+  const registryRoot = path.resolve(cwd, ".sprite", "skills");
+  const manifestPath = path.resolve(registryRoot, manifest.relativePath);
+  const manifestDirectory = path.dirname(manifestPath);
+
+  if (!isInsidePath(registryRoot, manifestPath)) {
+    return err(
+      new SpriteError(
+        "SKILL_CANDIDATE_PROMOTION_PATH_ESCAPE",
+        "Promoted skill manifest must remain inside the project manual skill registry."
+      )
+    );
+  }
+
+  const registryRootReady = ensureDirectoryInsideRoot(
+    path.resolve(cwd),
+    registryRoot,
+    "SKILL_CANDIDATE_PROMOTION_PATH_ESCAPE",
+    "Promoted skill registry must remain inside the project."
+  );
+
+  if (!registryRootReady.ok) {
+    return err(registryRootReady.error);
+  }
+
+  const manifestDirectoryReady = ensureDirectoryInsideRoot(
+    registryRoot,
+    manifestDirectory,
+    "SKILL_CANDIDATE_PROMOTION_PATH_ESCAPE",
+    "Promoted skill manifest directory must remain inside the project manual skill registry."
+  );
+
+  if (!manifestDirectoryReady.ok) {
+    return err(manifestDirectoryReady.error);
+  }
+
+  try {
+    const registryRealPath = realpathSync(registryRoot);
+    const directoryRealPath = realpathSync(manifestDirectory);
+
+    if (!isInsidePath(registryRealPath, directoryRealPath)) {
+      return err(
+        new SpriteError(
+          "SKILL_CANDIDATE_PROMOTION_PATH_ESCAPE",
+          "Promoted skill manifest directory resolved outside the project manual skill registry."
+        )
+      );
+    }
+  } catch (error) {
+    return err(
+      new SpriteError(
+        "SKILL_CANDIDATE_PROMOTION_WRITE_FAILED",
+        error instanceof Error ? error.message : String(error)
+      )
+    );
+  }
+
+  if (existsSync(manifestPath)) {
+    return err(
+      new SpriteError(
+        "SKILL_CANDIDATE_PROMOTION_CONFLICT",
+        "Promoted skill manifest already exists; choose a distinct candidate name."
+      )
+    );
+  }
+
+  const tempPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`;
+
+  try {
+    writeFileSync(tempPath, manifest.content);
+    renameSync(tempPath, manifestPath);
+  } catch (error) {
+    return err(
+      new SpriteError(
+        "SKILL_CANDIDATE_PROMOTION_WRITE_FAILED",
+        error instanceof Error ? error.message : String(error)
+      )
+    );
+  }
+
+  return ok({ path: manifestPath });
+}
+
+function ensureDirectoryInsideRoot(
+  root: string,
+  directory: string,
+  errorCode: string,
+  errorMessage: string
+): Result<void> {
+  const rootPath = path.resolve(root);
+  const directoryPath = path.resolve(directory);
+
+  if (!isInsidePath(rootPath, directoryPath)) {
+    return err(new SpriteError(errorCode, errorMessage));
+  }
+
+  if (!existsSync(rootPath)) {
+    try {
+      mkdirSync(rootPath, { recursive: true });
+    } catch (error) {
+      return err(
+        new SpriteError(
+          errorCode,
+          error instanceof Error ? error.message : String(error)
+        )
+      );
+    }
+  }
+
+  const relativePath = path.relative(rootPath, directoryPath);
+  const segments =
+    relativePath.length === 0 ? [] : relativePath.split(path.sep).filter(Boolean);
+  let currentPath = rootPath;
+
+  try {
+    for (const segment of segments) {
+      currentPath = path.join(currentPath, segment);
+
+      if (!existsSync(currentPath)) {
+        mkdirSync(currentPath);
+        continue;
+      }
+
+      const stats = lstatSync(currentPath);
+
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        return err(new SpriteError(errorCode, errorMessage));
+      }
+    }
+  } catch (error) {
+    return err(
+      new SpriteError(
+        errorCode,
+        error instanceof Error ? error.message : String(error)
+      )
+    );
+  }
+
+  return ok(undefined);
+}
+
+function isInsidePath(root: string, candidate: string): boolean {
+  const relativePath = path.relative(root, candidate);
+
+  return (
+    relativePath.length === 0 ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+  );
+}
+
+function removeSkillCandidateArtifacts(artifactPaths: readonly string[]): void {
+  for (const artifactPath of artifactPaths) {
+    try {
+      unlinkSync(artifactPath);
+    } catch {
+      // Candidate generation is best-effort; cleanup failures must not block
+      // the already-durable learning review/task completion path.
+    }
+  }
+}
+
 function collectLearningReviewSkillSignals(
   events: readonly RuntimeEventRecord[]
 ): LearningReviewSkillSignal[] {
@@ -5394,7 +5948,10 @@ function collectLearningReviewSkillSignals(
   };
 
   for (const event of events) {
-    if (event.type === "validation.completed" && event.payload.status === "passed") {
+    if (
+      event.type === "validation.completed" &&
+      event.payload.status === "passed"
+    ) {
       const workflowSummary = `Validation workflow succeeded: ${event.payload.name ?? event.payload.command ?? event.payload.validationId}.`;
 
       upsertSignal({
@@ -5407,6 +5964,9 @@ function collectLearningReviewSkillSignals(
         ],
         outcome: "successful_workflow",
         signal: workflowSummary,
+        sourceCorrelationId: event.correlationId,
+        sourceSessionId: event.sessionId,
+        sourceTaskId: event.taskId,
         status: "signal_only",
         toolSequence: [
           event.payload.command ??
@@ -5434,6 +5994,9 @@ function collectLearningReviewSkillSignals(
         ],
         outcome: "recovered_workflow",
         signal: workflowSummary,
+        sourceCorrelationId: event.correlationId,
+        sourceSessionId: event.sessionId,
+        sourceTaskId: event.taskId,
         status: "signal_only",
         toolSequence: [
           `recovery:${event.payload.trigger}->${event.payload.decision}`
@@ -5446,7 +6009,8 @@ function collectLearningReviewSkillSignals(
     }
 
     if (event.type === "task.steering.received") {
-      const workflowSummary = "User steering corrected or clarified task execution.";
+      const workflowSummary =
+        "User steering corrected or clarified task execution.";
 
       upsertSignal({
         confidence: "low",
@@ -5458,6 +6022,9 @@ function collectLearningReviewSkillSignals(
         ],
         outcome: "corrected_workflow",
         signal: workflowSummary,
+        sourceCorrelationId: event.correlationId,
+        sourceSessionId: event.sessionId,
+        sourceTaskId: event.taskId,
         status: "signal_only",
         toolSequence: [`event:${event.eventId}`],
         triggerReason: createRedactedPreview(event.payload.note, 320),
@@ -5502,6 +6069,9 @@ function collectLearningReviewSkillSignals(
         ],
         outcome,
         signal: workflowSummary,
+        sourceCorrelationId: event.correlationId,
+        sourceSessionId: event.sessionId,
+        sourceTaskId: event.taskId,
         status: "signal_only",
         toolSequence: [
           `skill:${event.payload.name}:${event.payload.status}:${event.payload.trigger}`
@@ -5515,10 +6085,7 @@ function collectLearningReviewSkillSignals(
   return [...signals.values()];
 }
 
-function getPayloadString(
-  payload: object,
-  key: string
-): string | undefined {
+function getPayloadString(payload: object, key: string): string | undefined {
   const value = (payload as Record<string, unknown>)[key];
 
   return typeof value === "string" && value.trim().length > 0
@@ -5574,7 +6141,9 @@ function toLessonInfluenceSourceInput(
   };
 }
 
-function toTaskContextMemoryType(type: MemoryType | "lesson" | undefined): MemoryType {
+function toTaskContextMemoryType(
+  type: MemoryType | "lesson" | undefined
+): MemoryType {
   return type !== undefined && isMemoryType(type) ? type : "semantic";
 }
 

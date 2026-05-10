@@ -538,6 +538,236 @@ describe("runtime event contract", () => {
     }
   });
 
+  it("validates skill candidate created runtime events without activation authority", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_skill_candidate_created",
+        sessionId: "ses_learning",
+        taskId: "task_learning",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-10T14:45:00.000Z"
+      },
+      "skill.candidate.created",
+      {
+        candidateArtifactPath:
+          ".sprite/skill-candidates/skillcand_validation_review.json",
+        candidateId: "skillcand_validation_review",
+        confidence: "medium",
+        intendedActivationSummary:
+          "Use when validation review signals repeat with the same workflow.",
+        knownRisks: [
+          "Candidate-only evidence; human review is required before activation."
+        ],
+        lifecycleStatus: "proposed",
+        name: "Validation Review Workflow",
+        requiredTools: ["npm"],
+        sourceEventIds: ["evt_validation_one", "evt_validation_two"],
+        sourceSessionIds: ["ses_learning"],
+        sourceSkillSignalIds: [
+          "skillsig_validation_one",
+          "skillsig_validation_two"
+        ],
+        sourceTaskIds: ["task_learning"],
+        status: "created",
+        summary: "Skill candidate proposed from repeated validation evidence.",
+        triggerReason:
+          "Repeated compatible skill signals crossed the threshold.",
+        workflowStepCount: 2
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+
+    const rawPath = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_raw_path",
+      payload: {
+        ...event.payload,
+        summary: "Candidate learned from /Users/chinnaphat/private/SKILL.md."
+      }
+    });
+    const promotionField = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_promotion",
+      payload: {
+        ...event.payload,
+        rawSkillContent: "unsafe active skill body"
+      }
+    });
+    const activePath = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_active_path",
+      payload: {
+        ...event.payload,
+        candidateArtifactPath: ".sprite/skills/review/SKILL.md"
+      }
+    });
+    const emptyEvidence = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_empty_evidence",
+      payload: {
+        ...event.payload,
+        sourceEventIds: []
+      }
+    });
+    const highConfidence = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_high_confidence",
+      payload: {
+        ...event.payload,
+        confidence: "high"
+      }
+    });
+    const nonProposedCreated = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_created_draft",
+      payload: {
+        ...event.payload,
+        lifecycleStatus: "draft"
+      }
+    });
+
+    expect(rawPath.ok).toBe(false);
+    expect(promotionField.ok).toBe(false);
+    expect(activePath.ok).toBe(false);
+    expect(emptyEvidence.ok).toBe(false);
+    expect(highConfidence.ok).toBe(false);
+    expect(nonProposedCreated.ok).toBe(false);
+  });
+
+  it("validates skill candidate skipped runtime events", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_skill_candidate_skipped",
+        sessionId: "ses_learning",
+        taskId: "task_learning",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-10T14:46:00.000Z"
+      },
+      "skill.candidate.skipped",
+      {
+        consideredSignalIds: ["skillsig_validation_one"],
+        reason: "insufficient_evidence",
+        sourceEventIds: ["evt_validation_one"],
+        sourceSessionIds: ["ses_learning"],
+        sourceTaskIds: ["task_learning"],
+        status: "skipped",
+        summary:
+          "Skill candidate skipped because only one weak signal was available."
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+
+    expect(
+      validateRuntimeEvent({
+        ...event,
+        eventId: "evt_skill_candidate_skipped_secret",
+        payload: {
+          ...event.payload,
+          summary: "OPENAI_API_KEY=sk-test-secret"
+        }
+      }).ok
+    ).toBe(false);
+    expect(
+      validateRuntimeEvent({
+        ...event,
+        eventId: "evt_skill_candidate_skipped_bad_reason",
+        payload: {
+          ...event.payload,
+          reason: "review_later"
+        }
+      }).ok
+    ).toBe(false);
+  });
+
+  it("validates skill candidate reviewed runtime events with fail-closed promotion metadata", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_skill_candidate_reviewed",
+        sessionId: "ses_learning",
+        taskId: "task_learning",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-10T15:30:00.000Z"
+      },
+      "skill.candidate.reviewed",
+      {
+        action: "promote",
+        candidateArtifactPath:
+          ".sprite/skill-candidates/skillcand_validation_review.json",
+        candidateId: "skillcand_validation_review",
+        confidence: "medium",
+        lifecycleStatus: "promoted",
+        promotedSkillReference: "project:Validation Review Workflow",
+        promotionTarget: "project",
+        reason: "Human review accepted a safe reusable validation workflow.",
+        reviewedBy: "human",
+        sourceEventIds: ["evt_validation_one", "evt_validation_two"],
+        sourceSessionIds: ["ses_learning"],
+        sourceSkillSignalIds: [
+          "skillsig_validation_one",
+          "skillsig_validation_two"
+        ],
+        sourceTaskIds: ["task_learning"],
+        status: "promoted",
+        summary: "Skill candidate promoted after explicit human review."
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+
+    const unsafeReason = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_reviewed_unsafe_reason",
+      payload: {
+        ...event.payload,
+        reason: "Promoted from /Users/chinnaphat/private/SKILL.md."
+      }
+    });
+    const missingPromotion = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_reviewed_missing_reference",
+      payload: {
+        ...event.payload,
+        promotedSkillReference: undefined
+      }
+    });
+    const draftWithPromotion = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_reviewed_draft_with_promotion",
+      payload: {
+        ...event.payload,
+        action: "draft",
+        lifecycleStatus: "draft",
+        status: "draft"
+      }
+    });
+    const rawField = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_reviewed_raw_field",
+      payload: {
+        ...event.payload,
+        rawSkillContent: "unsafe active skill body"
+      }
+    });
+    const badLifecycle = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_candidate_reviewed_bad_lifecycle",
+      payload: {
+        ...event.payload,
+        action: "reject",
+        lifecycleStatus: "promoted",
+        status: "promoted"
+      }
+    });
+
+    expect(unsafeReason.ok).toBe(false);
+    expect(missingPromotion.ok).toBe(false);
+    expect(draftWithPromotion.ok).toBe(false);
+    expect(rawField.ok).toBe(false);
+    expect(badLifecycle.ok).toBe(false);
+  });
+
   it("validates retrospective review created runtime events", () => {
     const event = createRuntimeEventRecord(
       {
@@ -644,11 +874,16 @@ describe("runtime event contract", () => {
       summary: "Memory influence recorded."
     };
 
-    const used = createRuntimeEventRecord(context, "memory.influence.recorded", {
-      ...basePayload,
-      influenceSummary: "The plan chose rtk validation because memory said so.",
-      status: "used"
-    });
+    const used = createRuntimeEventRecord(
+      context,
+      "memory.influence.recorded",
+      {
+        ...basePayload,
+        influenceSummary:
+          "The plan chose rtk validation because memory said so.",
+        status: "used"
+      }
+    );
     const ignored = createRuntimeEventRecord(
       {
         ...context,
