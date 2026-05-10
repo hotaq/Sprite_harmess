@@ -53,6 +53,13 @@ export const PROCEDURAL_LEARNING_OUTPUT_STATUSES = ["candidate"] as const;
 export const PROCEDURAL_LEARNING_PROMOTION_STATUSES = [
   "not_promoted"
 ] as const;
+export const SKILL_SIGNAL_OUTCOMES = [
+  "successful_workflow",
+  "corrected_workflow",
+  "recovered_workflow",
+  "contradicted_guidance"
+] as const;
+export const SKILL_SIGNAL_LIFECYCLE_STATUSES = ["signal_only"] as const;
 export const MEMORY_INFLUENCE_SCHEMA_VERSION = 1 as const;
 export const RETROSPECTIVE_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MEMORY_INFLUENCE_STATUSES = [
@@ -82,6 +89,14 @@ export const RETROSPECTIVE_CONTEXT_FIELDS = [
 ] as const;
 const DEFAULT_PREVIEW_LIMIT = 160;
 const MAX_MEMORY_CANDIDATE_CONTENT_LENGTH = 2_000;
+const SKILL_SIGNAL_SAFE_TEXT_MAX_LENGTH = 320;
+const SKILL_SIGNAL_ARRAY_MAX_LENGTH = 50;
+const RAW_FILESYSTEM_PATH_PATTERN =
+  /(?:^|[\s("'`])(?:~\/|\/(?:Applications|Users|Volumes|home|opt|private|tmp|var)\/|[A-Za-z]:\\)[^\s"'`)]+/;
+const DEFAULT_SKILL_SIGNAL_KNOWN_RISKS = [
+  "This is signal-only evidence and must not be promoted automatically.",
+  "Review supporting task evidence and rerun validation before candidate generation."
+] as const;
 
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 export type DurableMemoryType = (typeof DURABLE_MEMORY_TYPES)[number];
@@ -100,6 +115,9 @@ export type ProceduralLearningOutputStatus =
   (typeof PROCEDURAL_LEARNING_OUTPUT_STATUSES)[number];
 export type ProceduralLearningPromotionStatus =
   (typeof PROCEDURAL_LEARNING_PROMOTION_STATUSES)[number];
+export type SkillSignalOutcome = (typeof SKILL_SIGNAL_OUTCOMES)[number];
+export type SkillSignalLifecycleStatus =
+  (typeof SKILL_SIGNAL_LIFECYCLE_STATUSES)[number];
 export type MemoryInfluenceStatus =
   (typeof MEMORY_INFLUENCE_STATUSES)[number];
 export type MemoryInfluenceSourceType =
@@ -216,10 +234,19 @@ export interface LearningReviewMemoryCandidateReference {
 }
 
 export interface LearningReviewSkillSignal {
+  confidence?: MemoryConfidence;
   evidenceEventIds: string[];
+  knownRisks?: string[];
   id: string;
-  signal: string;
+  outcome?: SkillSignalOutcome;
+  signal?: string;
+  sourceCorrelationId?: string;
+  sourceSessionId?: string;
+  sourceTaskId?: string;
+  status?: SkillSignalLifecycleStatus;
+  toolSequence?: string[];
   triggerReason: string;
+  workflowSummary?: string;
 }
 
 export interface ProceduralLearningOutput {
@@ -981,6 +1008,14 @@ export function generateLearningReview(
     return err(validation.error);
   }
 
+  const skillSignalInputValidation = validateLearningReviewSkillSignalInputs(
+    request.skillSignals ?? []
+  );
+
+  if (!skillSignalInputValidation.ok) {
+    return err(skillSignalInputValidation.error);
+  }
+
   const mode = request.mode ?? "compact";
   const createdAt = request.createdAt ?? new Date().toISOString();
   const events = request.events.map((event) => ({
@@ -1006,7 +1041,13 @@ export function generateLearningReview(
   );
   const skillSignals = normalizeLearningSkillSignals(
     request.skillSignals ?? [],
-    mode
+    mode,
+    {
+      commandsRun,
+      correlationId: request.correlationId,
+      sessionId: request.sessionId,
+      taskId: request.taskId
+    }
   );
   const proceduralOutputs =
     request.proceduralOutputs === undefined
@@ -1285,6 +1326,23 @@ export function validateLearningReview(
     );
   }
 
+  if (!Array.isArray(review.skillSignals)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNALS",
+        "Learning review skillSignals must be an array."
+      )
+    );
+  }
+
+  for (const signal of review.skillSignals) {
+    const validation = validateLearningReviewSkillSignal(signal);
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+  }
+
   for (const output of review.proceduralOutputs) {
     const validation = validateProceduralLearningOutput(output);
 
@@ -1324,6 +1382,335 @@ export function validateLearningReview(
   return { ok: true, value: review };
 }
 
+export function validateLearningReviewSkillSignal(
+  signal: LearningReviewSkillSignal
+): Result<LearningReviewSkillSignal, SpriteError> {
+  const sourceCorrelationId = signal.sourceCorrelationId;
+  const sourceSessionId = signal.sourceSessionId;
+  const sourceTaskId = signal.sourceTaskId;
+  const workflowSummary = signal.workflowSummary;
+  const knownRisks = signal.knownRisks;
+  const toolSequence = signal.toolSequence;
+
+  if (!/^skillsig_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(signal.id)) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+        "Learning review skill signal id must use the skillsig_ prefix."
+      )
+    );
+  }
+
+  if (
+    signal.confidence === undefined ||
+    !MEMORY_CONFIDENCE_VALUES.includes(signal.confidence) ||
+    signal.outcome === undefined ||
+    !SKILL_SIGNAL_OUTCOMES.includes(signal.outcome) ||
+    signal.status === undefined ||
+    !SKILL_SIGNAL_LIFECYCLE_STATUSES.includes(signal.status)
+  ) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+        "Learning review skill signal confidence, outcome, and status must be supported."
+      )
+    );
+  }
+
+  for (const [field, value] of [
+    ["id", signal.id],
+    ["sourceCorrelationId", sourceCorrelationId],
+    ["sourceSessionId", sourceSessionId],
+    ["sourceTaskId", sourceTaskId],
+    ["triggerReason", signal.triggerReason],
+    ["workflowSummary", workflowSummary]
+  ] as const) {
+    if (!isSafeSkillSignalText(value)) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+          `Learning review skill signal ${field} must be non-empty and safe.`
+        )
+      );
+    }
+  }
+
+  if (
+    !isNonEmptyString(sourceSessionId) ||
+    !isNonEmptyString(sourceTaskId) ||
+    !isNonEmptyString(sourceCorrelationId) ||
+    !/^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceSessionId) ||
+    !/^task_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceTaskId) ||
+    !/^corr_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceCorrelationId)
+  ) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+        "Learning review skill signal source identifiers must use runtime prefixes."
+      )
+    );
+  }
+
+  for (const [field, values] of [
+    ["evidenceEventIds", signal.evidenceEventIds],
+    ["knownRisks", knownRisks],
+    ["toolSequence", toolSequence]
+  ] as const) {
+    if (!isSafeSkillSignalStringArray(values)) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+          `Learning review skill signal ${field} must include non-empty safe values.`
+        )
+      );
+    }
+  }
+
+  if (
+    signal.signal !== undefined &&
+    !isSafeSkillSignalText(signal.signal)
+  ) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+        "Learning review skill signal summary must be safe when present."
+      )
+    );
+  }
+
+  const forbiddenField = findForbiddenLearningReviewSkillSignalField(
+    signal as unknown,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+        `Learning review skill signal must not include raw or promotion field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const unsafeString = findUnsafeLearningReviewSkillSignalString(
+    signal as unknown,
+    new WeakSet()
+  );
+
+  if (unsafeString !== null) {
+    return err(
+      new SpriteError(
+        "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+        "Learning review skill signal must not include secret-looking values, raw filesystem paths, or unbounded strings."
+      )
+    );
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...signal,
+      evidenceEventIds: uniqueStrings(signal.evidenceEventIds),
+      knownRisks: uniqueStrings(knownRisks ?? []),
+      toolSequence: uniqueStrings(toolSequence ?? [])
+    }
+  };
+}
+
+function findForbiddenLearningReviewSkillSignalField(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  const signalOnlyForbiddenFields = new Set([
+    "activationRule",
+    "candidateId",
+    "candidatePath",
+    "promotedSkillPath",
+    "rawSkillContent",
+    "routingRule",
+    "skillCandidateId"
+  ]);
+  const generalForbiddenField = findForbiddenLearningReviewField(value, seen);
+
+  if (generalForbiddenField !== null) {
+    return generalForbiddenField;
+  }
+
+  return findForbiddenFieldFromSet(
+    value,
+    signalOnlyForbiddenFields,
+    new WeakSet()
+  );
+}
+
+function validateLearningReviewSkillSignalInputs(
+  signals: readonly LearningReviewSkillSignal[]
+): Result<void, SpriteError> {
+  for (const signal of signals) {
+    if (typeof signal !== "object" || signal === null || Array.isArray(signal)) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+          "Learning review skill signals must be plain objects."
+        )
+      );
+    }
+
+    const forbiddenField = findForbiddenLearningReviewSkillSignalField(
+      signal as unknown,
+      new WeakSet()
+    );
+
+    if (forbiddenField !== null) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+          `Learning review skill signal input must not include raw or promotion field '${forbiddenField}'.`
+        )
+      );
+    }
+
+    const unsafeString = findUnsafeLearningReviewSkillSignalString(
+      signal as unknown,
+      new WeakSet()
+    );
+
+    if (unsafeString !== null) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+          "Learning review skill signal input must not include secret-looking values, raw filesystem paths, or unbounded strings."
+        )
+      );
+    }
+
+    for (const [field, value] of [
+      ["id", signal.id],
+      ["triggerReason", signal.triggerReason]
+    ] as const) {
+      if (!isSafeSkillSignalText(value)) {
+        return err(
+          new SpriteError(
+            "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+            `Learning review skill signal input ${field} must be non-empty and safe.`
+          )
+        );
+      }
+    }
+
+    for (const [field, value] of [
+      ["signal", signal.signal],
+      ["workflowSummary", signal.workflowSummary]
+    ] as const) {
+      if (value !== undefined && !isSafeSkillSignalText(value)) {
+        return err(
+          new SpriteError(
+            "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+            `Learning review skill signal input ${field} must be bounded and safe when present.`
+          )
+        );
+      }
+    }
+
+    if (!isSafeSkillSignalStringArray(signal.evidenceEventIds)) {
+      return err(
+        new SpriteError(
+          "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+          "Learning review skill signal input evidenceEventIds must include bounded safe values."
+        )
+      );
+    }
+
+    for (const [field, values] of [
+      ["knownRisks", signal.knownRisks],
+      ["toolSequence", signal.toolSequence]
+    ] as const) {
+      if (values !== undefined && !isSafeSkillSignalStringArray(values)) {
+        return err(
+          new SpriteError(
+            "LEARNING_REVIEW_INVALID_SKILL_SIGNAL",
+            `Learning review skill signal input ${field} must include bounded safe values.`
+          )
+        );
+      }
+    }
+  }
+
+  return { ok: true, value: undefined };
+}
+
+function isSafeSkillSignalText(value: unknown): value is string {
+  return (
+    isNonEmptyString(value) &&
+    value.length <= SKILL_SIGNAL_SAFE_TEXT_MAX_LENGTH &&
+    !containsSecretLikeValue(value) &&
+    !RAW_FILESYSTEM_PATH_PATTERN.test(value)
+  );
+}
+
+function isSafeSkillSignalStringArray(values: unknown): values is string[] {
+  return (
+    Array.isArray(values) &&
+    values.length > 0 &&
+    values.length <= SKILL_SIGNAL_ARRAY_MAX_LENGTH &&
+    values.every((value) => isSafeSkillSignalText(value))
+  );
+}
+
+function findUnsafeLearningReviewSkillSignalString(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  if (typeof value === "string") {
+    return containsSecretLikeValue(value) ||
+      RAW_FILESYSTEM_PATH_PATTERN.test(value) ||
+      value.length > SKILL_SIGNAL_SAFE_TEXT_MAX_LENGTH
+      ? value
+      : null;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findUnsafeLearningReviewSkillSignalString(item, seen);
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const nestedValue of Object.values(value)) {
+    const nested = findUnsafeLearningReviewSkillSignalString(
+      nestedValue,
+      seen
+    );
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 export function generateProceduralLearningOutputs(
   request: ProceduralLearningGenerationRequest
 ): Result<ProceduralLearningOutput[], SpriteError> {
@@ -1339,14 +1726,18 @@ export function generateProceduralLearningOutputs(
     const matchingCommands = commandsRun.filter((command) =>
       evidenceEventIds.includes(command.eventId)
     );
-    const toolSequence =
-      matchingCommands.length === 0
-        ? evidenceEventIds.map((eventId) => `event:${eventId}`)
-        : matchingCommands.map((command) => command.command);
+    const toolSequence = uniqueStrings(
+      signal.toolSequence === undefined || signal.toolSequence.length === 0
+        ? matchingCommands.length === 0
+          ? evidenceEventIds.map((eventId) => `event:${eventId}`)
+          : matchingCommands.map((command) => command.command)
+        : signal.toolSequence
+    );
     const failedValidationCount = validationResults.filter(
       (result) => result.status !== "passed"
     ).length;
-    const knownRisks = [
+    const knownRisks = uniqueStrings([
+      ...(signal.knownRisks ?? []),
       "Do not promote this procedural output without explicit user approval.",
       ...(failedValidationCount === 0
         ? [
@@ -1355,7 +1746,7 @@ export function generateProceduralLearningOutputs(
         : [
             "Prior validation was not fully green; inspect validation evidence before reuse."
           ])
-    ];
+    ]);
     const output: ProceduralLearningOutput = {
       createdAt,
       evidenceEventIds,
@@ -1371,7 +1762,10 @@ export function generateProceduralLearningOutputs(
       status: "candidate",
       toolSequence,
       triggerReason: createSafePreview(signal.triggerReason, 240),
-      workflowSummary: createSafePreview(signal.signal, 240)
+      workflowSummary: createSafePreview(
+        signal.workflowSummary ?? signal.signal ?? signal.triggerReason,
+        240
+      )
     };
 
     return output;
@@ -1921,6 +2315,28 @@ export function validateRetrospectiveReview(
         "Retrospective review must not include secret-looking values."
       )
     );
+  }
+
+  if (!Array.isArray(review.skillSignals)) {
+    return err(
+      new SpriteError(
+        "RETROSPECTIVE_REVIEW_INVALID_SKILL_SIGNAL",
+        "Retrospective review skillSignals must be an array."
+      )
+    );
+  }
+
+  for (const signal of review.skillSignals) {
+    const validation = validateLearningReviewSkillSignal(signal);
+
+    if (!validation.ok) {
+      return err(
+        new SpriteError(
+          "RETROSPECTIVE_REVIEW_INVALID_SKILL_SIGNAL",
+          validation.error.message
+        )
+      );
+    }
   }
 
   return { ok: true, value: review };
@@ -2676,6 +3092,13 @@ function createRetrospectiveSkillSignals(
   validationResults: readonly LearningReviewValidationResult[],
   memoryInfluences: readonly RetrospectiveMemoryInfluenceReference[]
 ): LearningReviewSkillSignal[] {
+  const toolByEventId = new Map(
+    validationResults.map((result) => [
+      result.eventId,
+      result.command ?? result.name ?? `validation:${result.eventId}`
+    ])
+  );
+
   return limitLearningItems(
     [
       ...(request.terminalStatus === "completed"
@@ -2705,10 +3128,29 @@ function createRetrospectiveSkillSignals(
     ],
     "compact"
   ).map((item, index) => ({
+    confidence: "low",
     evidenceEventIds: item.evidenceEventIds,
     id: `skillsig_retrospective_${safeRetrospectiveIdPart(request.taskId)}_${index + 1}`,
+    knownRisks: [
+      ...DEFAULT_SKILL_SIGNAL_KNOWN_RISKS,
+      "Retrospective skill signals are post-task evidence and require manual review before reuse."
+    ],
+    outcome:
+      request.terminalStatus === "completed"
+        ? "successful_workflow"
+        : "recovered_workflow",
     signal: item.summary,
-    triggerReason: item.summary
+    sourceCorrelationId: createSafePreview(request.correlationId),
+    sourceSessionId: createSafePreview(request.sessionId),
+    sourceTaskId: createSafePreview(request.taskId),
+    status: "signal_only",
+    toolSequence: uniqueStrings(
+      item.evidenceEventIds.map(
+        (eventId) => toolByEventId.get(eventId) ?? `event:${eventId}`
+      )
+    ),
+    triggerReason: item.summary,
+    workflowSummary: item.summary
   }));
 }
 
@@ -2772,19 +3214,59 @@ function normalizeLearningMemoryCandidates(
 
 function normalizeLearningSkillSignals(
   signals: readonly LearningReviewSkillSignal[],
-  mode: LearningReviewMode
+  mode: LearningReviewMode,
+  context: {
+    commandsRun: readonly LearningReviewCommandEvidence[];
+    correlationId: string;
+    sessionId: string;
+    taskId: string;
+  }
 ): LearningReviewSkillSignal[] {
-  return signals.slice(0, mode === "compact" ? 5 : 20).map((signal) => ({
-    evidenceEventIds: uniqueStrings(
+  return signals.slice(0, mode === "compact" ? 5 : 20).map((signal) => {
+    const evidenceEventIds = uniqueStrings(
       signal.evidenceEventIds.map((eventId) => createSafePreview(eventId))
-    ),
-    id: createSafePreview(signal.id),
-    signal: createSafePreview(signal.signal, mode === "compact" ? 160 : 320),
-    triggerReason: createSafePreview(
-      signal.triggerReason,
-      mode === "compact" ? 160 : 320
-    )
-  }));
+    );
+    const matchingCommands = context.commandsRun.filter((command) =>
+      evidenceEventIds.includes(command.eventId)
+    );
+    const workflowSummary =
+      signal.workflowSummary ?? signal.signal ?? signal.triggerReason;
+    const toolSequence = uniqueStrings(
+      signal.toolSequence === undefined || signal.toolSequence.length === 0
+        ? matchingCommands.length === 0
+          ? evidenceEventIds.map((eventId) => `event:${eventId}`)
+          : matchingCommands.map((command) => command.command)
+        : signal.toolSequence
+    );
+
+    return {
+      confidence: signal.confidence ?? "low",
+      evidenceEventIds,
+      id: createSafePreview(signal.id),
+      knownRisks: normalizeLearningStrings(
+        signal.knownRisks ?? DEFAULT_SKILL_SIGNAL_KNOWN_RISKS,
+        mode
+      ),
+      outcome: signal.outcome ?? "successful_workflow",
+      signal: createSafePreview(
+        signal.signal ?? workflowSummary,
+        mode === "compact" ? 160 : 320
+      ),
+      sourceCorrelationId: createSafePreview(context.correlationId),
+      sourceSessionId: createSafePreview(context.sessionId),
+      sourceTaskId: createSafePreview(context.taskId),
+      status: signal.status ?? "signal_only",
+      toolSequence: normalizeLearningStrings(toolSequence, mode),
+      triggerReason: createSafePreview(
+        signal.triggerReason,
+        mode === "compact" ? 160 : 320
+      ),
+      workflowSummary: createSafePreview(
+        workflowSummary,
+        mode === "compact" ? 160 : 320
+      )
+    };
+  });
 }
 
 function normalizeLearningStrings(
@@ -2816,6 +3298,62 @@ function limitLearningItems(
   return items.slice(0, mode === "compact" ? 5 : 20);
 }
 
+function findForbiddenFieldFromSet(
+  value: unknown,
+  forbiddenFields: ReadonlySet<string>,
+  seen: WeakSet<object>
+): string | null {
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findForbiddenFieldFromSet(
+        item,
+        forbiddenFields,
+        seen
+      );
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (forbiddenFields.has(key)) {
+      return key;
+    }
+
+    const nested = findForbiddenFieldFromSet(
+      nestedValue,
+      forbiddenFields,
+      seen
+    );
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 function findForbiddenLearningReviewField(
   value: unknown,
   seen: WeakSet<object>
@@ -2825,6 +3363,7 @@ function findForbiddenLearningReviewField(
     "apiKey",
     "api_key",
     "authorization",
+    "activationRule",
     "commandOutput",
     "content",
     "credential",
@@ -2841,8 +3380,10 @@ function findForbiddenLearningReviewField(
     "private_key",
     "rawCommandOutput",
     "rawContent",
+    "rawSkillContent",
     "rawOutput",
     "rawSnippet",
+    "promotedSkillPath",
     "secret",
     "snippet",
     "snippets",

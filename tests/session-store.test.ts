@@ -478,9 +478,20 @@ describe("local session store", () => {
         skillSignals: [
           {
             evidenceEventIds: ["evt_validation_completed"],
+            confidence: "low",
             id: "skillsig_validation",
+            knownRisks: [
+              "This is signal-only evidence and must not be promoted automatically."
+            ],
+            outcome: "successful_workflow",
+            sourceCorrelationId: "corr_learning",
+            sourceSessionId: sessionId,
+            sourceTaskId: "task_learning_procedural",
             signal: "Validation workflow succeeded.",
-            triggerReason: "A repeatable validation command passed."
+            status: "signal_only",
+            toolSequence: ["npm test -- --run tests/runtime-loop.test.ts"],
+            triggerReason: "A repeatable validation command passed.",
+            workflowSummary: "Validation workflow succeeded."
           }
         ],
         summary: "Learning review for completed task.",
@@ -494,6 +505,13 @@ describe("local session store", () => {
         return;
       }
       expect(readJson(valid.value.artifactPath)).toMatchObject({
+        skillSignals: [
+          {
+            confidence: "low",
+            id: "skillsig_validation",
+            status: "signal_only"
+          }
+        ],
         proceduralOutputs: [
           {
             id: "procout_task_learning_procedural_skillsig_validation",
@@ -561,6 +579,122 @@ describe("local session store", () => {
           )
         )
       ).toBe(false);
+
+      const unsafeSignal = store.writeLearningReview(sessionId, {
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:01:00.000Z",
+        evidence: {
+          commandsRun: [],
+          eventIds: ["evt_validation_completed", "evt_completed"],
+          filesChanged: [],
+          filesProposedForChange: [],
+          filesRead: [],
+          taskId: "task_learning_signal_secret",
+          userCorrections: [],
+          validationResults: []
+        },
+        facts: [],
+        lessons: [],
+        memoryCandidates: [],
+        missedAssumptions: [],
+        mistakes: [],
+        mode: "compact",
+        proceduralOutputs: [],
+        schemaVersion: 1 as const,
+        sessionId,
+        skillSignals: [
+          {
+            candidateId: "skillcand_forbidden",
+            confidence: "low",
+            evidenceEventIds: ["evt_validation_completed"],
+            id: "skillsig_validation",
+            knownRisks: ["Signal-only evidence."],
+            outcome: "successful_workflow",
+            sourceCorrelationId: "corr_learning",
+            sourceSessionId: sessionId,
+            sourceTaskId: "task_learning_signal_secret",
+            status: "signal_only",
+            toolSequence: ["npm test -- --run"],
+            triggerReason: "A repeatable validation command passed.",
+            workflowSummary: "Validation workflow succeeded."
+          }
+        ],
+        summary: "Learning review for completed task.",
+        taskId: "task_learning_signal_secret",
+        terminalStatus: "completed" as const,
+        testGaps: []
+      });
+
+      expect(unsafeSignal.ok).toBe(false);
+
+      const unsafeSkillSignalCases = [
+        { rawSkillContent: "name: unsafe" },
+        { skillCandidateId: "skillcand_forbidden" },
+        { stdout: "provider stdout" },
+        { stderr: "provider stderr" },
+        { diff: "@@ unsafe diff @@" },
+        { patch: "*** Begin Patch" },
+        { knownRisks: ["OPENAI_API_KEY=sk-test-secret"] },
+        { toolSequence: ["cat /Users/chinnaphat/private/SKILL.md"] },
+        { workflowSummary: "x".repeat(321) },
+        { signal: "x".repeat(321) },
+        {
+          evidenceEventIds: Array.from(
+            { length: 51 },
+            (_, index) => `evt_validation_${index + 1}`
+          )
+        }
+      ] as const;
+
+      for (const [index, unsafeSkillSignal] of unsafeSkillSignalCases.entries()) {
+        const taskId = `task_learning_signal_unsafe_${index + 1}`;
+        const result = store.writeLearningReview(sessionId, {
+          correlationId: "corr_learning",
+          createdAt: "2026-05-09T12:02:00.000Z",
+          evidence: {
+            commandsRun: [],
+            eventIds: ["evt_validation_completed", "evt_completed"],
+            filesChanged: [],
+            filesProposedForChange: [],
+            filesRead: [],
+            taskId,
+            userCorrections: [],
+            validationResults: []
+          },
+          facts: [],
+          lessons: [],
+          memoryCandidates: [],
+          missedAssumptions: [],
+          mistakes: [],
+          mode: "compact",
+          proceduralOutputs: [],
+          schemaVersion: 1 as const,
+          sessionId,
+          skillSignals: [
+            {
+              confidence: "low",
+              evidenceEventIds: ["evt_validation_completed"],
+              id: `skillsig_validation_${index + 1}`,
+              knownRisks: ["Signal-only evidence."],
+              outcome: "successful_workflow",
+              sourceCorrelationId: "corr_learning",
+              sourceSessionId: sessionId,
+              sourceTaskId: taskId,
+              status: "signal_only",
+              toolSequence: ["npm test -- --run"],
+              triggerReason: "A repeatable validation command passed.",
+              workflowSummary: "Validation workflow succeeded.",
+              ...unsafeSkillSignal
+            }
+          ] as never,
+          summary: "Learning review for completed task.",
+          taskId,
+          terminalStatus: "completed" as const,
+          testGaps: []
+        });
+
+        expect(result.ok).toBe(false);
+      }
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }

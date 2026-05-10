@@ -786,6 +786,13 @@ Check regressions before committing.
         return;
       }
 
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+
+      expect(changed.ok).toBe(true);
+
       const completed = runtime.completeActiveTask(
         "Completed without validation or tool evidence."
       );
@@ -798,11 +805,364 @@ Check regressions before committing.
       expect(completed.value.events.map((event) => event.type)).toContain(
         "skill.usage.recorded"
       );
+      const learningEvent = completed.value.events.find(
+        (event) => event.type === "learning.review.created"
+      );
+      const skillSignalEvents = completed.value.events.filter(
+        (event) => (event as { type: string }).type === "skill.signal.recorded"
+      );
+
+      expect(learningEvent?.type).toBe("learning.review.created");
+      expect(skillSignalEvents).toEqual([]);
+
+      if (learningEvent?.type !== "learning.review.created") {
+        return;
+      }
+
+      const review = JSON.parse(
+        readFileSync(join(projectDir, learningEvent.payload.artifactPath), "utf8")
+      ) as { skillSignals: unknown[] };
+
+      expect(review.skillSignals).toEqual([]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records low-confidence skill signals from audited skill usage and steering corrections", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      mkdirSync(join(projectDir, ".sprite", "skills", "review"), {
+        recursive: true
+      });
+      writeFileSync(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+---
+
+Check regressions before committing.
+`
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        skillReferences: ["project-review"]
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete a task with audited skill usage and correction"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const invokedEvent = submitted.value.events.find(
+        (event) => event.type === "skill.invoked"
+      );
+      const waitingEvent = submitted.value.events.find(
+        (event) => event.type === "task.waiting"
+      );
+
+      expect(invokedEvent?.type).toBe("skill.invoked");
+      expect(waitingEvent?.type).toBe("task.waiting");
+      if (
+        invokedEvent?.type !== "skill.invoked" ||
+        waitingEvent?.type !== "task.waiting"
+      ) {
+        return;
+      }
+
+      const used = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        influenceSummary:
+          "Used project-review to choose regression and validation checks.",
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "used",
+        trigger: "influenced"
+      });
+      const steered = runtime.steerActiveTask(
+        "Correction: keep this signal-only and do not promote a skill."
+      );
+      const completed = runtime.completeActiveTask(
+        "Completed after audited skill usage and steering evidence."
+      );
+
+      expect(used.ok).toBe(true);
+      expect(steered.ok).toBe(true);
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const skillSignalEvents = completed.value.events.filter(
+        (event) => (event as { type: string }).type === "skill.signal.recorded"
+      ) as Array<{ payload: Record<string, unknown> }>;
+
+      expect(skillSignalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              confidence: "low",
+              outcome: "successful_workflow",
+              signalStatus: "signal_only",
+              status: "recorded",
+              workflowSummary: expect.stringContaining("Skill usage influenced")
+            })
+          }),
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              confidence: "low",
+              outcome: "corrected_workflow",
+              signalStatus: "signal_only",
+              status: "recorded",
+              workflowSummary: expect.stringContaining("User steering")
+            })
+          })
+        ])
+      );
       expect(
         completed.value.events.some(
-          (event) => event.type === "learning.review.created"
+          (event) => (event as { type: string }).type === "skill.candidate.created"
         )
       ).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records ignored and contradicted audited skill usage as signal-only evidence", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      mkdirSync(join(projectDir, ".sprite", "skills", "review"), {
+        recursive: true
+      });
+      writeFileSync(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+---
+
+Check regressions before committing.
+`
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        skillReferences: ["project-review"]
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete a task with ignored and contradicted skill usage"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const invokedEvent = submitted.value.events.find(
+        (event) => event.type === "skill.invoked"
+      );
+      const waitingEvent = submitted.value.events.find(
+        (event) => event.type === "task.waiting"
+      );
+
+      expect(invokedEvent?.type).toBe("skill.invoked");
+      expect(waitingEvent?.type).toBe("task.waiting");
+      if (
+        invokedEvent?.type !== "skill.invoked" ||
+        waitingEvent?.type !== "task.waiting"
+      ) {
+        return;
+      }
+
+      const ignored = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "project-review",
+        reason: "Ignored because this review skill did not match the active task.",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
+      const contradicted = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        reason:
+          "Project-review guidance contradicted the safer TypeScript validation order.",
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "contradicted",
+        trigger: "influenced"
+      });
+      const changed = runtime.recordFileActivity({
+        kind: "changed",
+        paths: ["README.md"]
+      });
+      const completed = runtime.completeActiveTask(
+        "Completed after ignored and contradicted skill usage evidence."
+      );
+
+      expect(ignored.ok).toBe(true);
+      expect(contradicted.ok).toBe(true);
+      expect(changed.ok).toBe(true);
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const skillSignalEvents = completed.value.events.filter(
+        (event) => (event as { type: string }).type === "skill.signal.recorded"
+      ) as Array<{ payload: Record<string, unknown> }>;
+
+      expect(skillSignalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              outcome: "corrected_workflow",
+              signalStatus: "signal_only",
+              status: "recorded",
+              workflowSummary: expect.stringContaining("ignored")
+            })
+          }),
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              outcome: "contradicted_guidance",
+              signalStatus: "signal_only",
+              status: "recorded",
+              workflowSummary: expect.stringContaining("contradicted")
+            })
+          })
+        ])
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records low-confidence skill signals from recovery patterns", async () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      writeFileSync(
+        join(projectDir, "package.json"),
+        JSON.stringify(
+          {
+            scripts: {
+              check: "node -e \"process.exit(1)\""
+            }
+          },
+          null,
+          2
+        )
+      );
+      mkdirSync(join(projectDir, ".sprite"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".sprite", "config.json"),
+        JSON.stringify(
+          {
+            validation: {
+              commands: [
+                {
+                  args: ["run", "check"],
+                  command: "npm",
+                  name: "check",
+                  timeoutMs: 30_000
+                }
+              ]
+            }
+          },
+          null,
+          2
+        )
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home")
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete a task with recovery evidence"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const validation = await runtime.runConfiguredValidationCommands();
+      expect(validation.ok).toBe(true);
+      if (!validation.ok) {
+        return;
+      }
+
+      const validationEvent = runtime
+        .getEventHistory(submitted.value.taskId)
+        .find((event) => event.type === "validation.completed");
+      const failedResult = validation.value.results[0];
+
+      expect(validationEvent?.type).toBe("validation.completed");
+      expect(failedResult).toBeDefined();
+      if (
+        validationEvent?.type !== "validation.completed" ||
+        failedResult === undefined
+      ) {
+        return;
+      }
+
+      const recovery = runtime.recordRecoveryAction({
+        decision: "retry_with_fix",
+        errorCode: failedResult.errorCode,
+        message: failedResult.message,
+        nextAction: "Fix the validation failure and rerun the command.",
+        sourceEventId: validationEvent.eventId,
+        summary: "Recovery recorded after configured validation failed.",
+        toolCallId: failedResult.toolCallId,
+        trigger: "validation_failed",
+        validationId: failedResult.validationId
+      });
+      const completed = runtime.completeActiveTask(
+        "Completed after recovery evidence was recorded."
+      );
+
+      expect(recovery.ok).toBe(true);
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      const skillSignalEvents = completed.value.events.filter(
+        (event) => (event as { type: string }).type === "skill.signal.recorded"
+      ) as Array<{ payload: Record<string, unknown> }>;
+
+      expect(skillSignalEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              confidence: "low",
+              outcome: "recovered_workflow",
+              signalStatus: "signal_only",
+              status: "recorded",
+              workflowSummary: expect.stringContaining("Recovery pattern")
+            })
+          })
+        ])
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -1252,6 +1612,39 @@ Check regressions before committing.
         status: "recorded"
       });
 
+      const skillSignalEvents = completed.value.events.filter(
+        (event) => (event as { type: string }).type === "skill.signal.recorded"
+      ) as Array<{ payload: Record<string, unknown> }>;
+      const firstSkillSignalIndex = completed.value.events.findIndex(
+        (event) => (event as { type: string }).type === "skill.signal.recorded"
+      );
+      const learningReviewIndex = completed.value.events.findIndex(
+        (event) => event.type === "learning.review.created"
+      );
+
+      expect(firstSkillSignalIndex).toBeGreaterThanOrEqual(0);
+      expect(learningReviewIndex).toBeGreaterThan(firstSkillSignalIndex);
+
+      expect(skillSignalEvents).toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            confidence: "low",
+            evidenceEventIds: expect.arrayContaining([
+              expect.stringMatching(/^evt_/)
+            ]),
+            knownRisks: expect.arrayContaining([
+              expect.stringContaining("signal-only")
+            ]),
+            learningReviewArtifactPath: learningEvent?.payload.artifactPath,
+            signalStatus: "signal_only",
+            skillSignalId: expect.stringMatching(/^skillsig_/),
+            sourceSessionId: completed.value.sessionId,
+            sourceTaskId: completed.value.taskId,
+            status: "recorded"
+          })
+        })
+      ]);
+
       if (learningEvent?.type !== "learning.review.created") {
         return;
       }
@@ -1266,8 +1659,24 @@ Check regressions before committing.
           sourceTaskId: string;
           status: string;
         }>;
+        skillSignals: Array<{
+          confidence: string;
+          knownRisks: string[];
+          status: string;
+          toolSequence: string[];
+        }>;
       };
 
+      expect(review.skillSignals).toEqual([
+        expect.objectContaining({
+          confidence: "low",
+          knownRisks: expect.arrayContaining([
+            expect.stringContaining("signal-only")
+          ]),
+          status: "signal_only",
+          toolSequence: ["npm run check"]
+        })
+      ]);
       expect(review.proceduralOutputs).toEqual([
         expect.objectContaining({
           memoryType: "procedural",

@@ -423,6 +423,121 @@ describe("runtime event contract", () => {
     expect(validateRuntimeEvent(event).ok).toBe(true);
   });
 
+  it("validates skill signal recorded runtime events without promotion authority", () => {
+    const event = createRuntimeEventRecord(
+      {
+        eventId: "evt_skill_signal_recorded",
+        sessionId: "ses_learning",
+        taskId: "task_learning",
+        correlationId: "corr_learning",
+        createdAt: "2026-05-09T12:00:01.000Z"
+      },
+      "skill.signal.recorded",
+      {
+        confidence: "low",
+        evidenceEventIds: ["evt_validation_completed"],
+        knownRisks: [
+          "This is signal-only evidence and must not be promoted automatically."
+        ],
+        learningReviewArtifactPath:
+          ".sprite/sessions/ses_learning/learning-reviews/task_learning.json",
+        outcome: "successful_workflow",
+        signalStatus: "signal_only",
+        skillSignalId: "skillsig_validation",
+        sourceCorrelationId: "corr_learning",
+        sourceSessionId: "ses_learning",
+        sourceTaskId: "task_learning",
+        status: "recorded",
+        summary: "Skill signal recorded from validation evidence.",
+        toolSequence: ["npm test -- --run"],
+        triggerReason: "A repeatable validation command passed.",
+        workflowSummary: "Validation workflow succeeded."
+      }
+    );
+
+    expect(validateRuntimeEvent(event).ok).toBe(true);
+
+    const rawPath = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_signal_raw_path",
+      payload: {
+        ...event.payload,
+        workflowSummary: "Read /Users/chinnaphat/private/SKILL.md."
+      }
+    });
+    const promotionField = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_signal_promotion",
+      payload: {
+        ...event.payload,
+        candidateId: "skillcand_forbidden"
+      }
+    });
+    const emptyEvidence = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_signal_empty_evidence",
+      payload: {
+        ...event.payload,
+        evidenceEventIds: []
+      }
+    });
+    const invalidSignalStatus = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_signal_invalid_status",
+      payload: {
+        ...event.payload,
+        signalStatus: "promoted"
+      }
+    });
+    const oversizedSummary = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_signal_oversized_summary",
+      payload: {
+        ...event.payload,
+        summary: "x".repeat(321)
+      }
+    });
+    const oversizedRisks = validateRuntimeEvent({
+      ...event,
+      eventId: "evt_skill_signal_oversized_risks",
+      payload: {
+        ...event.payload,
+        knownRisks: Array.from(
+          { length: 51 },
+          (_, index) => `risk-${index + 1}`
+        )
+      }
+    });
+    const unsafePayloadFields = [
+      "stdout",
+      "stderr",
+      "diff",
+      "patch",
+      "rawSkillContent",
+      "skillCandidateId",
+      "token"
+    ] as const;
+
+    expect(rawPath.ok).toBe(false);
+    expect(promotionField.ok).toBe(false);
+    expect(emptyEvidence.ok).toBe(false);
+    expect(invalidSignalStatus.ok).toBe(false);
+    expect(oversizedSummary.ok).toBe(false);
+    expect(oversizedRisks.ok).toBe(false);
+    for (const field of unsafePayloadFields) {
+      expect(
+        validateRuntimeEvent({
+          ...event,
+          eventId: `evt_skill_signal_${field}`,
+          payload: {
+            ...event.payload,
+            [field]: "unsafe skill signal payload"
+          }
+        }).ok
+      ).toBe(false);
+    }
+  });
+
   it("validates retrospective review created runtime events", () => {
     const event = createRuntimeEventRecord(
       {

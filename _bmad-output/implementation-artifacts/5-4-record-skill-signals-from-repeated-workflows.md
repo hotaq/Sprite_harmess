@@ -1,6 +1,6 @@
 # Story 5.4: Record Skill Signals from Repeated Workflows
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -20,71 +20,71 @@ so that reusable procedures can be discovered without immediate promotion.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-5)
-  - [ ] Report the exact functions/contracts to add or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially `generateLearningReview`, `normalizeLearningSkillSignals`, `validateLearningReview`, `LocalSessionStore.writeLearningReview`, `validateRuntimeEvent`, `AgentRuntime.createLearningReviewForCompletedTask()`, and `collectLearningReviewSkillSignals()`.
-  - [ ] Keep this story signal-only: no skill candidates, no candidate review/edit/promote lifecycle, no active skill file writes, no automatic skill selection, no autonomous routing, and no policy grants.
-  - [ ] Preserve Story 5.3 safety: `skill.usage.recorded` metadata is bounded/path-safe and cannot be used as raw skill content.
+- [x] Confirm implementation function list before code edits (AC: 1-5)
+  - [x] Report the exact functions/contracts to add or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially `generateLearningReview`, `normalizeLearningSkillSignals`, `validateLearningReview`, `LocalSessionStore.writeLearningReview`, `validateRuntimeEvent`, `AgentRuntime.createLearningReviewForCompletedTask()`, and `collectLearningReviewSkillSignals()`.
+  - [x] Keep this story signal-only: no skill candidates, no candidate review/edit/promote lifecycle, no active skill file writes, no automatic skill selection, no autonomous routing, and no policy grants.
+  - [x] Preserve Story 5.3 safety: `skill.usage.recorded` metadata is bounded/path-safe and cannot be used as raw skill content.
 
-- [ ] Define a richer safe skill signal artifact contract (AC: 1-4)
-  - [ ] Extend `LearningReviewSkillSignal` or add a compatible richer signal type with `id`, `evidenceEventIds`, `sourceSessionId`, `sourceTaskId`, `sourceCorrelationId`, `workflowSummary`, `triggerReason`, `toolSequence`, `outcome`, `confidence`, `knownRisks`, and signal-only lifecycle metadata.
-  - [ ] Keep ID prefix `skillsig_` and fail closed for invalid IDs, missing evidence, empty workflow/trigger/risk fields, unknown confidence/outcome values, or unsafe values.
-  - [ ] Add/extend `normalizeLearningSkillSignals()` so supplied and generated signals are bounded safe previews.
-  - [ ] Add a validator helper, for example `validateLearningReviewSkillSignal()`, and call it from `validateLearningReview()`.
-  - [ ] Ensure existing compact/full modes limit signal counts and text lengths deterministically.
+- [x] Define a richer safe skill signal artifact contract (AC: 1-4)
+  - [x] Extend `LearningReviewSkillSignal` or add a compatible richer signal type with `id`, `evidenceEventIds`, `sourceSessionId`, `sourceTaskId`, `sourceCorrelationId`, `workflowSummary`, `triggerReason`, `toolSequence`, `outcome`, `confidence`, `knownRisks`, and signal-only lifecycle metadata.
+  - [x] Keep ID prefix `skillsig_` and fail closed for invalid IDs, missing evidence, empty workflow/trigger/risk fields, unknown confidence/outcome values, or unsafe values.
+  - [x] Add/extend `normalizeLearningSkillSignals()` so supplied and generated signals are bounded safe previews.
+  - [x] Add a validator helper, for example `validateLearningReviewSkillSignal()`, and call it from `validateLearningReview()`.
+  - [x] Ensure existing compact/full modes limit signal counts and text lengths deterministically.
 
-- [ ] Add `skill.signal.recorded` runtime event contract (AC: 1-5)
-  - [ ] Add `skill.signal.recorded` to `RUNTIME_EVENT_TYPES`.
-  - [ ] Add a typed payload that mirrors safe signal metadata: `skillSignalId`, `sourceSessionId`, `sourceTaskId`, `sourceCorrelationId`, `learningReviewArtifactPath`, `evidenceEventIds`, `workflowSummary`, `triggerReason`, `toolSequence`, `outcome`, `confidence`, `knownRisks`, `status: "recorded"`, and `summary`.
-  - [ ] Validate artifact paths as safe project-relative paths.
-  - [ ] Require non-empty evidence event IDs, tool sequence, known risks, workflow summary, and trigger reason.
-  - [ ] Reject forbidden raw fields and secret-looking or raw-path values using the same fail-closed style as `skill.usage.recorded`, `learning.review.created`, and procedural output validators.
-  - [ ] Reject candidate/promotion/active-skill fields such as `candidateId`, `promotedSkillPath`, `activationRule`, `rawSkillContent`, or equivalent authority-changing metadata.
+- [x] Add `skill.signal.recorded` runtime event contract (AC: 1-5)
+  - [x] Add `skill.signal.recorded` to `RUNTIME_EVENT_TYPES`.
+  - [x] Add a typed payload that mirrors safe signal metadata: `skillSignalId`, `sourceSessionId`, `sourceTaskId`, `sourceCorrelationId`, `learningReviewArtifactPath`, `evidenceEventIds`, `workflowSummary`, `triggerReason`, `toolSequence`, `outcome`, `confidence`, `knownRisks`, `signalStatus: "signal_only"`, `status: "recorded"`, and `summary`.
+  - [x] Validate artifact paths as safe project-relative paths.
+  - [x] Require non-empty evidence event IDs, tool sequence, known risks, workflow summary, and trigger reason.
+  - [x] Reject forbidden raw fields and secret-looking or raw-path values using the same fail-closed style as `skill.usage.recorded`, `learning.review.created`, and procedural output validators.
+  - [x] Reject candidate/promotion/active-skill fields such as `candidateId`, `promotedSkillPath`, `activationRule`, `rawSkillContent`, or equivalent authority-changing metadata.
 
-- [ ] Generate signal records from learning review evidence (AC: 1, 3-4)
-  - [ ] Expand `collectLearningReviewSkillSignals()` so it captures safe signals from successful validation/tool sequences, recovery patterns, explicit `task.steering.received` corrections, and relevant `skill.usage.recorded` evidence.
-  - [ ] Do not create a signal from `skill.usage.recorded` with `status: "loaded"` alone.
-  - [ ] Treat `used`, `ignored`, and `contradicted` usage records as possible evidence only when they include safe influence/reason metadata and source/evidence event references.
-  - [ ] Assign conservative confidence: weak single-example or correction/recovery evidence should be `low`; repeated/multiple supporting events may be `medium`; do not invent `high` confidence unless the implementation has explicit deterministic evidence.
-  - [ ] Include known risks that explain candidate-first limitations and validation requirements.
-  - [ ] Deduplicate repeated signals by stable `skillsig_` IDs or equivalent deterministic grouping.
+- [x] Generate signal records from learning review evidence (AC: 1, 3-4)
+  - [x] Expand `collectLearningReviewSkillSignals()` so it captures safe signals from successful validation/tool sequences, recovery patterns, explicit `task.steering.received` corrections, and relevant `skill.usage.recorded` evidence.
+  - [x] Do not create a signal from `skill.usage.recorded` with `status: "loaded"` alone.
+  - [x] Treat `used`, `ignored`, and `contradicted` usage records as possible evidence only when they include safe influence/reason metadata and source/evidence event references.
+  - [x] Assign conservative confidence: weak single-example or correction/recovery evidence should be `low`; repeated/multiple supporting events may be `medium`; do not invent `high` confidence unless the implementation has explicit deterministic evidence.
+  - [x] Include known risks that explain candidate-first limitations and validation requirements.
+  - [x] Deduplicate repeated signals by stable `skillsig_` IDs or equivalent deterministic grouping.
 
-- [ ] Emit runtime signal events through the shared runtime boundary (AC: 2, 5)
-  - [ ] In `AgentRuntime.createLearningReviewForCompletedTask()`, emit one `skill.signal.recorded` event for each learning-review skill signal.
-  - [ ] Emit signal events in the same completion flow as `learning.review.created`, after the learning review artifact path is known.
-  - [ ] Ensure all emitted `skill.signal.recorded` events reference task-local evidence event IDs and the safe learning-review artifact path.
-  - [ ] Preserve idempotency: if a learning review already exists for the task, do not duplicate signal events.
-  - [ ] Keep `learning.review.created.skillSignalIds` as ID summary metadata; do not stuff full signal details into the learning-review-created event.
+- [x] Emit runtime signal events through the shared runtime boundary (AC: 2, 5)
+  - [x] In `AgentRuntime.createLearningReviewForCompletedTask()`, emit one `skill.signal.recorded` event for each learning-review skill signal.
+  - [x] Emit signal events in the same completion flow as `learning.review.created`, after the learning review artifact path is known.
+  - [x] Ensure all emitted `skill.signal.recorded` events reference task-local evidence event IDs and the safe learning-review artifact path.
+  - [x] Preserve idempotency: if a learning review already exists for the task, do not duplicate signal events.
+  - [x] Keep `learning.review.created.skillSignalIds` as ID summary metadata; do not stuff full signal details into the learning-review-created event.
 
-- [ ] Preserve later Epic 5 boundaries (AC: 3)
-  - [ ] Do not emit `skill.candidate.created`; Story 5.5 owns candidate generation.
-  - [ ] Do not add candidate review/edit/reject/draft/promote behavior; Story 5.6 owns that.
-  - [ ] Do not write `.sprite/skills`, `.codex/skills`, `.agents/skills`, global skill registry files, or promoted skill artifacts.
-  - [ ] Do not make signals available as active skills in listing/invocation behavior.
-  - [ ] Do not alter command/file approval policy or grant new authority based on a signal.
+- [x] Preserve later Epic 5 boundaries (AC: 3)
+  - [x] Do not emit `skill.candidate.created`; Story 5.5 owns candidate generation.
+  - [x] Do not add candidate review/edit/reject/draft/promote behavior; Story 5.6 owns that.
+  - [x] Do not write `.sprite/skills`, `.codex/skills`, `.agents/skills`, global skill registry files, or promoted skill artifacts.
+  - [x] Do not make signals available as active skills in listing/invocation behavior.
+  - [x] Do not alter command/file approval policy or grant new authority based on a signal.
 
-- [ ] Harden persistence and artifact validation (AC: 1-3)
-  - [ ] Update session-store learning-review artifact validation so `skillSignals` have safe required fields, `skillsig_` IDs, bounded safe values, and no raw/secret-bearing fields.
-  - [ ] Ensure stored learning review artifacts keep skill signals distinct from procedural outputs and memory candidates.
-  - [ ] Ensure generated procedural outputs still derive from skill signals but remain candidate-first and `not_promoted`.
-  - [ ] Preserve backward-compatible migration behavior only if old test fixtures require it; otherwise fail closed for malformed new signals.
+- [x] Harden persistence and artifact validation (AC: 1-3)
+  - [x] Update session-store learning-review artifact validation so `skillSignals` have safe required fields, `skillsig_` IDs, bounded safe values, and no raw/secret-bearing fields.
+  - [x] Ensure stored learning review artifacts keep skill signals distinct from procedural outputs and memory candidates.
+  - [x] Ensure generated procedural outputs still derive from skill signals but remain candidate-first and `not_promoted`.
+  - [x] Preserve backward-compatible migration behavior only if old test fixtures require it; otherwise fail closed for malformed new signals.
 
-- [ ] Add regression tests (AC: 1-5)
-  - [ ] Memory tests: generated skill signals include workflow summary, trigger reason, tool sequence, outcome, confidence, known risks, source session/task/correlation IDs, and evidence event IDs.
-  - [ ] Memory tests: low-confidence/weak-example signals stay signal-only and do not become procedural outputs with promoted/active status.
-  - [ ] Runtime event tests: `skill.signal.recorded` accepts safe payloads and rejects invalid IDs, missing evidence, empty tool sequence/known risks, raw paths, secrets, raw output fields, diffs, patches, stdout/stderr, and candidate/promotion fields.
-  - [ ] Runtime/session tests: completed tasks with successful validation/tool evidence emit `skill.signal.recorded` and `learning.review.created`.
-  - [ ] Runtime/session tests: task steering/correction and recovery patterns can produce low-confidence signal events with known risks.
-  - [ ] Runtime/session tests: `skill.usage.recorded` with `used`, `ignored`, or `contradicted` can feed safe signal evidence; `loaded` alone cannot.
-  - [ ] Storage tests: learning review artifacts reject malformed or unsafe `skillSignals`.
-  - [ ] Scope guard tests: no `skill.candidate.created`, no skill candidate artifact, no promoted skill file, and no active skill registry change is created by this story.
+- [x] Add regression tests (AC: 1-5)
+  - [x] Memory tests: generated skill signals include workflow summary, trigger reason, tool sequence, outcome, confidence, known risks, source session/task/correlation IDs, and evidence event IDs.
+  - [x] Memory tests: low-confidence/weak-example signals stay signal-only and do not become procedural outputs with promoted/active status.
+  - [x] Runtime event tests: `skill.signal.recorded` accepts safe payloads and rejects invalid IDs, missing evidence, empty tool sequence/known risks, raw paths, secrets, raw output fields, diffs, patches, stdout/stderr, and candidate/promotion fields.
+  - [x] Runtime/session tests: completed tasks with successful validation/tool evidence emit `skill.signal.recorded` and `learning.review.created`.
+  - [x] Runtime/session tests: task steering/correction and recovery patterns can produce low-confidence signal events with known risks.
+  - [x] Runtime/session tests: `skill.usage.recorded` with `used`, `ignored`, or `contradicted` can feed safe signal evidence; `loaded` alone cannot.
+  - [x] Storage tests: learning review artifacts reject malformed or unsafe `skillSignals`.
+  - [x] Scope guard tests: no `skill.candidate.created`, no skill candidate artifact, no promoted skill file, and no active skill registry change is created by this story.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-5)
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
-  - [ ] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
-  - [ ] Run targeted validation before review: memory-safety tests, session-store tests, runtime-events tests, runtime-loop tests, CLI smoke tests if output changes.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-5)
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
+  - [x] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
+  - [x] Run targeted validation before review: memory-safety tests, session-store tests, runtime-events tests, runtime-loop tests, CLI smoke tests if output changes.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
 
 ## Dev Notes
 
@@ -275,15 +275,49 @@ GPT-5.5
 
 ### Debug Log References
 
+- GitNexus impact before implementation: `generateLearningReview`, `normalizeLearningSkillSignals`, `validateLearningReview`, `validateRuntimeEvent`, `collectLearningReviewSkillSignals`, `createLearningReviewForCompletedTask`, `validateStoredLearningReviewArtifact`; `validateRuntimeEvent` reported CRITICAL blast radius, so the implementation stayed additive and validator-focused.
+- Red test phase: targeted suite failed on missing rich skill-signal metadata, missing `skill.signal.recorded`, missing runtime emission, and missing storage rejection for promotion fields.
+- Green validation: targeted and full validation passed after implementation.
+- GitNexus fallback before commit/review: `npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status` reported repository status up-to-date at commit `39a51ab`.
+- Heavy review fix phase: addressed fail-closed raw `skillSignals` input validation, explicit event `signalStatus: "signal_only"`, bounded event summaries/arrays, storage/memory signal bounds, retrospective signal-shape drift, and missing ignored/contradicted/order regressions.
+
 ### Completion Notes List
 
 - Story context created for signal-only skill signal recording from learning review evidence.
 - Developer guardrails emphasize no candidate generation, no promotion, no active skill writes, and no autonomous routing.
+- Added a richer `LearningReviewSkillSignal` contract with source session/task/correlation IDs, workflow summary, tool sequence, outcome, conservative confidence, known risks, and `signal_only` lifecycle status.
+- Added fail-closed learning-review and session-store skill-signal validation for `skillsig_` IDs, safe bounded text, required evidence/tool/risk arrays, raw-path/secret rejection, and candidate/promotion field rejection.
+- Added typed `skill.signal.recorded` runtime events and emit them from completed-task learning review creation after the learning review artifact path is known.
+- Expanded learning review signal collection from passed validation, recovery events, task steering corrections, and audited non-loaded skill usage; `loaded` alone remains non-signal evidence.
+- Preserved candidate/promotion boundary: no `skill.candidate.created`, no promoted skill file writes, no skill registry/listing/invocation changes, and procedural outputs remain `candidate` + `not_promoted`.
+- Review fixes now validate raw `skillSignals` before normalization so forbidden fields such as `candidateId`, `rawSkillContent`, stdout/stderr, diffs, patches, raw paths, secrets, or unbounded text cannot be silently stripped into safe-looking artifacts.
+- Added explicit runtime `signalStatus: "signal_only"` separate from event `status: "recorded"` and bounded emitted signal summaries before event validation.
+- Retrospective skill signals now use the same rich, validated signal shape as learning reviews instead of retaining a minimal legacy shape.
+- Remaining limitation: repeated/multiple evidence is deduplicated and bounded, but confidence is intentionally conservative (`low`) until a later story defines deterministic medium/high aggregation policy.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/5-4-record-skill-signals-from-repeated-workflows.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/memory/src/index.ts`
+- `packages/core/src/runtime-events.ts`
+- `packages/core/src/agent-runtime.ts`
+- `packages/storage/src/session-store.ts`
+- `tests/memory-safety.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/runtime-loop.test.ts`
+- `tests/session-store.test.ts`
 
 ### Change Log
 
 - 2026-05-10: Created Story 5.4 context with implementation guardrails, event contract recommendation, safety boundaries, and test expectations.
+- 2026-05-10: Implemented signal-only skill signal artifact contract, runtime event validation/emission, learning-review signal collection, storage hardening, and regression coverage; moved story to review after full validation.
+- 2026-05-10: Fixed heavy-review findings for fail-closed raw signal inputs, explicit signal-only event status, bounded summaries/arrays, retrospective parity, and missing ignored/contradicted/order regressions; moved story to done after full validation.
+
+### Validation Evidence
+
+- `rtk run 'npm run build --silent && npx vitest run tests/memory-safety.test.ts tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/session-store.test.ts'` — 4 files passed, 150 tests passed.
+- `rtk run 'npm test -- --run'` — 17 files passed, 301 tests passed.
+- `rtk run 'npm run typecheck -- --pretty false'` — TypeScript build and tests typecheck passed.
+- `rtk run 'git diff --check'` — passed.
+- `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'` — indexed successfully, status up-to-date.

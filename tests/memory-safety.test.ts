@@ -587,7 +587,20 @@ describe("memory safety evaluation", () => {
       expect.objectContaining({ candidateId: "memcand_learning" })
     ]);
     expect(compact.value.skillSignals).toEqual([
-      expect.objectContaining({ id: "skillsig_validation" })
+      expect.objectContaining({
+        confidence: "low",
+        id: "skillsig_validation",
+        knownRisks: expect.arrayContaining([
+          expect.stringContaining("signal-only")
+        ]),
+        outcome: "successful_workflow",
+        sourceCorrelationId: "corr_learning",
+        sourceSessionId: "ses_learning",
+        sourceTaskId: "task_learning",
+        status: "signal_only",
+        toolSequence: ["npm test -- --run"],
+        workflowSummary: "Validation workflow succeeded."
+      })
     ]);
     expect(compact.value.proceduralOutputs).toEqual([
       expect.objectContaining({
@@ -613,6 +626,91 @@ describe("memory safety evaluation", () => {
       ),
       skillSignalIds: ["skillsig_validation"]
     });
+
+    expect(
+      validateLearningReview({
+        ...compact.value,
+        skillSignals: [
+          {
+            ...compact.value.skillSignals[0],
+            candidateId: "skillcand_should_not_exist"
+          }
+        ] as unknown as typeof compact.value.skillSignals
+      }).ok
+    ).toBe(false);
+
+    const unsafeSkillSignalInputs = [
+      { candidateId: "skillcand_should_not_exist" },
+      { rawSkillContent: "name: unsafe" },
+      { stdout: "provider stdout" },
+      { stderr: "provider stderr" },
+      { diff: "@@ unsafe diff @@" },
+      { patch: "*** Begin Patch" },
+      { knownRisks: ["OPENAI_API_KEY=sk-test-secret"] },
+      { toolSequence: ["cat /Users/chinnaphat/private/SKILL.md"] },
+      { workflowSummary: "x".repeat(321) },
+      {
+        knownRisks: Array.from(
+          { length: 51 },
+          (_, index) => `risk-${index + 1}`
+        )
+      }
+    ] as const;
+
+    for (const unsafeInput of unsafeSkillSignalInputs) {
+      const result = generateLearningReview({
+        ...compact.value,
+        events: [
+          {
+            eventId: "evt_started",
+            type: "task.started"
+          },
+          {
+            eventId: "evt_completed",
+            message: "Task completed with validation.",
+            type: "task.completed"
+          }
+        ],
+        skillSignals: [
+          {
+            evidenceEventIds: ["evt_validation_completed"],
+            id: "skillsig_unsafe_input",
+            signal: "Validation workflow succeeded.",
+            triggerReason: "A repeatable validation command passed.",
+            ...unsafeInput
+          }
+        ] as unknown as Parameters<typeof generateLearningReview>[0]["skillSignals"],
+        taskGoal: "Generate a post-task learning review"
+      });
+
+      expect(result.ok).toBe(false);
+    }
+
+    const rawPathTaskGoal = generateLearningReview({
+      ...compact.value,
+      events: [
+        {
+          eventId: "evt_started",
+          type: "task.started"
+        },
+        {
+          eventId: "evt_completed",
+          message: "Task completed with validation.",
+          type: "task.completed"
+        }
+      ],
+      skillSignals: [
+        {
+          evidenceEventIds: ["evt_validation_completed"],
+          id: "skillsig_validation",
+          signal: "Validation workflow succeeded.",
+          triggerReason: "A repeatable validation command passed."
+        }
+      ],
+      taskGoal: "Inspect /Users/chinnaphat/project-local-context during review"
+    });
+
+    expect(rawPathTaskGoal.ok).toBe(true);
 
     const full = generateLearningReview({
       ...compact.value,
@@ -850,6 +948,32 @@ describe("memory safety evaluation", () => {
     ]);
     expect(generated.value.memoryCandidates.length).toBeGreaterThan(0);
     expect(generated.value.skillSignals.length).toBeGreaterThan(0);
+    expect(generated.value.skillSignals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          confidence: "low",
+          knownRisks: expect.arrayContaining([
+            expect.stringContaining("signal-only")
+          ]),
+          sourceCorrelationId: "corr_retrospective",
+          sourceSessionId: "ses_retrospective",
+          sourceTaskId: "task_retrospective",
+          status: "signal_only",
+          toolSequence: expect.arrayContaining([expect.any(String)])
+        })
+      ])
+    );
+    expect(
+      validateRetrospectiveReview({
+        ...generated.value,
+        skillSignals: [
+          {
+            ...generated.value.skillSignals[0],
+            rawSkillContent: "unsafe skill body"
+          }
+        ] as unknown as typeof generated.value.skillSignals
+      }).ok
+    ).toBe(false);
     expect(generated.value.nextTimeImprovements.length).toBeGreaterThan(0);
     expect(JSON.stringify(generated.value)).not.toContain("rawOutput");
 

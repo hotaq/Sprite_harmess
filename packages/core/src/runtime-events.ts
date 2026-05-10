@@ -13,6 +13,8 @@ import {
   MEMORY_SENSITIVITY_STATUSES,
   MEMORY_TYPES,
   RETROSPECTIVE_TERMINAL_STATUSES,
+  SKILL_SIGNAL_LIFECYCLE_STATUSES,
+  SKILL_SIGNAL_OUTCOMES,
   type DurableMemoryType,
   type LearningReviewMode,
   type MemoryCandidateLifecycleStatus,
@@ -22,7 +24,9 @@ import {
   type MemoryInfluenceStatus,
   type MemorySensitivityStatus,
   type MemoryType,
-  type RetrospectiveTerminalStatus
+  type RetrospectiveTerminalStatus,
+  type SkillSignalLifecycleStatus,
+  type SkillSignalOutcome
 } from "@sprite/memory";
 import { SpriteError, err, type Result } from "@sprite/shared";
 import {
@@ -149,7 +153,9 @@ const SKILL_USAGE_TRIGGERS = [
   "suggested",
   "influenced"
 ] as const;
+const SKILL_SIGNAL_EVENT_STATUSES = ["recorded"] as const;
 const SKILL_USAGE_SAFE_TEXT_MAX_LENGTH = 320;
+const SKILL_SIGNAL_ARRAY_MAX_LENGTH = 50;
 const RAW_FILESYSTEM_PATH_PATTERN =
   /(?:^|[\s("'`])(?:~\/|\/(?:Applications|Users|Volumes|home|opt|private|tmp|var)\/|[A-Za-z]:\\)[^\s"'`)]+/;
 const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
@@ -204,6 +210,15 @@ const FORBIDDEN_POLICY_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "stdout",
   "token"
 ]);
+const FORBIDDEN_SKILL_SIGNAL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
+  "activationRule",
+  "candidateId",
+  "candidatePath",
+  "promotedSkillPath",
+  "rawSkillContent",
+  "routingRule",
+  "skillCandidateId"
+]);
 
 const RUNTIME_EVENT_TYPES = [
   "task.started",
@@ -222,6 +237,7 @@ const RUNTIME_EVENT_TYPES = [
   "memory.safety.evaluated",
   "skill.invoked",
   "skill.usage.recorded",
+  "skill.signal.recorded",
   "skill.invocation.failed",
   "session.resumed",
   "session.compacted",
@@ -412,6 +428,23 @@ export interface RuntimeEventPayloadMap {
     status: (typeof SKILL_USAGE_STATUSES)[number];
     summary: string;
     trigger: (typeof SKILL_USAGE_TRIGGERS)[number];
+  };
+  "skill.signal.recorded": {
+    confidence: MemoryConfidence;
+    evidenceEventIds: string[];
+    knownRisks: string[];
+    learningReviewArtifactPath: string;
+    outcome: SkillSignalOutcome;
+    signalStatus: SkillSignalLifecycleStatus;
+    skillSignalId: string;
+    sourceCorrelationId: string;
+    sourceSessionId: string;
+    sourceTaskId: string;
+    status: (typeof SKILL_SIGNAL_EVENT_STATUSES)[number];
+    summary: string;
+    toolSequence: string[];
+    triggerReason: string;
+    workflowSummary: string;
   };
   "skill.invocation.failed": {
     code: (typeof SKILL_INVOCATION_ERROR_CODES)[number];
@@ -974,6 +1007,13 @@ export function validateRuntimeEvent(
     }
     case "skill.usage.recorded": {
       return validateSkillUsageRecordedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
+    }
+    case "skill.signal.recorded": {
+      return validateSkillSignalRecordedEvent(
         context,
         eventType.value,
         event.payload
@@ -2474,7 +2514,7 @@ function validateSkillUsageRecordedEvent(
   ] as const;
 
   for (const [field, value] of secretCheckedFields) {
-    const safeText = validateSkillUsageSafeText(type, field, value);
+    const safeText = validateSkillAuditSafeText(type, field, value);
 
     if (!safeText.ok) {
       return err(safeText.error);
@@ -2498,8 +2538,224 @@ function validateSkillUsageRecordedEvent(
   });
 }
 
-function validateSkillUsageSafeText(
-  type: "skill.usage.recorded",
+function validateSkillSignalRecordedEvent(
+  context: RuntimeEventContext,
+  type: "skill.signal.recorded",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.signal.recorded">, SpriteError> {
+  const forbiddenField = findForbiddenSkillSignalPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw or promotion field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const confidence = requirePayloadLiteral(
+    type,
+    payload,
+    "confidence",
+    MEMORY_CONFIDENCE_VALUES
+  );
+  const evidenceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "evidenceEventIds"
+  );
+  const knownRisks = requirePayloadStringArray(type, payload, "knownRisks");
+  const learningReviewArtifactPath = requirePayloadString(
+    type,
+    payload,
+    "learningReviewArtifactPath"
+  );
+  const outcome = requirePayloadLiteral(
+    type,
+    payload,
+    "outcome",
+    SKILL_SIGNAL_OUTCOMES
+  );
+  const skillSignalId = requirePayloadString(type, payload, "skillSignalId");
+  const signalStatus = requirePayloadLiteral(
+    type,
+    payload,
+    "signalStatus",
+    SKILL_SIGNAL_LIFECYCLE_STATUSES
+  );
+  const sourceCorrelationId = requirePayloadString(
+    type,
+    payload,
+    "sourceCorrelationId"
+  );
+  const sourceSessionId = requirePayloadString(
+    type,
+    payload,
+    "sourceSessionId"
+  );
+  const sourceTaskId = requirePayloadString(type, payload, "sourceTaskId");
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    SKILL_SIGNAL_EVENT_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const toolSequence = requirePayloadStringArray(type, payload, "toolSequence");
+  const triggerReason = requirePayloadString(type, payload, "triggerReason");
+  const workflowSummary = requirePayloadString(type, payload, "workflowSummary");
+  const checks = [
+    confidence,
+    evidenceEventIds,
+    knownRisks,
+    learningReviewArtifactPath,
+    outcome,
+    signalStatus,
+    skillSignalId,
+    sourceCorrelationId,
+    sourceSessionId,
+    sourceTaskId,
+    status,
+    summary,
+    toolSequence,
+    triggerReason,
+    workflowSummary
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !confidence.ok ||
+    !evidenceEventIds.ok ||
+    !knownRisks.ok ||
+    !learningReviewArtifactPath.ok ||
+    !outcome.ok ||
+    !signalStatus.ok ||
+    !skillSignalId.ok ||
+    !sourceCorrelationId.ok ||
+    !sourceSessionId.ok ||
+    !sourceTaskId.ok ||
+    !status.ok ||
+    !summary.ok ||
+    !toolSequence.ok ||
+    !triggerReason.ok ||
+    !workflowSummary.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  const artifactPathValidation = validateFileActivityPath(
+    learningReviewArtifactPath.value
+  );
+
+  if (!artifactPathValidation.ok) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' learningReviewArtifactPath must be project-relative and safe.`
+      )
+    );
+  }
+
+  if (
+    evidenceEventIds.value.length === 0 ||
+    evidenceEventIds.value.length > SKILL_SIGNAL_ARRAY_MAX_LENGTH ||
+    knownRisks.value.length === 0 ||
+    knownRisks.value.length > SKILL_SIGNAL_ARRAY_MAX_LENGTH ||
+    toolSequence.value.length > SKILL_SIGNAL_ARRAY_MAX_LENGTH ||
+    toolSequence.value.length === 0
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include evidence, risks, and tool sequence metadata.`
+      )
+    );
+  }
+
+  if (!/^skillsig_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(skillSignalId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' skillSignalId must use the skillsig_ prefix.`
+      )
+    );
+  }
+
+  if (
+    !/^ses_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceSessionId.value) ||
+    !/^task_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceTaskId.value) ||
+    !/^corr_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(sourceCorrelationId.value)
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' source identifiers must use runtime prefixes.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    ["confidence", confidence.value],
+    ["learningReviewArtifactPath", artifactPathValidation.value],
+    ["outcome", outcome.value],
+    ["signalStatus", signalStatus.value],
+    ["skillSignalId", skillSignalId.value],
+    ["sourceCorrelationId", sourceCorrelationId.value],
+    ["sourceSessionId", sourceSessionId.value],
+    ["sourceTaskId", sourceTaskId.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ["triggerReason", triggerReason.value],
+    ["workflowSummary", workflowSummary.value],
+    ...evidenceEventIds.value.map(
+      (eventId) => ["evidenceEventIds", eventId] as const
+    ),
+    ...knownRisks.value.map((risk) => ["knownRisks", risk] as const),
+    ...toolSequence.value.map((tool) => ["toolSequence", tool] as const)
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    const safeText = validateSkillAuditSafeText(type, field, value);
+
+    if (!safeText.ok) {
+      return err(safeText.error);
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    confidence: confidence.value,
+    evidenceEventIds: evidenceEventIds.value,
+    knownRisks: knownRisks.value,
+    learningReviewArtifactPath: artifactPathValidation.value,
+    outcome: outcome.value,
+    signalStatus: signalStatus.value,
+    skillSignalId: skillSignalId.value,
+    sourceCorrelationId: sourceCorrelationId.value,
+    sourceSessionId: sourceSessionId.value,
+    sourceTaskId: sourceTaskId.value,
+    status: status.value,
+    summary: summary.value,
+    toolSequence: toolSequence.value,
+    triggerReason: triggerReason.value,
+    workflowSummary: workflowSummary.value
+  });
+}
+
+function validateSkillAuditSafeText(
+  type: "skill.signal.recorded" | "skill.usage.recorded",
   field: string,
   value: string
 ): Result<void, SpriteError> {
@@ -4600,6 +4856,79 @@ function findForbiddenPolicyPayloadField(
     }
 
     const nested = findForbiddenPolicyPayloadField(nestedValue, seen);
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+function findForbiddenSkillSignalPayloadField(
+  value: unknown,
+  seen: WeakSet<object>
+): string | null {
+  const policyField = findForbiddenPolicyPayloadField(value, seen);
+
+  if (policyField !== null) {
+    return policyField;
+  }
+
+  return findForbiddenPayloadFieldFromSet(
+    value,
+    FORBIDDEN_SKILL_SIGNAL_PAYLOAD_FIELDS,
+    new WeakSet()
+  );
+}
+
+function findForbiddenPayloadFieldFromSet(
+  value: unknown,
+  forbiddenFields: ReadonlySet<string>,
+  seen: WeakSet<object>
+): string | null {
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+
+    seen.add(value);
+
+    for (const item of value) {
+      const nested = findForbiddenPayloadFieldFromSet(
+        item,
+        forbiddenFields,
+        seen
+      );
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  if (seen.has(value)) {
+    return null;
+  }
+
+  seen.add(value);
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (forbiddenFields.has(key)) {
+      return key;
+    }
+
+    const nested = findForbiddenPayloadFieldFromSet(
+      nestedValue,
+      forbiddenFields,
+      seen
+    );
 
     if (nested !== null) {
       return nested;

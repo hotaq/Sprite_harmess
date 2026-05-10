@@ -4270,7 +4270,43 @@ export class AgentRuntime {
       return err(written.error);
     }
 
+    const learningReviewArtifactPath = path.relative(
+      task.request.cwd,
+      written.value.artifactPath
+    );
     const eventSummary = summarizeLearningReviewForEvent(review.value);
+    const skillSignalEvents = review.value.skillSignals.map((signal) =>
+      createRuntimeEventRecord(
+        {
+          sessionId: task.sessionId,
+          taskId: task.taskId,
+          correlationId: task.correlationId,
+          eventId: this.nextEventId(),
+          createdAt: this.now()
+        },
+        "skill.signal.recorded",
+        {
+          confidence: signal.confidence ?? "low",
+          evidenceEventIds: signal.evidenceEventIds,
+          knownRisks: signal.knownRisks ?? [
+            "This is signal-only evidence and must not be promoted automatically."
+          ],
+          learningReviewArtifactPath,
+          outcome: signal.outcome ?? "successful_workflow",
+          signalStatus: signal.status ?? "signal_only",
+          skillSignalId: signal.id,
+          sourceCorrelationId: signal.sourceCorrelationId ?? task.correlationId,
+          sourceSessionId: signal.sourceSessionId ?? task.sessionId,
+          sourceTaskId: signal.sourceTaskId ?? task.taskId,
+          status: "recorded",
+          summary: createSkillSignalRecordedSummary(signal),
+          toolSequence: signal.toolSequence ?? signal.evidenceEventIds,
+          triggerReason: signal.triggerReason,
+          workflowSummary:
+            signal.workflowSummary ?? signal.signal ?? signal.triggerReason
+        }
+      )
+    );
     const event = createRuntimeEventRecord(
       {
         sessionId: task.sessionId,
@@ -4281,7 +4317,7 @@ export class AgentRuntime {
       },
       "learning.review.created",
       {
-        artifactPath: path.relative(task.request.cwd, written.value.artifactPath),
+        artifactPath: learningReviewArtifactPath,
         evidenceEventIds: eventSummary.evidenceEventIds,
         factCount: eventSummary.factCount,
         lessonCount: eventSummary.lessonCount,
@@ -4296,7 +4332,7 @@ export class AgentRuntime {
         testGapCount: eventSummary.testGapCount
       }
     );
-    const emitted = this.emitNewEvents([event]);
+    const emitted = this.emitNewEvents([...skillSignalEvents, event]);
 
     if (!emitted.ok) {
       return err(emitted.error);
@@ -5319,35 +5355,164 @@ function collectLearningReviewMemoryCandidates(
   return [...candidates.values()];
 }
 
+function createSkillSignalRecordedSummary(
+  signal: LearningReviewSkillSignal
+): string {
+  return createRedactedPreview(
+    `Skill signal recorded: ${signal.workflowSummary ?? signal.signal ?? signal.triggerReason}`,
+    320
+  );
+}
+
 function collectLearningReviewSkillSignals(
   events: readonly RuntimeEventRecord[]
 ): LearningReviewSkillSignal[] {
-  return events.flatMap((event) => {
+  const signals = new Map<string, LearningReviewSkillSignal>();
+  const upsertSignal = (signal: LearningReviewSkillSignal): void => {
+    const existing = signals.get(signal.id);
+
+    if (existing === undefined) {
+      signals.set(signal.id, signal);
+      return;
+    }
+
+    signals.set(signal.id, {
+      ...existing,
+      evidenceEventIds: uniqueStrings([
+        ...existing.evidenceEventIds,
+        ...signal.evidenceEventIds
+      ]),
+      knownRisks: uniqueStrings([
+        ...(existing.knownRisks ?? []),
+        ...(signal.knownRisks ?? [])
+      ]),
+      toolSequence: uniqueStrings([
+        ...(existing.toolSequence ?? []),
+        ...(signal.toolSequence ?? [])
+      ])
+    });
+  };
+
+  for (const event of events) {
     if (event.type === "validation.completed" && event.payload.status === "passed") {
-      return [
-        {
-          evidenceEventIds: [event.eventId],
-          id: `skillsig_${safeSignalIdPart(event.payload.validationId)}`,
-          signal: `Validation workflow succeeded: ${event.payload.name ?? event.payload.command ?? event.payload.validationId}.`,
-          triggerReason:
-            "A repeatable validation command completed successfully for the task."
-        }
-      ];
+      const workflowSummary = `Validation workflow succeeded: ${event.payload.name ?? event.payload.command ?? event.payload.validationId}.`;
+
+      upsertSignal({
+        confidence: "low",
+        evidenceEventIds: [event.eventId],
+        id: `skillsig_${safeSignalIdPart(event.payload.validationId)}`,
+        knownRisks: [
+          "This is signal-only evidence and must not be promoted automatically.",
+          "Re-run the supporting validation command before generating a skill candidate."
+        ],
+        outcome: "successful_workflow",
+        signal: workflowSummary,
+        status: "signal_only",
+        toolSequence: [
+          event.payload.command ??
+            event.payload.name ??
+            `validation:${event.payload.validationId}`
+        ],
+        triggerReason:
+          "A repeatable validation command completed successfully for the task.",
+        workflowSummary
+      });
+
+      continue;
     }
 
     if (event.type === "task.recovery.recorded") {
-      return [
-        {
-          evidenceEventIds: [event.eventId],
-          id: `skillsig_${safeSignalIdPart(event.eventId)}`,
-          signal: `Recovery pattern recorded: ${event.payload.trigger} -> ${event.payload.decision}.`,
-          triggerReason: event.payload.summary
-        }
-      ];
+      const workflowSummary = `Recovery pattern recorded: ${event.payload.trigger} -> ${event.payload.decision}.`;
+
+      upsertSignal({
+        confidence: "low",
+        evidenceEventIds: [event.eventId],
+        id: `skillsig_${safeSignalIdPart(event.eventId)}`,
+        knownRisks: [
+          "This is signal-only evidence from recovery and must not be promoted automatically.",
+          "Confirm the recovery path applies outside this failure before candidate generation."
+        ],
+        outcome: "recovered_workflow",
+        signal: workflowSummary,
+        status: "signal_only",
+        toolSequence: [
+          `recovery:${event.payload.trigger}->${event.payload.decision}`
+        ],
+        triggerReason: createRedactedPreview(event.payload.summary, 320),
+        workflowSummary
+      });
+
+      continue;
     }
 
-    return [];
-  });
+    if (event.type === "task.steering.received") {
+      const workflowSummary = "User steering corrected or clarified task execution.";
+
+      upsertSignal({
+        confidence: "low",
+        evidenceEventIds: [event.eventId],
+        id: `skillsig_${safeSignalIdPart(event.eventId)}`,
+        knownRisks: [
+          "This is signal-only evidence from a user correction and must not be promoted automatically.",
+          "Do not infer hidden user intent beyond the explicit steering event."
+        ],
+        outcome: "corrected_workflow",
+        signal: workflowSummary,
+        status: "signal_only",
+        toolSequence: [`event:${event.eventId}`],
+        triggerReason: createRedactedPreview(event.payload.note, 320),
+        workflowSummary
+      });
+
+      continue;
+    }
+
+    if (event.type === "skill.usage.recorded") {
+      if (event.payload.status === "loaded") {
+        continue;
+      }
+
+      const evidenceEventIds = uniqueStrings([
+        event.eventId,
+        ...event.payload.evidenceEventIds,
+        ...event.payload.sourceEventIds
+      ]);
+      const outcome =
+        event.payload.status === "used"
+          ? "successful_workflow"
+          : event.payload.status === "ignored"
+            ? "corrected_workflow"
+            : "contradicted_guidance";
+      const triggerReason =
+        event.payload.influenceSummary ??
+        event.payload.reason ??
+        event.payload.summary;
+      const workflowSummary =
+        event.payload.status === "used"
+          ? `Skill usage influenced workflow: ${event.payload.name}.`
+          : `Skill usage was ${event.payload.status}: ${event.payload.name}.`;
+
+      upsertSignal({
+        confidence: "low",
+        evidenceEventIds,
+        id: `skillsig_${safeSignalIdPart(event.payload.skillId)}_${safeSignalIdPart(event.payload.status)}`,
+        knownRisks: [
+          "This is signal-only evidence from audited skill usage and must not be promoted automatically.",
+          "Do not reinterpret loaded-only skill usage or infer hidden model intent."
+        ],
+        outcome,
+        signal: workflowSummary,
+        status: "signal_only",
+        toolSequence: [
+          `skill:${event.payload.name}:${event.payload.status}:${event.payload.trigger}`
+        ],
+        triggerReason: createRedactedPreview(triggerReason, 320),
+        workflowSummary
+      });
+    }
+  }
+
+  return [...signals.values()];
 }
 
 function getPayloadString(
