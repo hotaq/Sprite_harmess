@@ -1,6 +1,6 @@
 # Story 5.3: Track Skill Usage and Influence During Tasks
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -75,6 +75,10 @@ so that I can audit whether a workflow helped or hurt.
   - [x] Run targeted validation before review: runtime-events tests, runtime-loop tests, CLI smoke tests, task-context/final-summary tests as touched, and typecheck/lint if contracts changed.
   - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
   - [x] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+
+### Review Findings
+
+- [x] [Review][Patch] Skill usage summaries are not bounded or raw-path guarded [`packages/core/src/runtime-events.ts:2334`, `packages/core/src/agent-runtime.ts:2380`, `packages/core/src/final-task-summary.ts:190`] — fixed by bounding skill usage text fields to 320 characters, rejecting raw filesystem paths, and adding runtime event/runtime API regression coverage.
 
 ## Dev Notes
 
@@ -253,6 +257,12 @@ GPT-5.5
 - Full validation passed:
   - `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`
   - Result: 17 files, 297 tests passed.
+- Review patch targeted validation passed:
+  - `rtk run 'npm test -- --run tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/cli-smoke.test.ts'`
+  - Result: 3 files, 134 tests passed.
+- Review patch full validation passed:
+  - `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`
+  - Result: 17 files, 297 tests passed.
 
 ### Completion Notes List
 
@@ -261,6 +271,7 @@ GPT-5.5
 - Manual skill invocation now emits `skill.invoked` followed by `skill.usage.recorded` with `status: "loaded"`.
 - Added `FinalTaskSummary.skillInfluences` and final summary rendering for `Skill influences:`.
 - Preserved Epic 5 boundaries: usage records do not emit `skill.signal.recorded`, create candidates, promote skills, or trigger automatic skill routing.
+- Review fix: `skill.usage.recorded` rejects unbounded text and raw filesystem paths before events can enter the audit/final-summary stream.
 
 ### File List
 
@@ -276,3 +287,4 @@ GPT-5.5
 ### Change Log
 
 - 2026-05-10: Implemented skill usage/influence runtime event tracking, runtime API recording, final summary exposure, and regression coverage.
+- 2026-05-10: Closed code review finding by rejecting unbounded/raw-path skill usage metadata and marking Story 5.3 done.

@@ -272,6 +272,28 @@ describe("runtime event contract", () => {
         summary: "OPENAI_API_KEY=sk-test-secret"
       }
     });
+    const rawPathInfluenceSummary = validateRuntimeEvent({
+      ...used,
+      payload: {
+        ...used.payload,
+        influenceSummary:
+          "Used review guidance loaded from /Users/chinnaphat/private/SKILL.md."
+      }
+    });
+    const unboundedInfluenceSummary = validateRuntimeEvent({
+      ...used,
+      payload: {
+        ...used.payload,
+        influenceSummary: "x".repeat(321)
+      }
+    });
+    const rawPathReason = validateRuntimeEvent({
+      ...ignored,
+      payload: {
+        ...ignored.payload,
+        reason: "Ignored the skill from /tmp/private/SKILL.md for this task."
+      }
+    });
 
     expect(validateRuntimeEvent(loaded).ok).toBe(true);
     expect(validateRuntimeEvent(used).ok).toBe(true);
@@ -283,6 +305,9 @@ describe("runtime event contract", () => {
     expect(emptyEventReferences.ok).toBe(false);
     expect(rawContent.ok).toBe(false);
     expect(secretSummary.ok).toBe(false);
+    expect(rawPathInfluenceSummary.ok).toBe(false);
+    expect(unboundedInfluenceSummary.ok).toBe(false);
+    expect(rawPathReason.ok).toBe(false);
   });
 
   it("validates memory candidate and entry saved runtime events", () => {

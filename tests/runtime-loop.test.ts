@@ -650,12 +650,37 @@ Check regressions before committing.
         status: "used",
         trigger: "influenced"
       });
+      const rawPathUsage = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        influenceSummary:
+          "Used guidance loaded from /Users/chinnaphat/private/SKILL.md.",
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "used",
+        trigger: "influenced"
+      });
+      const unboundedUsage = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        influenceSummary: "x".repeat(321),
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "used",
+        trigger: "influenced"
+      });
 
       expect(used.ok).toBe(true);
       expect(ignored.ok).toBe(true);
       expect(contradicted.ok).toBe(true);
       expect(suggestedIgnored.ok).toBe(true);
       expect(missingEvidence.ok).toBe(false);
+      expect(rawPathUsage.ok).toBe(false);
+      expect(unboundedUsage.ok).toBe(false);
       if (
         !used.ok ||
         !ignored.ok ||
@@ -723,6 +748,7 @@ Check regressions before committing.
       expect(JSON.stringify(finalSummary)).not.toContain(
         "Check regressions before committing."
       );
+      expect(JSON.stringify(finalSummary)).not.toContain("/Users/");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

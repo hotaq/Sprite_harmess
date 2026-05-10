@@ -149,6 +149,9 @@ const SKILL_USAGE_TRIGGERS = [
   "suggested",
   "influenced"
 ] as const;
+const SKILL_USAGE_SAFE_TEXT_MAX_LENGTH = 320;
+const RAW_FILESYSTEM_PATH_PATTERN =
+  /(?:^|[\s("'`])(?:~\/|\/(?:Applications|Users|Volumes|home|opt|private|tmp|var)\/|[A-Za-z]:\\)[^\s"'`)]+/;
 const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "commandOutput",
   "content",
@@ -2471,13 +2474,10 @@ function validateSkillUsageRecordedEvent(
   ] as const;
 
   for (const [field, value] of secretCheckedFields) {
-    if (containsSecretLikeValue(value)) {
-      return err(
-        new SpriteError(
-          "INVALID_RUNTIME_EVENT",
-          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
-        )
-      );
+    const safeText = validateSkillUsageSafeText(type, field, value);
+
+    if (!safeText.ok) {
+      return err(safeText.error);
     }
   }
 
@@ -2496,6 +2496,41 @@ function validateSkillUsageRecordedEvent(
     summary: summary.value,
     trigger: trigger.value
   });
+}
+
+function validateSkillUsageSafeText(
+  type: "skill.usage.recorded",
+  field: string,
+  value: string
+): Result<void, SpriteError> {
+  if (value.length > SKILL_USAGE_SAFE_TEXT_MAX_LENGTH) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload ${field} must not exceed ${SKILL_USAGE_SAFE_TEXT_MAX_LENGTH} characters.`
+      )
+    );
+  }
+
+  if (containsSecretLikeValue(value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+      )
+    );
+  }
+
+  if (RAW_FILESYSTEM_PATH_PATTERN.test(value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload ${field} must not include raw filesystem paths.`
+      )
+    );
+  }
+
+  return { ok: true, value: undefined };
 }
 
 function validateSkillInvocationFailedEvent(
