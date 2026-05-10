@@ -260,6 +260,25 @@ export interface RuntimeMemoryInfluenceRequest {
   status: MemoryInfluenceStatus;
 }
 
+export type RuntimeSkillUsageStatus =
+  RuntimeEventPayload<"skill.usage.recorded">["status"];
+export type RuntimeSkillUsageTrigger =
+  RuntimeEventPayload<"skill.usage.recorded">["trigger"];
+
+export interface RuntimeSkillUsageRequest {
+  evidenceEventIds?: readonly string[];
+  influenceSummary?: string;
+  invocationMode: RuntimeEventPayload<"skill.usage.recorded">["invocationMode"];
+  name: string;
+  reason?: string;
+  skillId: string;
+  source: RuntimeEventPayload<"skill.usage.recorded">["source"];
+  sourceEventIds?: readonly string[];
+  status: RuntimeSkillUsageStatus;
+  summary?: string;
+  trigger: RuntimeSkillUsageTrigger;
+}
+
 export type RuntimeRetrospectiveReviewResult =
   | {
       artifactPath: string;
@@ -587,8 +606,31 @@ export class AgentRuntime {
       const result = invokeSkill(request);
 
       if (result.ok) {
+        const invokedEvent = createRuntimeEventRecord(
+          {
+            correlationId: input.correlationId,
+            createdAt: input.createdAt,
+            eventId: this.nextEventId(),
+            sessionId: this.sessionId,
+            taskId: input.taskId
+          },
+          "skill.invoked",
+          {
+            contentLength: result.skill.contentLength,
+            contentTruncated: result.skill.contentTruncated,
+            invocationMode: result.skill.invocationMode,
+            invokedBy: result.skill.invokedBy,
+            name: result.skill.name,
+            skillId: result.skill.id,
+            source: result.skill.source,
+            status: "loaded",
+            summary: `Manual skill ${result.skill.name} was loaded into task context.`
+          }
+        );
+
         entries.push(result.skill);
         events.push(
+          invokedEvent,
           createRuntimeEventRecord(
             {
               correlationId: input.correlationId,
@@ -597,17 +639,17 @@ export class AgentRuntime {
               sessionId: this.sessionId,
               taskId: input.taskId
             },
-            "skill.invoked",
+            "skill.usage.recorded",
             {
-              contentLength: result.skill.contentLength,
-              contentTruncated: result.skill.contentTruncated,
+              evidenceEventIds: [invokedEvent.eventId],
               invocationMode: result.skill.invocationMode,
-              invokedBy: result.skill.invokedBy,
               name: result.skill.name,
+              sourceEventIds: [invokedEvent.eventId],
               skillId: result.skill.id,
               source: result.skill.source,
               status: "loaded",
-              summary: `Manual skill ${result.skill.name} was loaded into task context.`
+              summary: `Manual skill ${result.skill.name} was loaded into task context.`,
+              trigger: "loaded"
             }
           )
         );
@@ -2234,6 +2276,140 @@ export class AgentRuntime {
 
     this.refreshActiveTaskEvents(activeTask.value.taskId);
     return ok(validation.value);
+  }
+
+  recordSkillUsage(
+    request: RuntimeSkillUsageRequest
+  ): Result<RuntimeEventRecord<"skill.usage.recorded">> {
+    const activeTask = this.getMutableActiveTask();
+
+    if (!activeTask.ok) {
+      return activeTask;
+    }
+
+    const evidenceEventIds = uniqueStrings([
+      ...(request.evidenceEventIds ?? [])
+    ]);
+    const sourceEventIds = uniqueStrings([...(request.sourceEventIds ?? [])]);
+    const validation = this.validateSkillUsageRequest(
+      activeTask.value,
+      request,
+      evidenceEventIds,
+      sourceEventIds
+    );
+
+    if (!validation.ok) {
+      return err(validation.error);
+    }
+
+    const event = this.createSkillUsageRecordedEvent(
+      activeTask.value,
+      request,
+      evidenceEventIds,
+      sourceEventIds
+    );
+    const emitted = this.emitNewEvents([event]);
+
+    if (!emitted.ok) {
+      return err(emitted.error);
+    }
+
+    this.refreshActiveTaskEvents(activeTask.value.taskId);
+    return ok(event);
+  }
+
+  private validateSkillUsageRequest(
+    task: PlannedExecutionFlow,
+    request: RuntimeSkillUsageRequest,
+    evidenceEventIds: readonly string[],
+    sourceEventIds: readonly string[]
+  ): Result<void> {
+    if (evidenceEventIds.length === 0 || sourceEventIds.length === 0) {
+      return invalidSkillUsage(
+        "Skill usage records require evidenceEventIds and sourceEventIds."
+      );
+    }
+
+    const taskEventIds = new Set(task.events.map((event) => event.eventId));
+    const missingEventId = [...evidenceEventIds, ...sourceEventIds].find(
+      (eventId) => !taskEventIds.has(eventId)
+    );
+
+    if (missingEventId !== undefined) {
+      return invalidSkillUsage(
+        `Skill usage referenced unknown task event '${missingEventId}'.`
+      );
+    }
+
+    const loadedSkillEvent = task.events.find(
+      (event): event is RuntimeEventRecord<"skill.invoked"> =>
+        event.type === "skill.invoked" &&
+        event.payload.skillId === request.skillId &&
+        event.payload.name === request.name &&
+        event.payload.source === request.source &&
+        event.payload.invocationMode === request.invocationMode
+    );
+    const suggestedIgnored =
+      request.trigger === "suggested" && request.status === "ignored";
+
+    if (loadedSkillEvent === undefined && !suggestedIgnored) {
+      return invalidSkillUsage(
+        "Skill usage must reference a skill that was loaded in the active task unless it records an ignored suggestion."
+      );
+    }
+
+    if (
+      loadedSkillEvent !== undefined &&
+      !sourceEventIds.includes(loadedSkillEvent.eventId) &&
+      !suggestedIgnored
+    ) {
+      return invalidSkillUsage(
+        "Skill usage sourceEventIds must include the loaded skill invocation event."
+      );
+    }
+
+    return ok(undefined);
+  }
+
+  private createSkillUsageRecordedEvent(
+    task: PlannedExecutionFlow,
+    request: RuntimeSkillUsageRequest,
+    evidenceEventIds: readonly string[],
+    sourceEventIds: readonly string[]
+  ): RuntimeEventRecord<"skill.usage.recorded"> {
+    const summary =
+      request.summary ??
+      request.influenceSummary ??
+      request.reason ??
+      (request.status === "loaded"
+        ? `Manual skill ${request.name} was loaded into task context.`
+        : "Skill usage recorded.");
+
+    return createRuntimeEventRecord(
+      {
+        sessionId: task.sessionId,
+        taskId: task.taskId,
+        correlationId: task.correlationId,
+        eventId: this.nextEventId(),
+        createdAt: this.now()
+      },
+      "skill.usage.recorded",
+      {
+        evidenceEventIds: [...evidenceEventIds],
+        ...(request.influenceSummary === undefined
+          ? {}
+          : { influenceSummary: request.influenceSummary }),
+        invocationMode: request.invocationMode,
+        name: request.name,
+        ...(request.reason === undefined ? {} : { reason: request.reason }),
+        skillId: request.skillId,
+        source: request.source,
+        sourceEventIds: [...sourceEventIds],
+        status: request.status,
+        summary,
+        trigger: request.trigger
+      }
+    );
   }
 
   private executeRegisteredTool(
@@ -4445,6 +4621,10 @@ function invalidRecoveryAction(message: string): Result<never> {
   return err(new SpriteError("INVALID_RECOVERY_ACTION", message));
 }
 
+function invalidSkillUsage(message: string): Result<never> {
+  return err(new SpriteError("INVALID_SKILL_USAGE", message));
+}
+
 function summarizeSnapshotNextStep(task: PlannedExecutionFlow): {
   nextStep?: string;
 } {
@@ -4806,6 +4986,15 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
 
           return `- ${influence.status}: ${influence.sourceType}:${influence.sourceId} - ${detail}`;
         });
+  const skillInfluenceLines =
+    summary.skillInfluences.length === 0
+      ? ["- none"]
+      : summary.skillInfluences.map((influence) => {
+          const detail =
+            influence.summary ?? influence.reason ?? "No influence detail.";
+
+          return `- ${influence.status}: ${influence.source}:${influence.name} - ${detail}`;
+        });
 
   return [
     "Final summary:",
@@ -4823,6 +5012,8 @@ function formatFinalSummaryLines(summary: FinalTaskSummary): string[] {
     ...filesProposedLines,
     "Memory influences:",
     ...memoryInfluenceLines,
+    "Skill influences:",
+    ...skillInfluenceLines,
     "Important events:",
     ...importantEventLines,
     "Unresolved risks:",

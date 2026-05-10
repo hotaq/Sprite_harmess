@@ -159,6 +159,132 @@ describe("runtime event contract", () => {
     expect(secretSummary.ok).toBe(false);
   });
 
+  it("validates skill usage records without raw skill content", () => {
+    const context = {
+      eventId: "evt_skill_usage_loaded",
+      sessionId: "session_test",
+      taskId: "task_test",
+      correlationId: "corr_test",
+      createdAt: "2026-04-23T12:41:00.000Z"
+    };
+    const loaded = createRuntimeEventRecord(context, "skill.usage.recorded", {
+      evidenceEventIds: ["evt_skill_invoked"],
+      invocationMode: "manual",
+      name: "project-review",
+      skillId: "skill_project_project_review_review_skill_md",
+      source: "project",
+      sourceEventIds: ["evt_skill_invoked"],
+      status: "loaded",
+      summary: "Manual skill project-review was loaded into task context.",
+      trigger: "loaded"
+    });
+    const used = createRuntimeEventRecord(
+      { ...context, eventId: "evt_skill_usage_used" },
+      "skill.usage.recorded",
+      {
+        evidenceEventIds: ["evt_waiting"],
+        influenceSummary:
+          "Used project-review to check regression and validation steps.",
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: "skill_project_project_review_review_skill_md",
+        source: "project",
+        sourceEventIds: ["evt_skill_invoked"],
+        status: "used",
+        summary: "Skill usage influenced the task plan.",
+        trigger: "influenced"
+      }
+    );
+    const ignored = createRuntimeEventRecord(
+      { ...context, eventId: "evt_skill_usage_ignored" },
+      "skill.usage.recorded",
+      {
+        evidenceEventIds: ["evt_waiting"],
+        invocationMode: "manual",
+        name: "project-review",
+        reason: "The current story only required documentation updates.",
+        skillId: "skill_project_project_review_review_skill_md",
+        source: "project",
+        sourceEventIds: ["evt_skill_invoked"],
+        status: "ignored",
+        summary: "Skill usage was ignored for this task.",
+        trigger: "suggested"
+      }
+    );
+    const contradicted = createRuntimeEventRecord(
+      { ...context, eventId: "evt_skill_usage_contradicted" },
+      "skill.usage.recorded",
+      {
+        evidenceEventIds: ["evt_waiting"],
+        invocationMode: "manual",
+        name: "project-review",
+        reason:
+          "The skill suggested adding a dependency, but the story forbids new dependencies.",
+        skillId: "skill_project_project_review_review_skill_md",
+        source: "project",
+        sourceEventIds: ["evt_skill_invoked"],
+        status: "contradicted",
+        summary: "Skill guidance was contradicted by current constraints.",
+        trigger: "influenced"
+      }
+    );
+
+    const usedWithoutInfluenceSummary = validateRuntimeEvent({
+      ...used,
+      payload: {
+        ...used.payload,
+        influenceSummary: undefined
+      }
+    });
+    const ignoredWithoutReason = validateRuntimeEvent({
+      ...ignored,
+      payload: {
+        ...ignored.payload,
+        reason: undefined
+      }
+    });
+    const unknownTrigger = validateRuntimeEvent({
+      ...loaded,
+      payload: {
+        ...loaded.payload,
+        trigger: "automatic"
+      }
+    });
+    const emptyEventReferences = validateRuntimeEvent({
+      ...loaded,
+      payload: {
+        ...loaded.payload,
+        evidenceEventIds: [],
+        sourceEventIds: []
+      }
+    });
+    const rawContent = validateRuntimeEvent({
+      ...loaded,
+      payload: {
+        ...loaded.payload,
+        content: "Raw skill body must not be accepted."
+      }
+    });
+    const secretSummary = validateRuntimeEvent({
+      ...used,
+      payload: {
+        ...used.payload,
+        summary: "OPENAI_API_KEY=sk-test-secret"
+      }
+    });
+
+    expect(validateRuntimeEvent(loaded).ok).toBe(true);
+    expect(validateRuntimeEvent(used).ok).toBe(true);
+    expect(validateRuntimeEvent(ignored).ok).toBe(true);
+    expect(validateRuntimeEvent(contradicted).ok).toBe(true);
+    expect(usedWithoutInfluenceSummary.ok).toBe(false);
+    expect(ignoredWithoutReason.ok).toBe(false);
+    expect(unknownTrigger.ok).toBe(false);
+    expect(emptyEventReferences.ok).toBe(false);
+    expect(rawContent.ok).toBe(false);
+    expect(secretSummary.ok).toBe(false);
+  });
+
   it("validates memory candidate and entry saved runtime events", () => {
     const context = {
       eventId: "evt_memory_candidate",

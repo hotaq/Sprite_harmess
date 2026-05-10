@@ -528,6 +528,260 @@ describe("AgentRuntime interactive task flow", () => {
     }
   });
 
+  it("records skill usage states in history and final summary", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      mkdirSync(join(projectDir, ".sprite", "skills", "review"), {
+        recursive: true
+      });
+      writeFileSync(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+---
+
+Check regressions before committing.
+`
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        skillReferences: ["project-review"]
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "apply skill influence safely"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const initialSkillEvents = submitted.value.events.filter(
+        (event) =>
+          event.type === "skill.invoked" ||
+          event.type === "skill.usage.recorded"
+      );
+      const invokedEvent = submitted.value.events.find(
+        (event) => event.type === "skill.invoked"
+      );
+      const waitingEvent = submitted.value.events.find(
+        (event) => event.type === "task.waiting"
+      );
+
+      expect(initialSkillEvents.map((event) => event.type)).toEqual([
+        "skill.invoked",
+        "skill.usage.recorded"
+      ]);
+      expect(initialSkillEvents[1]).toMatchObject({
+        payload: {
+          name: "project-review",
+          source: "project",
+          status: "loaded",
+          trigger: "loaded"
+        }
+      });
+      expect(invokedEvent?.type).toBe("skill.invoked");
+      expect(waitingEvent?.type).toBe("task.waiting");
+      if (
+        invokedEvent?.type !== "skill.invoked" ||
+        waitingEvent?.type !== "task.waiting"
+      ) {
+        return;
+      }
+
+      const used = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        influenceSummary:
+          "Used project-review to choose regression and validation checks.",
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "used",
+        trigger: "influenced"
+      });
+      const ignored = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "project-review",
+        reason: "The current task did not need the full review checklist.",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
+      const contradicted = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "project-review",
+        reason:
+          "The skill suggested adding a dependency, but project rules forbid new dependencies.",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "contradicted",
+        trigger: "influenced"
+      });
+      const suggestedIgnored = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "test-plan",
+        reason: "The suggested skill was not loaded because no tests changed.",
+        skillId: "skill_project_test_plan_skill_md",
+        source: "project",
+        sourceEventIds: [waitingEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
+      const missingEvidence = runtime.recordSkillUsage({
+        evidenceEventIds: ["evt_missing"],
+        influenceSummary: "This should fail because evidence is missing.",
+        invocationMode: "manual",
+        name: "project-review",
+        skillId: invokedEvent.payload.skillId,
+        source: "project",
+        sourceEventIds: [invokedEvent.eventId],
+        status: "used",
+        trigger: "influenced"
+      });
+
+      expect(used.ok).toBe(true);
+      expect(ignored.ok).toBe(true);
+      expect(contradicted.ok).toBe(true);
+      expect(suggestedIgnored.ok).toBe(true);
+      expect(missingEvidence.ok).toBe(false);
+      if (
+        !used.ok ||
+        !ignored.ok ||
+        !contradicted.ok ||
+        !suggestedIgnored.ok
+      ) {
+        return;
+      }
+
+      const active = runtime.getActiveTask();
+
+      expect(active.ok).toBe(true);
+      if (!active.ok) {
+        return;
+      }
+
+      const usageEvents = active.value.events.filter(
+        (event) => event.type === "skill.usage.recorded"
+      );
+      const finalSummary = createFinalTaskSummary(active.value);
+
+      expect(usageEvents.map((event) => event.payload.status)).toEqual([
+        "loaded",
+        "used",
+        "ignored",
+        "contradicted",
+        "ignored"
+      ]);
+      expect(finalSummary.skillInfluences).toEqual([
+        expect.objectContaining({
+          skillId: invokedEvent.payload.skillId,
+          source: "project",
+          status: "loaded"
+        }),
+        expect.objectContaining({
+          name: "project-review",
+          status: "used",
+          summary:
+            "Used project-review to choose regression and validation checks."
+        }),
+        expect.objectContaining({
+          reason: "The current task did not need the full review checklist.",
+          status: "ignored"
+        }),
+        expect.objectContaining({
+          reason:
+            "The skill suggested adding a dependency, but project rules forbid new dependencies.",
+          status: "contradicted"
+        }),
+        expect.objectContaining({
+          name: "test-plan",
+          status: "ignored",
+          trigger: "suggested"
+        })
+      ]);
+      expect(finalSummary.importantEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            summary:
+              "Used project-review to choose regression and validation checks.",
+            type: "skill.usage.recorded"
+          })
+        ])
+      );
+      expect(JSON.stringify(finalSummary)).not.toContain(
+        "Check regressions before committing."
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not turn skill usage records into learning review skill signals", () => {
+    const { projectDir, rootDir } = createTempProject();
+
+    try {
+      mkdirSync(join(projectDir, ".sprite", "skills", "review"), {
+        recursive: true
+      });
+      writeFileSync(
+        join(projectDir, ".sprite", "skills", "review", "SKILL.md"),
+        `---
+name: project-review
+description: Review code before committing.
+---
+
+Check regressions before committing.
+`
+      );
+
+      const runtime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        skillReferences: ["project-review"]
+      });
+      const submitted = runtime.submitInteractiveTask(
+        "complete a task with only skill usage evidence"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const completed = runtime.completeActiveTask(
+        "Completed without validation or tool evidence."
+      );
+
+      expect(completed.ok).toBe(true);
+      if (!completed.ok) {
+        return;
+      }
+
+      expect(completed.value.events.map((event) => event.type)).toContain(
+        "skill.usage.recorded"
+      );
+      expect(
+        completed.value.events.some(
+          (event) => event.type === "learning.review.created"
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("summarizes cancelled, completed, failed, and approval-required runtime boundaries", () => {
     const cancelledRuntime = new AgentRuntime({
       cwd: "/tmp/sprite-project",

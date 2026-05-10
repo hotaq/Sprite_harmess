@@ -17,6 +17,7 @@ export interface FinalTaskSummaryEvent {
   reason?: string;
   message?: string;
   nextAction?: string;
+  status?: string;
   summary?: string;
   trigger?: string;
 }
@@ -32,6 +33,21 @@ export interface FinalTaskSummaryMemoryInfluence {
   summary?: string;
 }
 
+export interface FinalTaskSummarySkillInfluence {
+  eventId: string;
+  evidenceEventIds: string[];
+  influenceSummary?: string;
+  invocationMode: "manual";
+  name: string;
+  reason?: string;
+  skillId: string;
+  source: "project" | "global";
+  sourceEventIds: string[];
+  status: "loaded" | "used" | "ignored" | "contradicted";
+  summary?: string;
+  trigger: "loaded" | "invoked" | "suggested" | "influenced";
+}
+
 export interface FinalTaskSummary {
   status: PlannedExecutionFlow["status"];
   result: string;
@@ -39,6 +55,7 @@ export interface FinalTaskSummary {
   model: string | null;
   importantEvents: FinalTaskSummaryEvent[];
   memoryInfluences: FinalTaskSummaryMemoryInfluence[];
+  skillInfluences: FinalTaskSummarySkillInfluence[];
   filesChanged: string[];
   filesProposedForChange: string[];
   filesRead: string[];
@@ -61,6 +78,7 @@ export function createFinalTaskSummary(
     model: state.request.provider?.model ?? null,
     importantEvents: state.events.map(summarizeEvent),
     memoryInfluences: collectMemoryInfluences(state),
+    skillInfluences: collectSkillInfluences(state),
     filesChanged: fileActivity.filesChanged,
     filesProposedForChange: fileActivity.filesProposedForChange,
     filesRead: fileActivity.filesRead,
@@ -120,10 +138,24 @@ function summarizeEvent(event: RuntimeEventRecord): FinalTaskSummaryEvent {
     return {
       ...summary,
       reason: event.payload.reason,
+      status: event.payload.status,
       summary:
         event.payload.influenceSummary ??
         event.payload.reason ??
         event.payload.summary
+    };
+  }
+
+  if (event.type === "skill.usage.recorded") {
+    return {
+      ...summary,
+      reason: event.payload.reason,
+      status: event.payload.status,
+      summary:
+        event.payload.influenceSummary ??
+        event.payload.reason ??
+        event.payload.summary,
+      trigger: event.payload.trigger
     };
   }
 
@@ -152,6 +184,34 @@ function collectMemoryInfluences(
       ...(event.payload.influenceSummary === undefined
         ? {}
         : { summary: event.payload.influenceSummary })
+    }));
+}
+
+function collectSkillInfluences(
+  state: PlannedExecutionFlow
+): FinalTaskSummarySkillInfluence[] {
+  return state.events
+    .filter((event) => event.type === "skill.usage.recorded")
+    .map((event): FinalTaskSummarySkillInfluence => ({
+      eventId: event.eventId,
+      evidenceEventIds: [...event.payload.evidenceEventIds],
+      ...(event.payload.influenceSummary === undefined
+        ? {}
+        : { influenceSummary: event.payload.influenceSummary }),
+      invocationMode: event.payload.invocationMode,
+      name: event.payload.name,
+      ...(event.payload.reason === undefined
+        ? {}
+        : { reason: event.payload.reason }),
+      skillId: event.payload.skillId,
+      source: event.payload.source,
+      sourceEventIds: [...event.payload.sourceEventIds],
+      status: event.payload.status,
+      summary:
+        event.payload.influenceSummary ??
+        event.payload.reason ??
+        event.payload.summary,
+      trigger: event.payload.trigger
     }));
 }
 

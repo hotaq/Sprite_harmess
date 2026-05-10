@@ -137,6 +137,18 @@ const SKILL_INVOCATION_ERROR_CODES = [
   "SKILL_PATH_ESCAPE",
   "SKILL_UNAVAILABLE"
 ] as const;
+const SKILL_USAGE_STATUSES = [
+  "loaded",
+  "used",
+  "ignored",
+  "contradicted"
+] as const;
+const SKILL_USAGE_TRIGGERS = [
+  "loaded",
+  "invoked",
+  "suggested",
+  "influenced"
+] as const;
 const FORBIDDEN_TOOL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "commandOutput",
   "content",
@@ -206,6 +218,7 @@ const RUNTIME_EVENT_TYPES = [
   "memory.influence.recorded",
   "memory.safety.evaluated",
   "skill.invoked",
+  "skill.usage.recorded",
   "skill.invocation.failed",
   "session.resumed",
   "session.compacted",
@@ -383,6 +396,19 @@ export interface RuntimeEventPayloadMap {
     source: (typeof SKILL_INVOCATION_SOURCES)[number];
     status: "loaded";
     summary: string;
+  };
+  "skill.usage.recorded": {
+    evidenceEventIds: string[];
+    influenceSummary?: string;
+    invocationMode: (typeof SKILL_INVOCATION_MODES)[number];
+    name: string;
+    reason?: string;
+    skillId: string;
+    source: (typeof SKILL_INVOCATION_SOURCES)[number];
+    sourceEventIds: string[];
+    status: (typeof SKILL_USAGE_STATUSES)[number];
+    summary: string;
+    trigger: (typeof SKILL_USAGE_TRIGGERS)[number];
   };
   "skill.invocation.failed": {
     code: (typeof SKILL_INVOCATION_ERROR_CODES)[number];
@@ -942,6 +968,13 @@ export function validateRuntimeEvent(
     }
     case "skill.invoked": {
       return validateSkillInvokedEvent(context, eventType.value, event.payload);
+    }
+    case "skill.usage.recorded": {
+      return validateSkillUsageRecordedEvent(
+        context,
+        eventType.value,
+        event.payload
+      );
     }
     case "skill.invocation.failed": {
       return validateSkillInvocationFailedEvent(
@@ -2271,6 +2304,197 @@ function validateSkillInvokedEvent(
     source: source.value,
     status: status.value,
     summary: summary.value
+  });
+}
+
+function validateSkillUsageRecordedEvent(
+  context: RuntimeEventContext,
+  type: "skill.usage.recorded",
+  payload: Record<string, unknown>
+): Result<RuntimeEventRecord<"skill.usage.recorded">, SpriteError> {
+  const forbiddenField = findForbiddenPolicyPayloadField(
+    payload,
+    new WeakSet()
+  );
+
+  if (forbiddenField !== null) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must not include raw skill field '${forbiddenField}'.`
+      )
+    );
+  }
+
+  const evidenceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "evidenceEventIds"
+  );
+  const influenceSummary = optionalPayloadString(
+    type,
+    payload,
+    "influenceSummary"
+  );
+  const invocationMode = requirePayloadLiteral(
+    type,
+    payload,
+    "invocationMode",
+    SKILL_INVOCATION_MODES
+  );
+  const name = requirePayloadString(type, payload, "name");
+  const reason = optionalPayloadString(type, payload, "reason");
+  const skillId = requirePayloadString(type, payload, "skillId");
+  const source = requirePayloadLiteral(
+    type,
+    payload,
+    "source",
+    SKILL_INVOCATION_SOURCES
+  );
+  const sourceEventIds = requirePayloadStringArray(
+    type,
+    payload,
+    "sourceEventIds"
+  );
+  const status = requirePayloadLiteral(
+    type,
+    payload,
+    "status",
+    SKILL_USAGE_STATUSES
+  );
+  const summary = requirePayloadString(type, payload, "summary");
+  const trigger = requirePayloadLiteral(
+    type,
+    payload,
+    "trigger",
+    SKILL_USAGE_TRIGGERS
+  );
+  const checks = [
+    evidenceEventIds,
+    influenceSummary,
+    invocationMode,
+    name,
+    reason,
+    skillId,
+    source,
+    sourceEventIds,
+    status,
+    summary,
+    trigger
+  ];
+  const failed = checks.find((check) => !check.ok);
+
+  if (failed !== undefined && !failed.ok) {
+    return err(failed.error);
+  }
+
+  if (
+    !evidenceEventIds.ok ||
+    !influenceSummary.ok ||
+    !invocationMode.ok ||
+    !name.ok ||
+    !reason.ok ||
+    !skillId.ok ||
+    !source.ok ||
+    !sourceEventIds.ok ||
+    !status.ok ||
+    !summary.ok ||
+    !trigger.ok
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload is invalid.`
+      )
+    );
+  }
+
+  if (evidenceEventIds.value.length === 0 || sourceEventIds.value.length === 0) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload must include evidenceEventIds and sourceEventIds.`
+      )
+    );
+  }
+
+  if (!/^skill_[A-Za-z0-9][A-Za-z0-9_]*$/.test(skillId.value)) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload skillId must use the skill_ prefix.`
+      )
+    );
+  }
+
+  if (status.value === "used" && influenceSummary.value === undefined) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload influenceSummary is required when status is used.`
+      )
+    );
+  }
+
+  if (
+    (status.value === "ignored" || status.value === "contradicted") &&
+    reason.value === undefined
+  ) {
+    return err(
+      new SpriteError(
+        "INVALID_RUNTIME_EVENT",
+        `Runtime event '${type}' payload reason is required when status is ${status.value}.`
+      )
+    );
+  }
+
+  const secretCheckedFields = [
+    ["invocationMode", invocationMode.value],
+    ["name", name.value],
+    ["skillId", skillId.value],
+    ["source", source.value],
+    ["status", status.value],
+    ["summary", summary.value],
+    ["trigger", trigger.value],
+    ...(influenceSummary.value === undefined
+      ? []
+      : [["influenceSummary", influenceSummary.value] as const]),
+    ...(reason.value === undefined
+      ? []
+      : [["reason", reason.value] as const]),
+    ...evidenceEventIds.value.map(
+      (eventId) => ["evidenceEventIds", eventId] as const
+    ),
+    ...sourceEventIds.value.map(
+      (eventId) => ["sourceEventIds", eventId] as const
+    )
+  ] as const;
+
+  for (const [field, value] of secretCheckedFields) {
+    if (containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "INVALID_RUNTIME_EVENT",
+          `Runtime event '${type}' payload ${field} must not include secret-looking values.`
+        )
+      );
+    }
+  }
+
+  return okRuntimeEvent(context, type, {
+    evidenceEventIds: evidenceEventIds.value,
+    ...(influenceSummary.value === undefined
+      ? {}
+      : { influenceSummary: influenceSummary.value }),
+    invocationMode: invocationMode.value,
+    name: name.value,
+    ...(reason.value === undefined ? {} : { reason: reason.value }),
+    skillId: skillId.value,
+    source: source.value,
+    sourceEventIds: sourceEventIds.value,
+    status: status.value,
+    summary: summary.value,
+    trigger: trigger.value
   });
 }
 

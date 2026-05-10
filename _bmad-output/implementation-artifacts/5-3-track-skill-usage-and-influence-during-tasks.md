@@ -1,6 +1,6 @@
 # Story 5.3: Track Skill Usage and Influence During Tasks
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -19,62 +19,62 @@ so that I can audit whether a workflow helped or hurt.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-4)
-  - [ ] Report the exact functions/contracts to add or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially runtime event validators, `AgentRuntime`, final summary rendering, and skill registry contracts.
-  - [ ] Keep this story usage/influence-only: no automatic skill selection, no skill-signal generation, no candidate creation, no promotion, and no hidden authority changes.
-  - [ ] Preserve Story 5.1/5.2 safety boundaries: public skill listing and invocation outputs stay sanitized and do not expose raw paths or full skill bodies.
+- [x] Confirm implementation function list before code edits (AC: 1-4)
+  - [x] Report the exact functions/contracts to add or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially runtime event validators, `AgentRuntime`, final summary rendering, and skill registry contracts.
+  - [x] Keep this story usage/influence-only: no automatic skill selection, no skill-signal generation, no candidate creation, no promotion, and no hidden authority changes.
+  - [x] Preserve Story 5.1/5.2 safety boundaries: public skill listing and invocation outputs stay sanitized and do not expose raw paths or full skill bodies.
 
-- [ ] Define a safe skill usage event contract (AC: 1-4)
-  - [ ] Add a typed runtime event such as `skill.usage.recorded`.
-  - [ ] Payload must include `skillId`, `name`, `source`, `invocationMode`, `trigger`, `status`, `sourceEventIds`, `evidenceEventIds`, `summary`, and optional `influenceSummary`/`reason`.
-  - [ ] Trigger values must distinguish why the record exists, for example `loaded`, `invoked`, `suggested`, or `influenced`.
-  - [ ] Status values must distinguish `loaded`, `used`, `ignored`, and `contradicted`.
-  - [ ] Require `influenceSummary` for `used` records.
-  - [ ] Require `reason` for `ignored` and `contradicted` records.
-  - [ ] Require non-empty `sourceEventIds` and `evidenceEventIds` so the record is auditable.
-  - [ ] Reject unsafe/raw fields and secret-looking values using the same policy style as `skill.invoked` and `memory.influence.recorded`.
+- [x] Define a safe skill usage event contract (AC: 1-4)
+  - [x] Add a typed runtime event such as `skill.usage.recorded`.
+  - [x] Payload must include `skillId`, `name`, `source`, `invocationMode`, `trigger`, `status`, `sourceEventIds`, `evidenceEventIds`, `summary`, and optional `influenceSummary`/`reason`.
+  - [x] Trigger values must distinguish why the record exists, for example `loaded`, `invoked`, `suggested`, or `influenced`.
+  - [x] Status values must distinguish `loaded`, `used`, `ignored`, and `contradicted`.
+  - [x] Require `influenceSummary` for `used` records.
+  - [x] Require `reason` for `ignored` and `contradicted` records.
+  - [x] Require non-empty `sourceEventIds` and `evidenceEventIds` so the record is auditable.
+  - [x] Reject unsafe/raw fields and secret-looking values using the same policy style as `skill.invoked` and `memory.influence.recorded`.
 
-- [ ] Wire tracking through the shared runtime boundary (AC: 1, 3-4)
-  - [ ] Add a focused runtime request/result API, for example `RuntimeSkillUsageRequest` and `AgentRuntime.recordSkillUsage()`.
-  - [ ] Validate that referenced event IDs belong to the active task before recording a usage event.
-  - [ ] Validate that `loaded`, `used`, and `contradicted` records target a skill that was actually loaded/invoked in the task.
-  - [ ] Allow `trigger: "suggested"` with `status: "ignored"` when the skill was suggested but not loaded, as long as the caller supplies safe skill metadata and auditable evidence event IDs.
-  - [ ] When a manual skill is successfully invoked, emit an initial `skill.usage.recorded` record with `status: "loaded"` linked to the `skill.invoked` event.
-  - [ ] Support explicit `trigger: "suggested"` usage records through the runtime API when a caller supplies auditable evidence, without adding automatic suggestion behavior.
-  - [ ] Do not create usage records for `skill.invocation.failed` beyond the failed invocation event from Story 5.2.
-  - [ ] Keep usage tracking deterministic; do not infer `used`/`ignored` from raw model text or skill body content.
+- [x] Wire tracking through the shared runtime boundary (AC: 1, 3-4)
+  - [x] Add a focused runtime request/result API, for example `RuntimeSkillUsageRequest` and `AgentRuntime.recordSkillUsage()`.
+  - [x] Validate that referenced event IDs belong to the active task before recording a usage event.
+  - [x] Validate that `loaded`, `used`, and `contradicted` records target a skill that was actually loaded/invoked in the task.
+  - [x] Allow `trigger: "suggested"` with `status: "ignored"` when the skill was suggested but not loaded, as long as the caller supplies safe skill metadata and auditable evidence event IDs.
+  - [x] When a manual skill is successfully invoked, emit an initial `skill.usage.recorded` record with `status: "loaded"` linked to the `skill.invoked` event.
+  - [x] Support explicit `trigger: "suggested"` usage records through the runtime API when a caller supplies auditable evidence, without adding automatic suggestion behavior.
+  - [x] Do not create usage records for `skill.invocation.failed` beyond the failed invocation event from Story 5.2.
+  - [x] Keep usage tracking deterministic; do not infer `used`/`ignored` from raw model text or skill body content.
 
-- [ ] Surface skill influence in final summaries and audit output (AC: 1-3)
-  - [ ] Extend `FinalTaskSummary` with a safe `skillInfluences` or equivalent collection.
-  - [ ] Update `summarizeEvent()` so `skill.usage.recorded` important events include status/reason/influence summary.
-  - [ ] Update final summary rendering to show a `Skill influences:` section, matching the existing `Memory influences:` pattern.
-  - [ ] Ensure summaries include task/session/event linkage but never full skill content or raw paths.
-  - [ ] Ensure JSON output exposes structured skill usage records through the shared runtime summary, not CLI-only formatting.
+- [x] Surface skill influence in final summaries and audit output (AC: 1-3)
+  - [x] Extend `FinalTaskSummary` with a safe `skillInfluences` or equivalent collection.
+  - [x] Update `summarizeEvent()` so `skill.usage.recorded` important events include status/reason/influence summary.
+  - [x] Update final summary rendering to show a `Skill influences:` section, matching the existing `Memory influences:` pattern.
+  - [x] Ensure summaries include task/session/event linkage but never full skill content or raw paths.
+  - [x] Ensure JSON output exposes structured skill usage records through the shared runtime summary, not CLI-only formatting.
 
-- [ ] Preserve later Epic 5 boundaries (AC: 3-4)
-  - [ ] Leave `collectLearningReviewSkillSignals()` behavior unchanged except for tests/docs needed to prove usage records do not become skill signals automatically.
-  - [ ] Do not emit `skill.signal.recorded`; that belongs to Story 5.4.
-  - [ ] Do not create or review skill candidates; that belongs to Stories 5.5-5.7.
-  - [ ] Treat the runtime event stream/final summary as the feed for later refinement.
+- [x] Preserve later Epic 5 boundaries (AC: 3-4)
+  - [x] Leave `collectLearningReviewSkillSignals()` behavior unchanged except for tests/docs needed to prove usage records do not become skill signals automatically.
+  - [x] Do not emit `skill.signal.recorded`; that belongs to Story 5.4.
+  - [x] Do not create or review skill candidates; that belongs to Stories 5.5-5.7.
+  - [x] Treat the runtime event stream/final summary as the feed for later refinement.
 
-- [ ] Add regression tests (AC: 1-4)
-  - [ ] Runtime event tests: `skill.usage.recorded` validates safe `loaded`, `used`, `ignored`, and `contradicted` payloads.
-  - [ ] Runtime event tests: `trigger` accepts `loaded`, `invoked`, `suggested`, and `influenced` values and rejects unknown values.
-  - [ ] Runtime event tests: `used` requires `influenceSummary`; `ignored`/`contradicted` require `reason`; empty event references are rejected.
-  - [ ] Runtime event tests: raw skill content, raw paths, secrets, stdout/stderr, diffs, patches, and unsafe metadata fields are rejected.
-  - [ ] Runtime tests: manual `--skill` task invocation emits `skill.invoked` followed by `skill.usage.recorded` with `status: "loaded"`.
-  - [ ] Runtime tests: explicit skill usage records for `used`, `ignored`, and `contradicted` appear in the active task event history and final summary.
-  - [ ] Runtime tests: usage recording rejects missing skill evidence, missing event IDs, or event IDs from another task.
-  - [ ] Final summary tests: `Skill influences:`/structured summary output includes safe influence details and does not leak skill content or secret-like values.
-  - [ ] Scope guard tests: usage records do not automatically create learning review skill signals or skill candidates.
+- [x] Add regression tests (AC: 1-4)
+  - [x] Runtime event tests: `skill.usage.recorded` validates safe `loaded`, `used`, `ignored`, and `contradicted` payloads.
+  - [x] Runtime event tests: `trigger` accepts `loaded`, `invoked`, `suggested`, and `influenced` values and rejects unknown values.
+  - [x] Runtime event tests: `used` requires `influenceSummary`; `ignored`/`contradicted` require `reason`; empty event references are rejected.
+  - [x] Runtime event tests: raw skill content, raw paths, secrets, stdout/stderr, diffs, patches, and unsafe metadata fields are rejected.
+  - [x] Runtime tests: manual `--skill` task invocation emits `skill.invoked` followed by `skill.usage.recorded` with `status: "loaded"`.
+  - [x] Runtime tests: explicit skill usage records for `used`, `ignored`, and `contradicted` appear in the active task event history and final summary.
+  - [x] Runtime tests: usage recording rejects missing skill evidence, missing event IDs, or event IDs from another task.
+  - [x] Final summary tests: `Skill influences:`/structured summary output includes safe influence details and does not leak skill content or secret-like values.
+  - [x] Scope guard tests: usage records do not automatically create learning review skill signals or skill candidates.
 
-- [ ] Update story evidence and lifecycle status (AC: 1-4)
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
-  - [ ] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
-  - [ ] Run targeted validation before review: runtime-events tests, runtime-loop tests, CLI smoke tests, task-context/final-summary tests as touched, and typecheck/lint if contracts changed.
-  - [ ] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
-  - [ ] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
+- [x] Update story evidence and lifecycle status (AC: 1-4)
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes are complete.
+  - [x] Record implementation notes, changed files, validation evidence, and remaining limitations in this story file.
+  - [x] Run targeted validation before review: runtime-events tests, runtime-loop tests, CLI smoke tests, task-context/final-summary tests as touched, and typecheck/lint if contracts changed.
+  - [x] Run full validation before marking done: `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`.
+  - [x] Run GitNexus detect-changes before committing implementation changes when available; if the CLI lacks `detect_changes`, run `npx gitnexus analyze . --force --skip-agents-md --no-stats` and `npx gitnexus status`.
 
 ## Dev Notes
 
@@ -240,16 +240,39 @@ Add narrower test commands during development as needed.
 
 ### Agent Model Used
 
-TBD
+GPT-5.5
 
 ### Debug Log References
 
-TBD
+- RED targeted validation failed before implementation:
+  - `rtk run 'npm test -- --run tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/cli-smoke.test.ts'`
+  - Expected failures: missing `skill.usage.recorded`, `AgentRuntime.recordSkillUsage()`, and `FinalTaskSummary.skillInfluences`.
+- GREEN targeted validation passed:
+  - `rtk run 'npm test -- --run tests/runtime-events.test.ts tests/runtime-loop.test.ts tests/cli-smoke.test.ts'`
+  - Result: 3 files, 134 tests passed.
+- Full validation passed:
+  - `rtk run 'npm run lint -- --pretty false && npm test -- --run && git diff --check'`
+  - Result: 17 files, 297 tests passed.
 
 ### Completion Notes List
 
-TBD
+- Added `skill.usage.recorded` as a safe runtime event for skill usage/influence auditing.
+- Added `RuntimeSkillUsageRequest`, `RuntimeSkillUsageStatus`, `RuntimeSkillUsageTrigger`, and `AgentRuntime.recordSkillUsage()`.
+- Manual skill invocation now emits `skill.invoked` followed by `skill.usage.recorded` with `status: "loaded"`.
+- Added `FinalTaskSummary.skillInfluences` and final summary rendering for `Skill influences:`.
+- Preserved Epic 5 boundaries: usage records do not emit `skill.signal.recorded`, create candidates, promote skills, or trigger automatic skill routing.
 
 ### File List
 
-TBD
+- `_bmad-output/implementation-artifacts/5-3-track-skill-usage-and-influence-during-tasks.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/core/src/agent-runtime.ts`
+- `packages/core/src/final-task-summary.ts`
+- `packages/core/src/runtime-events.ts`
+- `tests/cli-smoke.test.ts`
+- `tests/runtime-events.test.ts`
+- `tests/runtime-loop.test.ts`
+
+### Change Log
+
+- 2026-05-10: Implemented skill usage/influence runtime event tracking, runtime API recording, final summary exposure, and regression coverage.

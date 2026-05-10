@@ -343,6 +343,14 @@ Check regressions before committing.
         }>;
       };
       const events = output.events as Array<{ payload: unknown; type: string }>;
+      const finalSummary = output.finalSummary as {
+        skillInfluences: Array<{
+          name: string;
+          source: string;
+          status: string;
+          trigger: string;
+        }>;
+      };
       const skillsSection = contextPacket.sections.find(
         (section) => section.source === "skills"
       );
@@ -355,8 +363,19 @@ Check regressions before committing.
         })
       });
       expect(skillsSection?.content).toContain("Check regressions");
-      expect(events.map((event) => event.type)).toContain("skill.invoked");
+      expect(events.map((event) => event.type)).toEqual(
+        expect.arrayContaining(["skill.invoked", "skill.usage.recorded"])
+      );
+      expect(finalSummary.skillInfluences).toEqual([
+        expect.objectContaining({
+          name: "project-review",
+          source: "project",
+          status: "loaded",
+          trigger: "loaded"
+        })
+      ]);
       expect(JSON.stringify(events)).not.toContain("Check regressions");
+      expect(JSON.stringify(finalSummary)).not.toContain("Check regressions");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
