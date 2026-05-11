@@ -1,6 +1,6 @@
 # Story 6.2: Display Message Stream, Tool Activity, and Validation Results
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -20,50 +20,50 @@ so that I can inspect messages, tool calls, validation, and outcomes.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation contract before code edits (AC: 1-5)
-  - [ ] Report the exact new or changed exports before modifying implementation. Expected candidates: `createTuiMessageStream()`, `createTuiEventStreamItem()`, `formatTuiMessageStream()`, `TuiMessageStreamItem`, `TuiMessageStreamSeverity`, and output-preview constants.
-  - [ ] Run GitNexus impact analysis before editing existing exported symbols or runtime contracts, especially `createTuiRuntimeState()`, `formatTuiStateSummary()`, `RuntimeEventRecord`, `validateRuntimeEvent()`, `AgentRuntime`, and CLI entry exports if touched.
-  - [ ] Treat this story as stream/read-model rendering first. Do not implement multiline input, steering, cancellation, slash commands, final-summary panels, or full approval-response UI.
+- [x] Confirm implementation contract before code edits (AC: 1-5)
+  - [x] Report the exact new or changed exports before modifying implementation. Expected candidates: `createTuiMessageStream()`, `createTuiEventStreamItem()`, `formatTuiMessageStream()`, `TuiMessageStreamItem`, `TuiMessageStreamSeverity`, and output-preview constants.
+  - [x] Run GitNexus impact analysis before editing existing exported symbols or runtime contracts, especially `createTuiRuntimeState()`, `formatTuiStateSummary()`, `RuntimeEventRecord`, `validateRuntimeEvent()`, `AgentRuntime`, and CLI entry exports if touched.
+  - [x] Treat this story as stream/read-model rendering first. Do not implement multiline input, steering, cancellation, slash commands, final-summary panels, or full approval-response UI.
 
-- [ ] Define runtime-event-to-stream mapping (AC: 1, 2, 3, 5)
-  - [ ] Extend `packages/tui/src/index.ts` with pure stream/read-model functions that accept `RuntimeEventRecord[]`.
-  - [ ] Group event kinds by explicit `event.type` prefix or exact event type: task, tool, validation, file, policy, approval, memory, skill, learning, retrospective, session, and unknown/fallback only if the core type union expands.
-  - [ ] Derive stream status from typed payload fields such as `status`, `reason`, `decision`, and `riskLevel`; do not infer task truth from formatted text, final summaries, or render order.
-  - [ ] Include stable identifiers when present: `eventId`, `correlationId`, `toolCallId`, `validationId`, `approvalRequestId`, `editId`, candidate/skill/memory IDs, and artifact references.
-  - [ ] Keep `createTuiRuntimeState()` as state summary only; do not overload its warning count with message-stream summaries.
+- [x] Define runtime-event-to-stream mapping (AC: 1, 2, 3, 5)
+  - [x] Extend `packages/tui/src/index.ts` with pure stream/read-model functions that accept `RuntimeEventRecord[]`.
+  - [x] Group event kinds by explicit `event.type` prefix or exact event type: task, tool, validation, file, policy, approval, memory, skill, learning, retrospective, session, and unknown/fallback only if the core type union expands.
+  - [x] Derive stream status from typed payload fields such as `status`, `reason`, `decision`, and `riskLevel`; do not infer task truth from formatted text, final summaries, or render order.
+  - [x] Include stable identifiers when present: `eventId`, `correlationId`, `toolCallId`, `validationId`, `approvalRequestId`, `editId`, candidate/skill/memory IDs, and artifact references.
+  - [x] Keep `createTuiRuntimeState()` as state summary only; do not overload its warning count with message-stream summaries.
 
-- [ ] Add bounded and secret-safe output handling (AC: 2, 4)
-  - [ ] Add a stream item output-preview model with `isTruncated`, `hiddenLineCount`/`hiddenByteCount` when knowable, `outputReference`, and `fullOutputStored`.
-  - [ ] Apply the Story 6.2 large-output threshold: 32 KB or 500 lines.
-  - [ ] Use existing redaction/bounding helpers such as `createRedactedPreview()` and `containsSecretLikeValue()` from `@sprite/shared` before inventing new masking logic.
-  - [ ] Never read `outputReference.path` from the TUI mapper; display a bounded local reference label only.
-  - [ ] Do not render forbidden raw fields already blocked by runtime events (`rawOutput`, `stdout`, `stderr`, `rawContent`, `patch`, `diff`, `env`, `snippets`, credentials).
+- [x] Add bounded and secret-safe output handling (AC: 2, 4)
+  - [x] Add a stream item output-preview model with `isTruncated`, `hiddenLineCount`/`hiddenByteCount` when knowable, `outputReference`, and `fullOutputStored`.
+  - [x] Apply the Story 6.2 large-output threshold: 32 KB or 500 lines.
+  - [x] Use existing redaction/bounding helpers such as `createRedactedPreview()` and `containsSecretLikeValue()` from `@sprite/shared` before inventing new masking logic.
+  - [x] Never read `outputReference.path` from the TUI mapper; display a bounded local reference label only.
+  - [x] Do not render forbidden raw fields already blocked by runtime events (`rawOutput`, `stdout`, `stderr`, `rawContent`, `patch`, `diff`, `env`, `snippets`, credentials).
 
-- [ ] Render stream output in a deterministic formatter (AC: 1, 3, 4, 5)
-  - [ ] Add a text formatter such as `formatTuiMessageStream()` or extend an equivalent deterministic formatter for tests/manual review.
-  - [ ] Use explicit labels/tokens like `TASK`, `TOOL`, `VALIDATION`, `FILE`, `APPROVAL`, `POLICY`, `MEMORY`, `SKILL`, `LEARNING`, `SESSION`, `WARN`, and `ERROR`.
-  - [ ] Ensure severity is perceivable without color; color may be added later by Ink components but cannot be the only signal.
-  - [ ] Keep formatter output bounded and deterministic so it can be tested without an interactive terminal.
+- [x] Render stream output in a deterministic formatter (AC: 1, 3, 4, 5)
+  - [x] Add a text formatter such as `formatTuiMessageStream()` or extend an equivalent deterministic formatter for tests/manual review.
+  - [x] Use explicit labels/tokens like `TASK`, `TOOL`, `VALIDATION`, `FILE`, `APPROVAL`, `POLICY`, `MEMORY`, `SKILL`, `LEARNING`, `SESSION`, `WARN`, and `ERROR`.
+  - [x] Ensure severity is perceivable without color; color may be added later by Ink components but cannot be the only signal.
+  - [x] Keep formatter output bounded and deterministic so it can be tested without an interactive terminal.
 
-- [ ] Add stream adapter tests (AC: 1-5)
-  - [ ] Add `tests/tui-message-stream.test.ts` or equivalent focused coverage.
-  - [ ] Cover task started/waiting/completed/failed/cancelled classification and status labels.
-  - [ ] Cover `tool.call.requested|started|completed|failed` and `validation.started|completed`, including success, failed, blocked, skipped, and `outputReference`.
-  - [ ] Cover file activity/edit, policy decision, approval requested/resolved, memory, skill, session, compaction, retrospective, and learning events as safe display items.
-  - [ ] Add a regression test that normal `validation.completed.payload.summary` does not become a warning.
-  - [ ] Add large-output tests for 32 KB and 500-line boundaries using synthetic payload preview input or safe formatter fixtures; assert full output is not inlined.
-  - [ ] Assert no interactive terminal renderer, live provider, network, or shell command is required by the tests.
+- [x] Add stream adapter tests (AC: 1-5)
+  - [x] Add `tests/tui-message-stream.test.ts` or equivalent focused coverage.
+  - [x] Cover task started/waiting/completed/failed/cancelled classification and status labels.
+  - [x] Cover `tool.call.requested|started|completed|failed` and `validation.started|completed`, including success, failed, blocked, skipped, and `outputReference`.
+  - [x] Cover file activity/edit, policy decision, approval requested/resolved, memory, skill, session, compaction, retrospective, and learning events as safe display items.
+  - [x] Add a regression test that normal `validation.completed.payload.summary` does not become a warning.
+  - [x] Add large-output tests for 32 KB and 500-line boundaries using synthetic payload preview input or safe formatter fixtures; assert full output is not inlined.
+  - [x] Assert no interactive terminal renderer, live provider, network, or shell command is required by the tests.
 
-- [ ] Add renderer dependency only if necessary (AC: 1, 4, 5)
-  - [ ] Prefer pure `.ts` stream contracts first. Do not add Ink/React unless implementation cannot satisfy this story without live terminal rendering.
-  - [ ] If Ink is added, scope dependencies to `packages/tui`, update lockfile intentionally, keep `packages/core` free of TUI/Ink imports, and add renderer tests with `ink-testing-library`.
-  - [ ] If Ink is deferred, record that the story satisfies acceptance through the adapter contract and deterministic formatter, leaving interactive layout for Story 6.3+.
+- [x] Add renderer dependency only if necessary (AC: 1, 4, 5)
+  - [x] Prefer pure `.ts` stream contracts first. Do not add Ink/React unless implementation cannot satisfy this story without live terminal rendering.
+  - [x] If Ink is added, scope dependencies to `packages/tui`, update lockfile intentionally, keep `packages/core` free of TUI/Ink imports, and add renderer tests with `ink-testing-library`.
+  - [x] If Ink is deferred, record that the story satisfies acceptance through the adapter contract and deterministic formatter, leaving interactive layout for Story 6.3+.
 
-- [ ] Validate and update story status (AC: 1-5)
-  - [ ] Run targeted stream tests first.
-  - [ ] Run `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
-  - [ ] Run GitNexus analyze/status before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
-  - [ ] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
+- [x] Validate and update story status (AC: 1-5)
+  - [x] Run targeted stream tests first.
+  - [x] Run `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
+  - [x] Run GitNexus analyze/status before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
+  - [x] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
 
 ## Dev Notes
 
@@ -206,6 +206,19 @@ GPT-5.5
 - Loaded BMad create-story workflow, sprint status, Epic 6 planning, PRD TUI requirements, architecture adapter/runtime boundaries, Story 6.1 implementation/review notes, current TUI package, and runtime event contracts.
 - Confirmed current package registry versions with `npm view ink version`, `npm view react version`, and `npm view ink-testing-library version` on 2026-05-11.
 - External references checked: Ink, ink-testing-library, CLI Guidelines, and WCAG use-of-color guidance.
+- Started BMad dev-story implementation on 2026-05-11; marked Story 6.2 in-progress.
+- Confirmed implementation contracts before code edits: `createTuiMessageStream()`, `createTuiEventStreamItem()`, `formatTuiMessageStream()`, `TuiMessageStreamItem`, `TuiMessageStreamKind`, `TuiMessageStreamSeverity`, `TuiOutputPreview`, and output threshold constants.
+- GitNexus impact checks before code edits: `createTuiRuntimeState` LOW, `formatTuiStateSummary` LOW, `RuntimeEventRecord` not indexed as a target, and `validateRuntimeEvent` CRITICAL. Implementation will not edit `validateRuntimeEvent` or runtime event contracts.
+- Red test confirmed missing Story 6.2 stream exports: `npm test -- --run tests/tui-message-stream.test.ts` failed with `createTuiMessageStream is not a function`.
+- Implemented pure message-stream read model/formatter in `packages/tui/src/index.ts`; no runtime contract, CLI entrypoint, or Ink/React dependency was added.
+- Validation passed: targeted stream tests, TUI state regression tests, typecheck, full Vitest suite, `git diff --check`, GitNexus analyze/status, and GitNexus impact checks for new stream exports.
+
+### Implementation Plan
+
+- Keep Story 6.2 adapter-only: map `RuntimeEventRecord[]` to safe stream items and deterministic text output.
+- Reuse existing TUI safe string/bounded-list helpers and `@sprite/shared` redaction primitives.
+- Model large output as preview/reference metadata only; never dereference local log paths or inline raw output.
+- Defer Ink/React until a later interactive story needs live terminal layout.
 
 ### Completion Notes List
 
@@ -213,8 +226,21 @@ GPT-5.5
 - Scoped Story 6.2 to a pure stream adapter/formatter first, with Ink/React deferred unless implementation proves it necessary.
 - Captured Story 6.1 warning-classification regression as a guardrail for this story.
 - Added explicit implementation boundaries to prevent TUI-owned lifecycle state, raw output display, secret leakage, or final-summary parsing.
+- Added exported stream contracts: `createTuiMessageStream()`, `createTuiEventStreamItem()`, `formatTuiMessageStream()`, `TuiMessageStreamItem`, `TuiMessageStreamKind`, `TuiMessageStreamSeverity`, `TuiOutputPreview`, `TUI_OUTPUT_PREVIEW_MAX_BYTES`, and `TUI_OUTPUT_PREVIEW_MAX_LINES`.
+- Stream mapping now classifies task/tool/validation/file/policy/approval/memory/skill/session/retrospective/learning event families from typed runtime event metadata.
+- Formatter emits deterministic text tokens such as `[TOOL][SUCCESS]` and `[APPROVAL][ERROR]` without ANSI/color-only signaling.
+- Output previews are bounded at 32 KB or 500 lines, preserve safe local references, redact secret-like content, and keep full output out of the stream formatter.
+- No Ink/React dependency was added; Story 6.2 is satisfied through pure adapter contracts and tests.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/6-2-display-message-stream-tool-activity-and-validation-results.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/tui/src/index.ts`
+- `tests/tui-message-stream.test.ts`
+
+### Change Log
+
+- 2026-05-11: Started Story 6.2 development and marked sprint/story in-progress.
+- 2026-05-11: Added typed TUI message-stream adapter, deterministic formatter, large-output preview/reference model, and stream tests.
+- 2026-05-11: Marked Story 6.2 ready for review after targeted/full validation and GitNexus checks passed.
