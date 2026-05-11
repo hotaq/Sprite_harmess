@@ -205,20 +205,7 @@ export function createTuiRuntimeState({
   const skillsSection = findTaskContextSection(taskContextPacket, "skills");
   const warnings = uniqueStrings([
     ...flow.warnings,
-    ...flow.request.startup.warnings,
-    ...events.flatMap((event) => {
-      const payload = event.payload;
-      if (
-        payload !== null &&
-        typeof payload === "object" &&
-        "summary" in payload &&
-        typeof payload.summary === "string"
-      ) {
-        return [payload.summary];
-      }
-
-      return [];
-    })
+    ...flow.request.startup.warnings
   ]);
 
   return {

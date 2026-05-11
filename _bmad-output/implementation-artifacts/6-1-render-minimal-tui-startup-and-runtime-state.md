@@ -1,6 +1,6 @@
 # Story 6.1: Render Minimal TUI Startup and Runtime State
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -60,6 +60,10 @@ so that I can understand what environment the agent is operating in.
   - [x] Run `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
   - [x] Run GitNexus analyze/status fallback before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
   - [x] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
+
+### Review Findings
+
+- [x] [Review][Patch] Runtime summaries are counted as warnings — `createTuiRuntimeState()` previously treated runtime event payload `summary` fields as warning previews. Fixed by deriving warnings only from runtime/startup warning channels and adding a regression test that normal `validation.completed` summaries do not increment warning counts. [packages/tui/src/index.ts:206]
 
 ## Dev Notes
 
@@ -215,3 +219,6 @@ GPT-5.5
 - 2026-05-11: Created ready-for-dev Story 6.1 context for minimal TUI startup/runtime state.
 - 2026-05-11: Started development and added UX/UI research direction for Story 6.1.
 - 2026-05-11: Implemented pure TUI runtime-state adapter and moved Story 6.1 to review.
+- 2026-05-11: Code review found one TUI warning-classification patch item and moved Story 6.1 back to in-progress.
+- 2026-05-11: Fixed warning-classification review item and moved Story 6.1 back to review.
+- 2026-05-11: Closed Story 6.1 after targeted validation passed and review finding was resolved.

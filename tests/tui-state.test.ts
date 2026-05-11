@@ -83,7 +83,41 @@ describe("TUI state adapter", () => {
     expect(state.events.latestType).toBe("task.waiting");
     expect(state.context.loadedCount).toBe(1);
     expect(state.memory.entryCount).toBe(2);
+    expect(state.warnings.count).toBe(0);
     expect(formatTuiStateSummary(state)).not.toMatch(/\u001b\[/u);
+  });
+
+  it("does not classify normal runtime event summaries as warnings", () => {
+    const packet = createTaskContextPacket();
+    const flow = createPlannedExecutionFlow(packet);
+
+    const state = createTuiRuntimeState({
+      events: [
+        {
+          correlationId: "corr-1",
+          createdAt: "2026-05-11T00:00:00.000Z",
+          eventId: "evt-1",
+          payload: {
+            command: "npm test",
+            durationMs: 42,
+            exitCode: 0,
+            status: "passed",
+            summary: "Validation completed successfully.",
+            validationId: "validation-1"
+          },
+          schemaVersion: 1,
+          sessionId: "sess-1",
+          taskId: "task-1",
+          type: "validation.completed"
+        }
+      ],
+      flow,
+      taskContextPacket: packet
+    });
+
+    expect(state.events.latestType).toBe("validation.completed");
+    expect(state.warnings.count).toBe(0);
+    expect(formatTuiStateSummary(state)).toContain("warnings: [OK] 0");
   });
 
   it("bounds broad status output and keeps candidates separate from active skills", () => {
