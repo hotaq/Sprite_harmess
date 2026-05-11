@@ -5,6 +5,7 @@ import {
   compactSessionManually,
   createBootstrapMessage,
   createInteractiveTaskMessage,
+  createRuntimeEventRecord,
   inspectSessionState,
   listSkills,
   resolveOneShotPrintOutputFormat,
@@ -16,12 +17,27 @@ import {
   type OneShotPrintTaskResult,
   type RuntimeSkillCandidateReviewRequest,
   type RuntimeSkillCandidateReviewResult,
+  type RuntimeEventRecord,
   type SessionInspectionView,
   type SessionResumeResult,
   type SkillCandidateReviewView,
   type SkillRegistryEntry,
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
+import {
+  createTuiCancelIntent,
+  createTuiCommandPreview,
+  createTuiInputDraft,
+  createTuiLiveWorkbenchState,
+  createTuiStartupState,
+  createTuiSubmitIntent,
+  createTuiWorkbenchView,
+  dispatchTuiUserIntent,
+  runTuiWorkbench,
+  type TuiApprovalRequestSummary,
+  type TuiLiveWorkbenchInteraction,
+  type TuiLiveWorkbenchState
+} from "@sprite/tui";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -636,6 +652,164 @@ function renderFinalSummaryText(summary: FinalTaskSummary): string[] {
   ];
 }
 
+interface InitialTuiStateOptions {
+  demo?: boolean;
+}
+
+function createInitialTuiPreview(
+  runtime: AgentRuntime,
+  options: InitialTuiStateOptions = {}
+): string {
+  return createTuiCommandPreview(createInitialTuiState(runtime, options));
+}
+
+function createInitialTuiState(
+  runtime: AgentRuntime,
+  options: InitialTuiStateOptions = {}
+): TuiLiveWorkbenchState {
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    throw bootstrapState.error;
+  }
+
+  const runtimeState = createTuiStartupState({
+    bootstrapState: bootstrapState.value
+  });
+  const demoEnabled = options.demo === true;
+
+  return createTuiLiveWorkbenchState({
+    events: demoEnabled ? createTuiDemoEvents(runtimeState.workspace.cwd.value) : [],
+    runtimeState,
+    workbench: createTuiWorkbenchView({
+      pendingApprovals: demoEnabled ? createTuiDemoApprovals() : []
+    })
+  });
+}
+
+function createTuiDemoEvents(cwd: string): RuntimeEventRecord[] {
+  return [
+    createRuntimeEventRecord(
+      {
+        correlationId: "demo-correlation",
+        createdAt: new Date(0).toISOString(),
+        eventId: "demo-event-1",
+        sessionId: "demo-session",
+        taskId: "demo-task"
+      },
+      "tool.call.completed",
+      {
+        cwd,
+        outputReference: {
+          fullOutputStored: true,
+          path: ".sprite/logs/demo-tool-output.log",
+          reason: "large demo output"
+        },
+        status: "completed",
+        summary:
+          "Demo tool completed; OPENAI_API_KEY=sk-demo-secret is redacted.",
+        toolCallId: "demo-tool-call",
+        toolName: "run_command"
+      }
+    )
+  ];
+}
+
+function createTuiDemoApprovals(): TuiApprovalRequestSummary[] {
+  return [
+    {
+      affectedFiles: ["README.md"],
+      allowedActions: ["allow", "deny", "edit"],
+      approvalRequestId: "demo-approval",
+      reason:
+        "Demo approval for a file edit; OPENAI_API_KEY=sk-demo-secret is redacted.",
+      requestType: "file_edit",
+      riskLevel: "medium",
+      summary: "Demo apply_patch request with TOKEN=sk-demo-secret.",
+      timeoutMs: 30_000,
+      toolCallId: "demo-tool-call"
+    }
+  ];
+}
+
+function isInteractiveStdout(): boolean {
+  return process.stdout.isTTY === true;
+}
+
+function createTuiCommandOptions(options: {
+  demo?: boolean;
+  preview?: boolean;
+}): InitialTuiStateOptions {
+  return {
+    demo: options.demo === true
+  };
+}
+
+function shouldRenderStaticTuiPreview(options: { preview?: boolean }): boolean {
+  return options.preview === true || !isInteractiveStdout();
+}
+
+function createTuiNonInteractiveNotice(): string {
+  return [
+    "note: stdout is not a TTY, so Sprite rendered the static preview instead of the live Ink session.",
+    "manual live test: run `sprite tui --demo` in a real terminal."
+  ].join("\n");
+}
+
+function createTuiPreviewOutput(
+  runtime: AgentRuntime,
+  options: InitialTuiStateOptions,
+  includeNonInteractiveNotice: boolean
+): string {
+  const preview = createInitialTuiPreview(runtime, options);
+
+  return includeNonInteractiveNotice
+    ? `${preview}\n${createTuiNonInteractiveNotice()}`
+    : preview;
+}
+
+async function runLiveTuiCommand(
+  runtime: AgentRuntime,
+  options: InitialTuiStateOptions
+): Promise<void> {
+  const liveState = createInitialTuiState(runtime, options);
+  const instance = runTuiWorkbench({
+    onInteraction: (interaction) =>
+      handleLiveTuiInteraction(runtime, interaction),
+    state: liveState
+  });
+
+  await instance.waitUntilExit();
+}
+
+function handleLiveTuiInteraction(
+  runtime: AgentRuntime,
+  interaction: TuiLiveWorkbenchInteraction
+): void {
+  if (interaction.type === "exit") {
+    return;
+  }
+
+  if (interaction.type === "cancel") {
+    void dispatchTuiUserIntent(runtime, createTuiCancelIntent(interaction.note));
+    return;
+  }
+
+  if (interaction.type === "approval") {
+    return;
+  }
+
+  const intent = createTuiSubmitIntent(createTuiInputDraft(interaction.text), {
+    mode: interaction.mode
+  });
+
+  if (!intent.ok) {
+    return;
+  }
+
+  void dispatchTuiUserIntent(runtime, intent.value);
+}
+
 function formatPathList(paths: string[]): string[] {
   return paths.length === 0
     ? ["- none"]
@@ -722,6 +896,32 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
           steer: options.steer
         })
       );
+    });
+
+  program
+    .command("tui")
+    .description("launch the live Ink TUI workbench")
+    .option("--preview", "render a static TUI preview and exit (not interactive)")
+    .option("--demo", "seed the TUI with local demo events and approvals")
+    .action(async (options: { demo?: boolean; preview?: boolean }) => {
+      const runtime = new AgentRuntime({
+        homeDir: process.env.HOME ?? process.env.USERPROFILE
+      });
+      const tuiOptions = createTuiCommandOptions(options);
+
+      if (shouldRenderStaticTuiPreview(options)) {
+        writeMessage(
+          io,
+          createTuiPreviewOutput(
+            runtime,
+            tuiOptions,
+            options.preview !== true && !isInteractiveStdout()
+          )
+        );
+        return;
+      }
+
+      await runLiveTuiCommand(runtime, tuiOptions);
     });
 
   const sessionCommand = program

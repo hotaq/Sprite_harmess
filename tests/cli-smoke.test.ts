@@ -154,6 +154,56 @@ describe("sprite cli smoke tests", () => {
     );
   });
 
+  it("shows bounded live TUI help without launching a terminal session", () => {
+    const result = spawnSync("node", [cliPath, "tui", "--help"], {
+      encoding: "utf8"
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("launch the live Ink TUI workbench");
+    expect(result.stdout).toContain("--preview");
+    expect(result.stdout).toContain("static TUI preview");
+    expect(result.stdout).toContain("--demo");
+  });
+
+  it("shows a clearly static demo preview without launching a live TUI", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+    const result = spawnSync("node", [cliPath, "tui", "--preview", "--demo"], {
+      cwd: projectDir,
+      env: { ...process.env, HOME: homeDir },
+      encoding: "utf8"
+    });
+
+    rmSync(rootDir, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Sprite Harness TUI preview (static)");
+    expect(result.stdout).toContain("mode: static preview");
+    expect(result.stdout).toContain("not interactive");
+    expect(result.stdout).toContain("demo-approval");
+    expect(result.stdout).toContain(`${exitShortcutLabel()} exit`);
+    expect(result.stdout).toContain("Enter send");
+    expect(result.stdout).toContain("Shift+Enter/Ctrl+J newline");
+    expect(result.stdout).toContain("Esc cancel");
+    expect(result.stdout).toContain("details hidden");
+    expect(result.stdout).toContain("/runtime, /context, /details, /hide, or /help");
+    expect(result.stdout).not.toContain("submit /runtime");
+    expect(result.stdout).toContain("menu: A approve");
+    expect(result.stdout).not.toContain("actions:");
+    expect(result.stdout).not.toContain("Slash commands:");
+    expect(result.stdout).not.toContain("[Runtime]");
+    expect(result.stdout).not.toContain("[Context]");
+    expect(result.stdout).not.toContain("[Activity]");
+    expect(result.stdout).not.toContain("[Approvals]");
+    expect(result.stdout).not.toContain("[Footer]");
+    expect(result.stdout).not.toContain("[PENDING] no runtime events yet");
+    expect(result.stdout).not.toContain("[PENDING] no approvals");
+    expect(result.stdout).not.toContain("Cmd+D");
+    expect(result.stdout).not.toContain("Esc/Ctrl+D/q");
+    expect(result.stdout).not.toContain("Ctrl+C opens cancel prompt");
+    expect(result.stdout).not.toContain("sk-demo-secret");
+  });
+
   it("shows version output", () => {
     const result = spawnSync("node", [cliPath, "--version"], {
       encoding: "utf8"
@@ -1553,3 +1603,7 @@ Check regressions before committing.
     expect(result.stdout).toContain("Usage: sprite");
   });
 });
+
+function exitShortcutLabel(): string {
+  return "Ctrl+D";
+}

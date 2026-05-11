@@ -5,8 +5,9 @@
     "declaration": false,
     "declarationMap": false,
     "incremental": false,
+    "jsx": "react-jsx",
     "noEmit": true,
     "types": ["node", "vitest"]
   },
-  "include": ["./**/*.test.ts"]
+  "include": ["./**/*.test.ts", "./**/*.test.tsx"]
 }

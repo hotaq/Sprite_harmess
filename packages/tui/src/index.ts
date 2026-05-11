@@ -3,6 +3,7 @@ import type {
   PlannedExecutionFlow,
   RuntimeEventOutputReference,
   RuntimeEventRecord,
+  RuntimeApprovalResponse,
   RuntimeSelfModelSnapshot,
   TaskContextPacket,
   TaskContextSection,
@@ -10,7 +11,11 @@ import type {
 } from "@sprite/core";
 import {
   containsSecretLikeValue,
-  createRedactedPreview
+  createRedactedPreview,
+  err,
+  ok,
+  SpriteError,
+  type Result
 } from "@sprite/shared";
 
 const DEFAULT_STRING_LIMIT = 96;
@@ -217,6 +222,150 @@ export interface CreateTuiEventStreamItemOptions
   order?: number;
 }
 
+export interface TuiInputDraft {
+  isEmpty: boolean;
+  lineCount: number;
+  preview: TuiSafeString;
+  text: string;
+}
+
+export type TuiInputDraftAction =
+  | { text: string; type: "append" }
+  | { text: string; type: "replace" }
+  | { type: "backspace" }
+  | { type: "clear" }
+  | { type: "newline" };
+
+export type TuiSubmitIntentMode = "steer-task" | "submit-task";
+
+export type TuiUserIntent =
+  | {
+      preview: TuiSafeString;
+      text: string;
+      type: "submit-task";
+    }
+  | {
+      note: string;
+      preview: TuiSafeString;
+      type: "steer-task";
+    }
+  | {
+      note?: string;
+      type: "cancel-task";
+    }
+  | {
+      response: RuntimeApprovalResponse;
+      type: "approval-response";
+    };
+
+export interface TuiRuntimeControlPort {
+  cancelActiveTask(note?: string): Result<PlannedExecutionFlow>;
+  respondToApproval(
+    response: RuntimeApprovalResponse
+  ): Promise<Result<unknown>> | Result<unknown>;
+  steerActiveTask(note: string): Result<PlannedExecutionFlow>;
+  submitInteractiveTask(task: string): Result<PlannedExecutionFlow>;
+}
+
+export type TuiApprovalAction = "allow" | "alwaysAllowForSession" | "deny" | "edit";
+export type TuiApprovalRequestType = "command" | "file_edit";
+export type TuiRiskLevel = "critical" | "high" | "low" | "medium";
+
+export interface TuiApprovalRequestSummary {
+  affectedFiles?: readonly string[];
+  allowedActions: readonly TuiApprovalAction[];
+  approvalRequestId: string;
+  reason: string;
+  requestType: TuiApprovalRequestType;
+  riskLevel: TuiRiskLevel;
+  summary: string;
+  timeoutMs: number;
+  toolCallId?: string;
+}
+
+export interface TuiApprovalApplyPatchEdit {
+  newText: string;
+  oldText: string;
+  path: string;
+}
+
+export interface TuiApprovalApplyPatchToolCall {
+  input: {
+    edits: readonly TuiApprovalApplyPatchEdit[];
+    summary?: string;
+  };
+  toolName: "apply_patch";
+}
+
+export type TuiApprovalResponseSelection =
+  | {
+      action: Extract<TuiApprovalAction, "allow" | "alwaysAllowForSession">;
+    }
+  | {
+      action: "deny";
+      reason?: string;
+    }
+  | {
+      action: "edit";
+      modifiedRequest: Record<string, unknown>;
+      modifiedToolCall?: never;
+      reason?: string;
+    }
+  | {
+      action: "edit";
+      modifiedRequest?: never;
+      modifiedToolCall: TuiApprovalApplyPatchToolCall;
+      reason?: string;
+    }
+  | {
+      action: "timeout";
+    };
+
+export interface TuiDispatchResult {
+  approvalResult?: unknown;
+  flow?: PlannedExecutionFlow;
+  intentType: TuiUserIntent["type"];
+  status: "approval-recorded" | "cancelled" | "steered" | "submitted";
+}
+
+export type TuiWorkbenchActionLabel =
+  | "APPROVE"
+  | "CANCEL"
+  | "DENY"
+  | "EDIT"
+  | "STEER"
+  | "SUBMIT"
+  | "TIMEOUT";
+
+export interface TuiWorkbenchApprovalView {
+  actions: readonly TuiWorkbenchActionLabel[];
+  approvalRequestId: TuiSafeString;
+  reason: TuiSafeString;
+  requestType: TuiApprovalRequestType;
+  riskLevel: TuiRiskLevel;
+  summary: TuiSafeString;
+  timeoutMs: number;
+  toolCallId?: TuiSafeString;
+}
+
+export interface TuiWorkbenchView {
+  actions: readonly TuiWorkbenchActionLabel[];
+  approvals: readonly TuiWorkbenchApprovalView[];
+  input: TuiInputDraft;
+  mode: TuiSubmitIntentMode;
+  source: "tui-workbench";
+}
+
+export interface CreateTuiSubmitIntentOptions {
+  mode?: TuiSubmitIntentMode;
+}
+
+export interface CreateTuiWorkbenchViewInput {
+  draft?: TuiInputDraft;
+  mode?: TuiSubmitIntentMode;
+  pendingApprovals?: readonly TuiApprovalRequestSummary[];
+}
+
 export function createTuiStartupState({
   bootstrapState,
   runtimeSnapshot,
@@ -385,6 +534,644 @@ export function createTuiEventStreamItem(
 
 export function formatTuiMessageStream(stream: TuiMessageStream): string {
   return stream.items.map(formatTuiMessageStreamItem).join("\n");
+}
+
+export function createTuiInputDraft(
+  text = "",
+  options: { stringLimit?: number } = {}
+): TuiInputDraft {
+  const normalizedText = normalizeInputText(text);
+  const lineCount =
+    normalizedText.length === 0 ? 0 : splitLines(normalizedText).length;
+
+  return {
+    isEmpty: normalizedText.trim().length === 0,
+    lineCount,
+    preview: createSafeString(normalizedText, options.stringLimit),
+    text: normalizedText
+  };
+}
+
+export function updateTuiInputDraft(
+  draft: TuiInputDraft,
+  action: TuiInputDraftAction,
+  options: { stringLimit?: number } = {}
+): TuiInputDraft {
+  switch (action.type) {
+    case "append": {
+      return createTuiInputDraft(`${draft.text}${action.text}`, options);
+    }
+    case "backspace": {
+      return createTuiInputDraft(Array.from(draft.text).slice(0, -1).join(""), options);
+    }
+    case "clear": {
+      return createTuiInputDraft("", options);
+    }
+    case "newline": {
+      return createTuiInputDraft(`${draft.text}\n`, options);
+    }
+    case "replace": {
+      return createTuiInputDraft(action.text, options);
+    }
+  }
+}
+
+export function createTuiSubmitIntent(
+  draft: TuiInputDraft,
+  options: CreateTuiSubmitIntentOptions = {}
+): Result<TuiUserIntent, SpriteError> {
+  if (draft.isEmpty) {
+    return err(
+      new SpriteError(
+        "TUI_INPUT_EMPTY",
+        "TUI input cannot be submitted while empty."
+      )
+    );
+  }
+
+  const mode = options.mode ?? "submit-task";
+  if (mode === "steer-task") {
+    return {
+      ok: true,
+      value: {
+        note: draft.text,
+        preview: draft.preview,
+        type: "steer-task"
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      preview: draft.preview,
+      text: draft.text,
+      type: "submit-task"
+    }
+  };
+}
+
+export function createTuiCancelIntent(note?: string): TuiUserIntent {
+  return {
+    ...(note === undefined ? {} : { note }),
+    type: "cancel-task"
+  };
+}
+
+export function createTuiApprovalResponseIntent(
+  approvalRequest: TuiApprovalRequestSummary,
+  selection: TuiApprovalResponseSelection
+): Result<TuiUserIntent, SpriteError> {
+  const actionValidation = validateApprovalActionSelection(
+    approvalRequest,
+    selection
+  );
+  if (!actionValidation.ok) {
+    return actionValidation;
+  }
+
+  switch (selection.action) {
+    case "allow":
+    case "alwaysAllowForSession": {
+      return {
+        ok: true,
+        value: {
+          response: {
+            action: selection.action,
+            approvalRequestId: approvalRequest.approvalRequestId
+          },
+          type: "approval-response"
+        }
+      };
+    }
+    case "deny": {
+      return {
+        ok: true,
+        value: {
+          response: {
+            action: "deny",
+            approvalRequestId: approvalRequest.approvalRequestId,
+            ...(selection.reason === undefined ? {} : { reason: selection.reason })
+          },
+          type: "approval-response"
+        }
+      };
+    }
+    case "timeout": {
+      return {
+        ok: true,
+        value: {
+          response: {
+            action: "timeout",
+            approvalRequestId: approvalRequest.approvalRequestId
+          },
+          type: "approval-response"
+        }
+      };
+    }
+    case "edit": {
+      if (approvalRequest.requestType === "command") {
+        return {
+          ok: true,
+          value: {
+            response: {
+              action: "edit",
+              approvalRequestId: approvalRequest.approvalRequestId,
+              modifiedRequest: selection.modifiedRequest,
+              ...(selection.reason === undefined ? {} : { reason: selection.reason })
+            } as RuntimeApprovalResponse,
+            type: "approval-response"
+          }
+        };
+      }
+
+      return {
+        ok: true,
+        value: {
+          response: {
+            action: "edit",
+            approvalRequestId: approvalRequest.approvalRequestId,
+            modifiedToolCall: selection.modifiedToolCall,
+            ...(selection.reason === undefined ? {} : { reason: selection.reason })
+          } as RuntimeApprovalResponse,
+          type: "approval-response"
+        }
+      };
+    }
+  }
+}
+
+export async function dispatchTuiUserIntent(
+  port: TuiRuntimeControlPort,
+  intent: TuiUserIntent
+): Promise<Result<TuiDispatchResult>> {
+  switch (intent.type) {
+    case "approval-response": {
+      const result = await port.respondToApproval(intent.response);
+
+      if (!result.ok) {
+        return result;
+      }
+
+      return ok({
+        approvalResult: result.value,
+        intentType: intent.type,
+        status: "approval-recorded"
+      });
+    }
+    case "cancel-task": {
+      const result = port.cancelActiveTask(intent.note);
+
+      if (!result.ok) {
+        return result;
+      }
+
+      return ok({
+        flow: result.value,
+        intentType: intent.type,
+        status: "cancelled"
+      });
+    }
+    case "steer-task": {
+      const result = port.steerActiveTask(intent.note);
+
+      if (!result.ok) {
+        return result;
+      }
+
+      return ok({
+        flow: result.value,
+        intentType: intent.type,
+        status: "steered"
+      });
+    }
+    case "submit-task": {
+      const result = port.submitInteractiveTask(intent.text);
+
+      if (!result.ok) {
+        return result;
+      }
+
+      return ok({
+        flow: result.value,
+        intentType: intent.type,
+        status: "submitted"
+      });
+    }
+  }
+}
+
+export function createTuiWorkbenchView({
+  draft = createTuiInputDraft(),
+  mode = "submit-task",
+  pendingApprovals = []
+}: CreateTuiWorkbenchViewInput = {}): TuiWorkbenchView {
+  const approvalViews = pendingApprovals.map(createWorkbenchApprovalView);
+  const approvalActions = approvalViews.flatMap((approval) => approval.actions);
+
+  return {
+    actions: uniqueWorkbenchActions([
+      mode === "steer-task" ? "STEER" : "SUBMIT",
+      "CANCEL",
+      ...approvalActions
+    ]),
+    approvals: approvalViews,
+    input: draft,
+    mode,
+    source: "tui-workbench"
+  };
+}
+
+export function formatTuiWorkbenchView(view: TuiWorkbenchView): string {
+  const preview = view.input.isEmpty
+    ? "What should Sprite work on?"
+    : view.input.preview.value;
+
+  return [
+    "╭─ Prompt",
+    `│ ${preview}`,
+    "╰─"
+  ].join("\n");
+}
+
+export interface TuiLiveWorkbenchState {
+  events: readonly RuntimeEventRecord[];
+  latestDispatchError?: TuiSafeString;
+  latestDispatchResult?: TuiDispatchResult;
+  messageStream: TuiMessageStream;
+  messageSummary: string;
+  runtimeState: TuiRuntimeViewState;
+  runtimeSummary: string;
+  source: "tui-live-workbench";
+  workbench: TuiWorkbenchView;
+  workbenchSummary: string;
+}
+
+export interface CreateTuiLiveWorkbenchStateInput {
+  events?: readonly RuntimeEventRecord[];
+  latestDispatchError?: TuiSafeString;
+  latestDispatchResult?: TuiDispatchResult;
+  messageStream?: TuiMessageStream;
+  runtimeState: TuiRuntimeViewState;
+  streamOptions?: CreateTuiMessageStreamOptions;
+  workbench?: TuiWorkbenchView;
+}
+
+export type TuiLiveWorkbenchAction =
+  | {
+      event: RuntimeEventRecord;
+      streamOptions?: CreateTuiMessageStreamOptions;
+      type: "runtime-event";
+    }
+  | {
+      events: readonly RuntimeEventRecord[];
+      streamOptions?: CreateTuiMessageStreamOptions;
+      type: "replace-events";
+    }
+  | {
+      action: TuiInputDraftAction;
+      type: "update-draft";
+    }
+  | {
+      intent: TuiUserIntent;
+      port: TuiRuntimeControlPort;
+      type: "dispatch-intent";
+    }
+  | {
+      result: TuiDispatchResult;
+      type: "record-dispatch-result";
+    }
+  | {
+      workbench: TuiWorkbenchView;
+      type: "set-workbench";
+    };
+
+export function createTuiLiveWorkbenchState({
+  events = [],
+  latestDispatchError,
+  latestDispatchResult,
+  messageStream,
+  runtimeState,
+  streamOptions = {},
+  workbench = createTuiWorkbenchView()
+}: CreateTuiLiveWorkbenchStateInput): TuiLiveWorkbenchState {
+  const resolvedMessageStream =
+    messageStream ?? createTuiMessageStream(events, streamOptions);
+  const latestEventType =
+    events.at(-1)?.type ?? runtimeState.events.latestType;
+  const resolvedRuntimeState =
+    runtimeState.events.count === events.length &&
+    runtimeState.events.latestType === latestEventType
+      ? runtimeState
+      : {
+          ...runtimeState,
+          events: {
+            count: events.length,
+            latestType: latestEventType
+          }
+        };
+
+  return {
+    events,
+    ...(latestDispatchError === undefined ? {} : { latestDispatchError }),
+    ...(latestDispatchResult === undefined ? {} : { latestDispatchResult }),
+    messageStream: resolvedMessageStream,
+    messageSummary: formatTuiMessageStream(resolvedMessageStream),
+    runtimeState: resolvedRuntimeState,
+    runtimeSummary: formatTuiStateSummary(resolvedRuntimeState),
+    source: "tui-live-workbench",
+    workbench,
+    workbenchSummary: formatTuiWorkbenchView(workbench)
+  };
+}
+
+export async function reduceTuiLiveWorkbenchEvent(
+  state: TuiLiveWorkbenchState,
+  action: TuiLiveWorkbenchAction
+): Promise<TuiLiveWorkbenchState> {
+  switch (action.type) {
+    case "dispatch-intent": {
+      const dispatchResult = await dispatchTuiUserIntent(action.port, action.intent);
+
+      if (!dispatchResult.ok) {
+        return createTuiLiveWorkbenchState({
+          ...state,
+          latestDispatchError: createSafeString(dispatchResult.error.message)
+        });
+      }
+
+      const shouldClearDraft =
+        action.intent.type === "submit-task" || action.intent.type === "steer-task";
+      return createTuiLiveWorkbenchState({
+        ...state,
+        latestDispatchError: undefined,
+        latestDispatchResult: dispatchResult.value,
+        workbench: shouldClearDraft
+          ? {
+              ...state.workbench,
+              input: createTuiInputDraft()
+            }
+          : state.workbench
+      });
+    }
+    case "record-dispatch-result": {
+      return createTuiLiveWorkbenchState({
+        ...state,
+        latestDispatchError: undefined,
+        latestDispatchResult: action.result
+      });
+    }
+    case "replace-events": {
+      return createTuiLiveWorkbenchState({
+        ...state,
+        events: action.events,
+        messageStream: undefined,
+        runtimeState: {
+          ...state.runtimeState,
+          events: {
+            count: action.events.length,
+            latestType: action.events.at(-1)?.type ?? null
+          }
+        },
+        streamOptions: action.streamOptions
+      });
+    }
+    case "runtime-event": {
+      const events = [...state.events, action.event];
+      return createTuiLiveWorkbenchState({
+        ...state,
+        events,
+        messageStream: undefined,
+        runtimeState: {
+          ...state.runtimeState,
+          events: {
+            count: events.length,
+            latestType: action.event.type
+          }
+        },
+        streamOptions: action.streamOptions
+      });
+    }
+    case "set-workbench": {
+      return createTuiLiveWorkbenchState({
+        ...state,
+        workbench: action.workbench
+      });
+    }
+    case "update-draft": {
+      return createTuiLiveWorkbenchState({
+        ...state,
+        workbench: {
+          ...state.workbench,
+          input: updateTuiInputDraft(state.workbench.input, action.action)
+        }
+      });
+    }
+  }
+}
+
+export function formatTuiLiveWorkbenchPreview(
+  state: TuiLiveWorkbenchState
+): string {
+  const activityLines = formatPreviewActivityLines(state);
+  const approvalLines = formatPreviewApprovalLines(state);
+  const dispatchLines =
+    state.latestDispatchResult === undefined
+      ? []
+      : [
+          `  dispatch: [OK] ${state.latestDispatchResult.intentType} -> ${state.latestDispatchResult.status}`
+        ];
+  const errorLines =
+    state.latestDispatchError === undefined
+      ? []
+      : [`  dispatch: [ERROR] ${state.latestDispatchError.value}`];
+
+  return [
+    "Sprite Harness TUI preview (static)",
+    "mode: static preview / not interactive / run `sprite tui` in a real TTY for live mode",
+    "",
+    "Sprite Harness TUI live workbench · first draft preview",
+    `session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · details hidden`,
+    "",
+    "details hidden · /runtime, /context, /details, /hide, or /help in live mode",
+    `latest ${state.runtimeState.events.latestType ?? "none"} · warnings ${state.runtimeState.warnings.count} · cwd ${state.runtimeState.workspace.cwd.value}`,
+    ...(activityLines.length === 0 ? [] : ["", ...activityLines]),
+    ...(approvalLines.length === 0 ? [] : ["", ...approvalLines]),
+    "",
+    state.workbenchSummary,
+    ...dispatchLines,
+    ...errorLines,
+    "",
+    `Enter send · Shift+Enter/Ctrl+J newline · Esc cancel · ${getTuiExitShortcutLabel()} exit · /help`,
+    `${state.runtimeState.workspace.cwd.value} · session ${state.runtimeState.session.status} · sandbox ${state.runtimeState.sandbox.mode}`
+  ].join("\n");
+}
+
+export function createTuiCommandPreview(
+  state: TuiLiveWorkbenchState
+): string {
+  return formatTuiLiveWorkbenchPreview(state);
+}
+
+function formatPreviewActivityLines(state: TuiLiveWorkbenchState): string[] {
+  const items = state.messageStream.items.slice(-3);
+
+  if (items.length === 0) {
+    return [];
+  }
+
+  return items.flatMap((item) => {
+    const outputLine =
+      item.output?.reference === undefined
+        ? []
+        : [
+            `│ output: ${item.output.reference.value}${
+              item.output.reason === undefined
+                ? ""
+                : ` (${item.output.reason.value})`
+            }`
+          ];
+
+    return [
+      `╭─ ${item.order}. [${item.kind.toUpperCase()}][${item.severity.toUpperCase()}] ${item.eventType}`,
+      `│ ${item.summary.value}`,
+      ...outputLine,
+      "╰─"
+    ];
+  });
+}
+
+function formatPreviewApprovalLines(state: TuiLiveWorkbenchState): string[] {
+  if (state.workbench.approvals.length === 0) {
+    return [];
+  }
+
+  return state.workbench.approvals.flatMap((approval) => [
+    `╭─ ${approval.approvalRequestId.value} · ${approval.requestType} · ${approval.riskLevel}`,
+    `│ summary: ${approval.summary.value}`,
+    `│ reason: ${approval.reason.value}`,
+    "│ menu: A approve · D deny · E edit · T timeout",
+    approval.toolCallId === undefined
+      ? "╰─"
+      : `╰─ toolCallId: ${approval.toolCallId.value}`
+  ]);
+}
+
+function getTuiExitShortcutLabel(): string {
+  return "Ctrl+D";
+}
+
+export { TuiWorkbenchApp, runTuiWorkbench } from "./live-workbench.js";
+export type {
+  RunTuiWorkbenchOptions,
+  TuiLiveWorkbenchApprovalAction,
+  TuiLiveWorkbenchInteraction,
+  TuiWorkbenchAppProps
+} from "./live-workbench.js";
+
+function normalizeInputText(text: string): string {
+  return text.replace(/\r\n|\r/u, "\n");
+}
+
+function validateApprovalActionSelection(
+  approvalRequest: TuiApprovalRequestSummary,
+  selection: TuiApprovalResponseSelection
+): Result<null, SpriteError> {
+  if (
+    selection.action !== "timeout" &&
+    !approvalRequest.allowedActions.includes(selection.action)
+  ) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_ACTION_UNAVAILABLE",
+        `Approval action '${selection.action}' is not available for ${approvalRequest.approvalRequestId}.`
+      )
+    );
+  }
+
+  if (selection.action !== "edit") {
+    return ok(null) as Result<null, SpriteError>;
+  }
+
+  const hasModifiedRequest =
+    Object.hasOwn(selection, "modifiedRequest") &&
+    selection.modifiedRequest !== undefined;
+  const hasModifiedToolCall =
+    Object.hasOwn(selection, "modifiedToolCall") &&
+    selection.modifiedToolCall !== undefined;
+  const fileEditToolCall =
+    hasModifiedToolCall &&
+    selection.modifiedToolCall?.toolName === "apply_patch";
+
+  if (
+    approvalRequest.requestType === "command" &&
+    (!hasModifiedRequest || hasModifiedToolCall)
+  ) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_SHAPE_INVALID",
+        "Command approval edits must use modifiedRequest only."
+      )
+    );
+  }
+
+  if (
+    approvalRequest.requestType === "file_edit" &&
+    (!hasModifiedToolCall || hasModifiedRequest || !fileEditToolCall)
+  ) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_SHAPE_INVALID",
+        "File edit approval edits must use an apply_patch modifiedToolCall only."
+      )
+    );
+  }
+
+  return ok(null) as Result<null, SpriteError>;
+}
+
+function createWorkbenchApprovalView(
+  approval: TuiApprovalRequestSummary
+): TuiWorkbenchApprovalView {
+  return {
+    actions: uniqueWorkbenchActions([
+      ...approval.allowedActions.map(toWorkbenchApprovalAction),
+      "TIMEOUT"
+    ]),
+    approvalRequestId: createSafeString(approval.approvalRequestId),
+    reason: createSafeString(approval.reason),
+    requestType: approval.requestType,
+    riskLevel: approval.riskLevel,
+    summary: createSafeString(approval.summary),
+    timeoutMs: approval.timeoutMs,
+    ...(approval.toolCallId === undefined
+      ? {}
+      : { toolCallId: createSafeString(approval.toolCallId) })
+  };
+}
+
+function toWorkbenchApprovalAction(
+  action: TuiApprovalAction
+): TuiWorkbenchActionLabel {
+  switch (action) {
+    case "allow":
+    case "alwaysAllowForSession":
+      return "APPROVE";
+    case "deny":
+      return "DENY";
+    case "edit":
+      return "EDIT";
+  }
+}
+
+function uniqueWorkbenchActions(
+  actions: readonly TuiWorkbenchActionLabel[]
+): TuiWorkbenchActionLabel[] {
+  return Array.from(new Set(actions));
+}
+
+function formatWorkbenchAction(action: TuiWorkbenchActionLabel): string {
+  return `[${action}]`;
 }
 
 function getEventKind(eventType: RuntimeEventRecord["type"]): TuiMessageStreamKind {

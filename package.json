@@ -54,7 +54,12 @@
     "packages/tools/dist/**/*.js",
     "packages/tools/dist/**/*.js.map",
     "packages/tools/dist/**/*.d.ts",
-    "packages/tools/dist/**/*.d.ts.map"
+    "packages/tools/dist/**/*.d.ts.map",
+    "packages/tui/package.json",
+    "packages/tui/dist/**/*.js",
+    "packages/tui/dist/**/*.js.map",
+    "packages/tui/dist/**/*.d.ts",
+    "packages/tui/dist/**/*.d.ts.map"
   ],
   "workspaces": [
     "packages/*"

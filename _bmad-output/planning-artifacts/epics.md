@@ -1539,7 +1539,37 @@ So that I can steer, cancel, or approve work without leaving the terminal workbe
 
 **Covers:** FR60, FR61, UX-DR3
 
-### Story 6.4: Implement Slash Commands as Runtime Intents
+### Story 6.4: Launch Live Ink TUI Workbench Shell
+
+As a developer,
+I want to launch a live Ink-based TUI workbench,
+So that I can use the state, stream, input, and approval controls from one terminal UI.
+
+**Acceptance Criteria:**
+
+**Given** `sprite tui` or an equivalent development command starts in a project directory
+**When** the live TUI launches
+**Then** it renders startup/runtime state, message stream, input area, approval prompts, and footer/status using `packages/tui`
+**And** it does not duplicate runtime task lifecycle logic in the UI layer.
+
+**Given** runtime events or runtime state change
+**When** the TUI receives the update
+**Then** the live view updates through the display contracts from Stories 6.1, 6.2, and 6.3
+**And** the runtime remains the source of truth for task state, events, approvals, and control outcomes.
+
+**Given** the user submits multiline input, cancels, or answers an approval in the live TUI
+**When** the action is dispatched
+**Then** it goes through the Story 6.3 typed control intents and runtime port
+**And** the UI does not execute commands or apply file edits directly.
+
+**Given** tests run for the live TUI
+**When** rendering and interaction behavior are verified
+**Then** deterministic Ink renderer tests cover startup display, streamed events, multiline input, cancellation, and approval actions
+**And** tests do not require a live provider, network access, or raw secret display.
+
+**Covers:** FR60, FR61, UX-DR1, UX-DR2, UX-DR3, UX-DR4, UX-DR5, NFR1, NFR2
+
+### Story 6.5: Implement Slash Commands as Runtime Intents
 
 As a developer,
 I want slash commands for common runtime actions,
@@ -1559,7 +1589,7 @@ So that I can inspect and control sessions, model, memory, skills, tools, compac
 
 **Covers:** FR62
 
-### Story 6.5: Show Final Summary and Learning Review Outputs in TUI
+### Story 6.6: Show Final Summary and Learning Review Outputs in TUI
 
 As a developer,
 I want final summaries and learning reviews surfaced in the TUI,
