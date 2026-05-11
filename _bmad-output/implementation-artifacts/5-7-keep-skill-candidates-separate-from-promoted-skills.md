@@ -1,6 +1,6 @@
 # Story 5.7: Keep Skill Candidates Separate from Promoted Skills
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -206,6 +206,7 @@ GPT-5.5
 - 2026-05-11T10:18:03+0700: Development phase started; story and sprint status moved to `in-progress` after story artifact commit `c75c1f6`.
 - 2026-05-11T10:27:02+0700: Added candidate/manual skill separation regression coverage and moved story to `review` after full validation.
 - 2026-05-11T10:46:30+0700: Addressed 3-agent review findings with a candidate ignored-suggestion guard and broader leak/resume/promotion regression coverage.
+- 2026-05-11T11:00:54+0700: Reran BMAD 3-layer review, fixed final edge-case findings, reran targeted/full validation, and closed story as `done`.
 
 ### Completion Notes List
 
@@ -219,6 +220,8 @@ GPT-5.5
 - Added resume coverage proving draft candidates stay inert and do not load into resumed task context.
 - Added production validation so ignored/suggested skill usage records cannot cite stored skill candidate artifacts as skill influence without promotion.
 - Strengthened review follow-up tests for candidate ID source-qualified failures, serialized failure leak checks, candidate context sentinels, explicit review metadata, promoted future-task behavior, and post-resume future-task loading.
+- Added final edge-case hardening so embedded candidate IDs inside normalized skill IDs are rejected while promoted manual skill suggestions by name remain allowed.
+- Closed Story 5.7 after clean review rerun and full validation.
 
 ### File List
 
@@ -234,3 +237,4 @@ GPT-5.5
 - 2026-05-11: Moved Story 5.7 into development phase.
 - 2026-05-11: Added candidate/promoted-skill separation regression tests and moved story to review.
 - 2026-05-11: Addressed code review findings for candidate influence bypass and regression coverage gaps.
+- 2026-05-11: Closed Story 5.7 after final review rerun and validation.

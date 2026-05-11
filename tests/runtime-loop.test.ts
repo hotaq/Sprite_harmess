@@ -2391,9 +2391,24 @@ Check regressions before committing.
         status: "ignored",
         trigger: "suggested"
       });
+      const embeddedCandidateSuggestion = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "unrelated-review",
+        reason:
+          "This ignored suggestion must fail because the skill id embeds a candidate artifact id.",
+        skillId: `skill_project_${candidateId
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")}_skill_md`,
+        source: "project",
+        sourceEventIds: [waitingEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
       const latestActive = runtime.getActiveTask();
 
       expect(candidateSuggestion.ok).toBe(false);
+      expect(embeddedCandidateSuggestion.ok).toBe(false);
       expect(latestActive.ok).toBe(true);
       if (!latestActive.ok) {
         return;
@@ -2403,6 +2418,13 @@ Check regressions before committing.
           (event) =>
             event.type === "skill.usage.recorded" &&
             event.payload.name === opened.value.name
+        )
+      ).toEqual([]);
+      expect(
+        latestActive.value.events.filter(
+          (event) =>
+            event.type === "skill.usage.recorded" &&
+            event.payload.name === "unrelated-review"
         )
       ).toEqual([]);
       expect(
@@ -2595,7 +2617,7 @@ Check regressions before committing.
   });
 
   it("promotes a reviewed skill candidate into the manual project registry only after explicit approval", async () => {
-    const { artifactPath, candidateId, projectDir, rootDir, runtime } =
+    const { artifactPath, candidateId, homeDir, projectDir, rootDir, runtime } =
       await completeRuntimeTaskWithSkillCandidate();
 
     try {
@@ -2671,10 +2693,49 @@ Check regressions before committing.
         })
       ]);
       expect(JSON.stringify(listed)).not.toContain(candidateId);
+      const promotedSkill = listed.skills[0];
+      expect(promotedSkill).toBeDefined();
+
+      const suggestionOnlyRuntime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir
+      });
+      const suggestionOnlyTask = suggestionOnlyRuntime.submitInteractiveTask(
+        "record ignored promoted skill suggestion without loading the skill"
+      );
+
+      expect(suggestionOnlyTask.ok).toBe(true);
+      if (!suggestionOnlyTask.ok || promotedSkill === undefined) {
+        return;
+      }
+
+      const suggestionWaitingEvent = suggestionOnlyTask.value.events.find(
+        (event) => event.type === "task.waiting"
+      );
+
+      expect(suggestionWaitingEvent).toBeDefined();
+      if (suggestionWaitingEvent === undefined) {
+        return;
+      }
+
+      const promotedSkillSuggestion = suggestionOnlyRuntime.recordSkillUsage({
+        evidenceEventIds: [suggestionWaitingEvent.eventId],
+        invocationMode: "manual",
+        name: promoted.value.view.name,
+        reason:
+          "This suggestion was ignored, but it references the promoted manual skill rather than a raw candidate artifact.",
+        skillId: promotedSkill.id,
+        source: "project",
+        sourceEventIds: [suggestionWaitingEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
+
+      expect(promotedSkillSuggestion.ok).toBe(true);
 
       const futureRuntime = new AgentRuntime({
         cwd: projectDir,
-        homeDir: join(rootDir, "home"),
+        homeDir,
         skillReferences: [
           candidateId,
           `project:${candidateId}`,

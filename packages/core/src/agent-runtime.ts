@@ -2518,35 +2518,52 @@ export class AgentRuntime {
     );
     const suggestedIgnored =
       request.trigger === "suggested" && request.status === "ignored";
+    const candidateList = this.skillCandidateStore.listCandidates(
+      task.request.cwd
+    );
+    const storedCandidates = candidateList.ok ? candidateList.value : [];
+    const storedCandidatesById = new Map(
+      storedCandidates.flatMap((candidate) =>
+        uniqueStrings([candidate.id, candidate.candidateId]).map((candidateId) => [
+          candidateId,
+          candidate
+        ])
+      )
+    );
+    const referencesCandidateId = (candidateId: string): boolean =>
+      skillUsageIdReferencesCandidateId(request.skillId, candidateId);
+    const referencesCandidateName = (
+      candidate: { lifecycleStatus: string; name: string }
+    ): boolean =>
+      candidate.lifecycleStatus !== "promoted" && candidate.name === request.name;
     const referencedCandidateEvent = task.events.some((event) => {
       if (event.type === "skill.candidate.created") {
+        const storedCandidate = storedCandidatesById.get(event.payload.candidateId);
+        const lifecycleStatus =
+          storedCandidate?.lifecycleStatus ?? event.payload.lifecycleStatus;
+
         return (
           sourceEventIds.includes(event.eventId) ||
-          event.payload.candidateId === request.skillId ||
-          event.payload.name === request.name
+          referencesCandidateId(event.payload.candidateId) ||
+          (lifecycleStatus !== "promoted" && event.payload.name === request.name)
         );
       }
 
       if (event.type === "skill.candidate.reviewed") {
         return (
           sourceEventIds.includes(event.eventId) ||
-          event.payload.candidateId === request.skillId
+          referencesCandidateId(event.payload.candidateId)
         );
       }
 
       return false;
     });
-    const candidateList = this.skillCandidateStore.listCandidates(
-      task.request.cwd
+    const referencedStoredCandidate = storedCandidates.some(
+      (candidate) =>
+        referencesCandidateId(candidate.id) ||
+        referencesCandidateId(candidate.candidateId) ||
+        referencesCandidateName(candidate)
     );
-    const referencedStoredCandidate =
-      candidateList.ok &&
-      candidateList.value.some(
-        (candidate) =>
-          candidate.id === request.skillId ||
-          candidate.candidateId === request.skillId ||
-          candidate.name === request.name
-      );
     const referencedCandidateArtifact =
       SKILL_CANDIDATE_ID_PATTERN.test(request.skillId) ||
       referencedCandidateEvent ||
@@ -6135,6 +6152,49 @@ function getPayloadString(payload: object, key: string): string | undefined {
 
 function safeSignalIdPart(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+function skillUsageIdReferencesCandidateId(
+  skillId: string,
+  candidateId: string
+): boolean {
+  const candidateToken = normalizeSkillUsageReferenceToken(candidateId);
+
+  if (candidateToken.length === 0) {
+    return false;
+  }
+
+  if (
+    skillId === candidateId ||
+    skillId === `project:${candidateId}` ||
+    skillId === `global:${candidateId}`
+  ) {
+    return true;
+  }
+
+  return containsDelimitedReferenceToken(
+    normalizeSkillUsageReferenceToken(skillId),
+    candidateToken
+  );
+}
+
+function containsDelimitedReferenceToken(
+  normalizedValue: string,
+  normalizedToken: string
+): boolean {
+  return (
+    normalizedValue === normalizedToken ||
+    normalizedValue.startsWith(`${normalizedToken}_`) ||
+    normalizedValue.endsWith(`_${normalizedToken}`) ||
+    normalizedValue.includes(`_${normalizedToken}_`)
+  );
+}
+
+function normalizeSkillUsageReferenceToken(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
