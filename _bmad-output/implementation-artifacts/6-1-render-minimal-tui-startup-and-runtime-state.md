@@ -1,6 +1,6 @@
 # Story 6.1: Render Minimal TUI Startup and Runtime State
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -20,46 +20,46 @@ so that I can understand what environment the agent is operating in.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function/package list before code edits (AC: 1-5)
-  - [ ] Report exact exports/files to inspect or modify before implementation.
-  - [ ] Run GitNexus impact analysis before editing existing exported symbols or CLI/runtime functions, especially `AgentRuntime.getBootstrapState()`, `createRuntimeSelfModelSnapshot()`, `listSkills()`, `createProgram()`, and any runtime event/state export touched.
-  - [ ] Treat this story as a minimal adapter/read-model story, not a full interactive TUI loop.
+- [x] Confirm implementation function/package list before code edits (AC: 1-5)
+  - [x] Report exact exports/files to inspect or modify before implementation.
+  - [x] Run GitNexus impact analysis before editing existing exported symbols or CLI/runtime functions, especially `AgentRuntime.getBootstrapState()`, `createRuntimeSelfModelSnapshot()`, `listSkills()`, `createProgram()`, and any runtime event/state export touched.
+  - [x] Treat this story as a minimal adapter/read-model story, not a full interactive TUI loop.
 
-- [ ] Define the TUI state contract before rendering (AC: 1, 2, 5)
-  - [ ] Create or update `packages/tui/src/index.ts` to export a small startup/runtime state read model.
-  - [ ] Prefer pure functions such as `createTuiStartupState()` / `createTuiRuntimeState()` before introducing renderer-heavy code.
-  - [ ] Source runtime truth from `AgentRuntime.getBootstrapState()`, `PlannedExecutionFlow`, `RuntimeEventRecord[]`, `TaskContextPacket`, `createRuntimeSelfModelSnapshot()`, and/or existing exported session inspection APIs.
-  - [ ] Do not create a second task lifecycle state machine inside `packages/tui`.
+- [x] Define the TUI state contract before rendering (AC: 1, 2, 5)
+  - [x] Create or update `packages/tui/src/index.ts` to export a small startup/runtime state read model.
+  - [x] Prefer pure functions such as `createTuiStartupState()` / `createTuiRuntimeState()` before introducing renderer-heavy code.
+  - [x] Source runtime truth from `AgentRuntime.getBootstrapState()`, `PlannedExecutionFlow`, `RuntimeEventRecord[]`, `TaskContextPacket`, `createRuntimeSelfModelSnapshot()`, and/or existing exported session inspection APIs.
+  - [x] Do not create a second task lifecycle state machine inside `packages/tui`.
 
-- [ ] Render minimal startup/runtime state safely (AC: 1, 4)
-  - [ ] Show cwd as a safe label/preview, session/task status, provider name/model/auth status, sandbox mode, output format, validation command count, project context loaded/skipped counts, memory availability, loaded skill names/sources, and warnings count.
-  - [ ] Represent provider auth as configured/missing/redacted only; never render API keys, token names, env values, or credential file content.
-  - [ ] Bound lists and strings using existing preview/redaction helpers from `@sprite/shared` or established runtime patterns.
-  - [ ] If full TUI rendering is introduced, keep display components thin over the state contract.
+- [x] Render minimal startup/runtime state safely (AC: 1, 4)
+  - [x] Show cwd as a safe label/preview, session/task status, provider name/model/auth status, sandbox mode, output format, validation command count, project context loaded/skipped counts, memory availability, loaded skill names/sources, and warnings count.
+  - [x] Represent provider auth as configured/missing/redacted only; never render API keys, token names, env values, or credential file content.
+  - [x] Bound lists and strings using existing preview/redaction helpers from `@sprite/shared` or established runtime patterns.
+  - [x] If full TUI rendering is introduced, keep display components thin over the state contract.
 
-- [ ] Keep skill and candidate state separated in TUI output (AC: 1, 3)
-  - [ ] Use `listSkills()` / runtime skill context data for active manual skills.
-  - [ ] If candidate counts or lifecycle summaries are displayed, obtain them through explicit candidate review APIs and label them as candidates/drafts/rejected/promoted audit artifacts, not active skills.
-  - [ ] Do not scan `.sprite/skill-candidates` as a manual skill root.
-  - [ ] Do not render raw `SKILL.md` body, raw candidate body, raw paths, routing rules, activation grants, diffs, patches, or secrets in broad status panes.
+- [x] Keep skill and candidate state separated in TUI output (AC: 1, 3)
+  - [x] Use `listSkills()` / runtime skill context data for active manual skills.
+  - [x] If candidate counts or lifecycle summaries are displayed, obtain them through explicit candidate review APIs and label them as candidates/drafts/rejected/promoted audit artifacts, not active skills.
+  - [x] Do not scan `.sprite/skill-candidates` as a manual skill root.
+  - [x] Do not render raw `SKILL.md` body, raw candidate body, raw paths, routing rules, activation grants, diffs, patches, or secrets in broad status panes.
 
-- [ ] Add adapter-boundary and redaction tests (AC: 1-5)
-  - [ ] Add `tests/tui-state.test.ts` or equivalent focused tests for the pure TUI state/read-model functions.
-  - [ ] Cover provider configured/missing states, sandbox mode, context counts, memory availability, skills loaded/unloaded, warnings, and session/task identity.
-  - [ ] Cover secret-like cwd/provider/config/skill/candidate text redaction or omission.
-  - [ ] Cover candidate/promoted separation using fixtures from Epic 5 patterns.
-  - [ ] Assert TUI state tests do not launch an interactive terminal renderer.
+- [x] Add adapter-boundary and redaction tests (AC: 1-5)
+  - [x] Add `tests/tui-state.test.ts` or equivalent focused tests for the pure TUI state/read-model functions.
+  - [x] Cover provider configured/missing states, sandbox mode, context counts, memory availability, skills loaded/unloaded, warnings, and session/task identity.
+  - [x] Cover secret-like cwd/provider/config/skill/candidate text redaction or omission.
+  - [x] Cover candidate/promoted separation using fixtures from Epic 5 patterns.
+  - [x] Assert TUI state tests do not launch an interactive terminal renderer.
 
-- [ ] Wire minimal CLI entry only if required for Story 6.1 acceptance (AC: 1, 2)
-  - [ ] If adding a `sprite tui` or equivalent command, keep it a thin adapter that calls `@sprite/tui` and `AgentRuntime`.
-  - [ ] Do not duplicate CLI print/interactive task logic.
-  - [ ] Do not execute commands, apply edits, approve requests, or mutate runtime lifecycle directly from TUI code in this story.
+- [x] Wire minimal CLI entry only if required for Story 6.1 acceptance (AC: 1, 2)
+  - [x] If adding a `sprite tui` or equivalent command, keep it a thin adapter that calls `@sprite/tui` and `AgentRuntime`.
+  - [x] Do not duplicate CLI print/interactive task logic.
+  - [x] Do not execute commands, apply edits, approve requests, or mutate runtime lifecycle directly from TUI code in this story.
 
-- [ ] Validate and update story status (AC: 1-5)
-  - [ ] Run targeted TUI tests first.
-  - [ ] Run `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
-  - [ ] Run GitNexus analyze/status fallback before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
-  - [ ] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
+- [x] Validate and update story status (AC: 1-5)
+  - [x] Run targeted TUI tests first.
+  - [x] Run `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
+  - [x] Run GitNexus analyze/status fallback before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
+  - [x] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
 
 ## Dev Notes
 
@@ -181,6 +181,12 @@ GPT-5.5
 - Story created after Epic 5 retrospective commit `2efb53d`.
 - Loaded BMad create-story workflow, sprint status, Epic 6 planning, PRD TUI requirements, architecture adapter/runtime boundaries, Epic 5 retrospective, current package layout, TUI placeholder package, core bootstrap/self-model exports, and recent git history.
 - Confirmed current package registry versions with `npm view ink version`, `npm view react version`, and `npm view @types/react version` on 2026-05-11.
+- Started BMad dev-story implementation on 2026-05-11; marked Story 6.1 in-progress.
+- Completed UX/UI technical research before code edits and recorded direction in `_bmad-output/planning-artifacts/research/technical-tui-ux-ui-research-2026-05-11.md`.
+- Implemented pure TUI state/read-model exports in `packages/tui/src/index.ts`; no Ink/React dependency or CLI entrypoint was added.
+- No existing exported runtime/CLI symbols were edited; `AgentRuntime.getBootstrapState()`, `createRuntimeSelfModelSnapshot()`, `listSkills()`, and `createProgram()` were left unchanged.
+- GitNexus impact checks for new TUI exports `createTuiStartupState`, `createTuiRuntimeState`, and `formatTuiStateSummary` returned LOW risk with only `tests/tui-state.test.ts` as direct caller.
+- Validation passed: targeted TUI tests, `npm run typecheck -- --pretty false`, full `npm test -- --run`, `git diff --check`, and GitNexus analyze/status.
 
 ### Completion Notes List
 
@@ -188,12 +194,24 @@ GPT-5.5
 - Scoped Story 6.1 as minimal TUI startup/runtime state visibility, not full interactive steering or slash-command behavior.
 - Captured adapter-thin guardrails from architecture and Epic 5 retrospective.
 - Identified current implementation surfaces, TUI package baseline, suggested contracts, dependency caution, and testing expectations.
+- Added pure TUI startup/runtime read model functions and deterministic formatter without launching an interactive terminal renderer.
+- Added tests proving runtime-derived state, redaction/bounding, no ANSI dependency, and active skill vs candidate separation.
+- Deferred Ink/React renderer and CLI entrypoint to later Epic 6 stories because Story 6.1 acceptance is satisfied by the adapter state contract.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/6-1-render-minimal-tui-startup-and-runtime-state.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `_bmad-output/planning-artifacts/research/technical-tui-ux-ui-research-2026-05-11.md`
+- `package-lock.json`
+- `packages/tui/package.json`
+- `packages/tui/src/index.ts`
+- `packages/tui/tsconfig.json`
+- `tests/tui-state.test.ts`
+- `tsconfig.base.json`
 
 ### Change Log
 
 - 2026-05-11: Created ready-for-dev Story 6.1 context for minimal TUI startup/runtime state.
+- 2026-05-11: Started development and added UX/UI research direction for Story 6.1.
+- 2026-05-11: Implemented pure TUI runtime-state adapter and moved Story 6.1 to review.

@@ -13,6 +13,7 @@
       "@sprite/providers": ["packages/providers/src/index.ts"],
       "@sprite/sandbox": ["packages/sandbox/src/index.ts"],
       "@sprite/skills": ["packages/skills/src/index.ts"],
+      "@sprite/tui": ["packages/tui/src/index.ts"],
       "@sprite/tools": ["packages/tools/src/index.ts"],
       "@sprite/storage": ["packages/storage/src/index.ts"]
     },
