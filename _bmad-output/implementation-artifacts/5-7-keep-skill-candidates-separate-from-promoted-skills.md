@@ -1,6 +1,6 @@
 # Story 5.7: Keep Skill Candidates Separate from Promoted Skills
 
-Status: ready-for-dev
+Status: in-progress
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -194,6 +194,7 @@ GPT-5.5
 - Story created from sprint backlog after Story 5.6 was committed at `94ea652`.
 - Loaded BMad create-story workflow, sprint status, Epic 5 planning, PRD FR59/NFR27, architecture skill evolution and context boundaries, previous Story 5.6 notes, current implementation surfaces, and recent git history.
 - No external web research was required because Story 5.7 introduces no new external SDK, package, or version-sensitive API.
+- 2026-05-11T10:18:03+0700: Development phase started; story and sprint status moved to `in-progress` after story artifact commit `c75c1f6`.
 
 ### Completion Notes List
 
@@ -210,3 +211,4 @@ GPT-5.5
 ### Change Log
 
 - 2026-05-11: Created ready-for-dev Story 5.7 context for candidate/promoted-skill separation.
+- 2026-05-11: Moved Story 5.7 into development phase.
