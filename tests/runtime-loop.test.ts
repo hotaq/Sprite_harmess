@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   AgentRuntime,
   createFinalTaskSummary,
+  type PlannedExecutionFlow,
+  type TaskContextSection,
   runOneShotPrintTask
 } from "@sprite/core";
 import { listAvailableSkills } from "@sprite/skills";
@@ -130,6 +132,77 @@ async function completeRuntimeTaskWithSkillCandidate(): Promise<{
     runtime,
     sessionId: submitted.value.sessionId
   };
+}
+
+function findContextSection(
+  task: PlannedExecutionFlow,
+  source: TaskContextSection["source"]
+): TaskContextSection | undefined {
+  return task.request.contextPacket.sections.find(
+    (section) => section.source === source
+  );
+}
+
+function expectNoCandidateSkillActivation(
+  task: PlannedExecutionFlow,
+  candidate: {
+    candidateId: string;
+    name: string;
+  },
+  expectedFailedReferences: readonly string[] = []
+): void {
+  const skillsSection = findContextSection(task, "skills");
+  const runtimeSelfModelSection = findContextSection(
+    task,
+    "runtime-self-model"
+  );
+  const contextPacketJson = JSON.stringify(task.request.contextPacket);
+  const invokedEvents = task.events.filter(
+    (event) => event.type === "skill.invoked"
+  );
+  const failedEvents = task.events.filter(
+    (event) => event.type === "skill.invocation.failed"
+  );
+  const usageEvents = task.events.filter(
+    (event) => event.type === "skill.usage.recorded"
+  );
+  const finalSummary = createFinalTaskSummary(task);
+
+  expect(skillsSection).toMatchObject({
+    metadata: expect.objectContaining({
+      skillCount: 0
+    }),
+    status: "skipped"
+  });
+  expect(runtimeSelfModelSection?.content).not.toContain(candidate.candidateId);
+  expect(runtimeSelfModelSection?.content).not.toContain(candidate.name);
+  expect(contextPacketJson).not.toContain(candidate.candidateId);
+  expect(contextPacketJson).not.toContain(candidate.name);
+  expect(invokedEvents).toHaveLength(0);
+  expect(usageEvents).toHaveLength(0);
+  expect(finalSummary.skillInfluences).toEqual([]);
+  expect(JSON.stringify(finalSummary.skillInfluences)).not.toContain(
+    candidate.candidateId
+  );
+  expect(JSON.stringify(finalSummary.skillInfluences)).not.toContain(
+    candidate.name
+  );
+
+  if (expectedFailedReferences.length > 0) {
+    expect(failedEvents).toHaveLength(expectedFailedReferences.length);
+    expect(failedEvents.map((event) => event.payload.reference)).toEqual(
+      expectedFailedReferences
+    );
+    for (const event of failedEvents) {
+      expect(event.payload).toMatchObject({
+        code: "SKILL_NOT_FOUND",
+        recoverable: true,
+        status: "failed"
+      });
+      expect(JSON.stringify(event.payload)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(event.payload)).not.toContain("promotedSkillPath");
+    }
+  }
 }
 
 describe("AgentRuntime interactive task flow", () => {
@@ -780,6 +853,28 @@ Check regressions before committing.
         status: "used",
         trigger: "influenced"
       });
+      const candidateLoaded = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "candidate-review",
+        skillId: "skillcand_candidate_review",
+        source: "project",
+        sourceEventIds: [waitingEvent.eventId],
+        status: "loaded",
+        trigger: "loaded"
+      });
+      const candidateUsed = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        influenceSummary:
+          "This must fail because the candidate was never invoked as a skill.",
+        invocationMode: "manual",
+        name: "candidate-review",
+        skillId: "skillcand_candidate_review",
+        source: "project",
+        sourceEventIds: [waitingEvent.eventId],
+        status: "used",
+        trigger: "influenced"
+      });
 
       expect(used.ok).toBe(true);
       expect(ignored.ok).toBe(true);
@@ -788,6 +883,8 @@ Check regressions before committing.
       expect(missingEvidence.ok).toBe(false);
       expect(rawPathUsage.ok).toBe(false);
       expect(unboundedUsage.ok).toBe(false);
+      expect(candidateLoaded.ok).toBe(false);
+      expect(candidateUsed.ok).toBe(false);
       if (!used.ok || !ignored.ok || !contradicted.ok || !suggestedIgnored.ok) {
         return;
       }
@@ -2040,6 +2137,265 @@ Check regressions before committing.
     }
   });
 
+  it("keeps proposed draft and rejected candidate references out of future task context", async () => {
+    const proposed = await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const opened = proposed.runtime.openSkillCandidate(proposed.candidateId);
+
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) {
+        return;
+      }
+
+      const references = [
+        opened.value.name,
+        proposed.candidateId,
+        `project:${opened.value.name}`,
+        `project:${proposed.candidateId}`
+      ];
+      const futureRuntime = new AgentRuntime({
+        cwd: proposed.projectDir,
+        homeDir: proposed.homeDir,
+        skillReferences: references
+      });
+      const submitted = futureRuntime.submitInteractiveTask(
+        "start future work with only candidate-like skill references"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+      expectNoCandidateSkillActivation(
+        submitted.value,
+        {
+          candidateId: proposed.candidateId,
+          name: opened.value.name
+        },
+        references
+      );
+    } finally {
+      rmSync(proposed.rootDir, { recursive: true, force: true });
+    }
+
+    const draft = await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const reviewed = draft.runtime.reviewSkillCandidate({
+        action: "draft",
+        candidateId: draft.candidateId,
+        reason: "Keep as an inert draft for narrower evidence.",
+        reviewedAt: "2026-05-10T16:10:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+
+      const references = [
+        reviewed.value.view.name,
+        draft.candidateId,
+        `project:${reviewed.value.view.name}`,
+        `project:${draft.candidateId}`
+      ];
+      const futureRuntime = new AgentRuntime({
+        cwd: draft.projectDir,
+        homeDir: draft.homeDir,
+        skillReferences: references
+      });
+      const submitted = futureRuntime.submitInteractiveTask(
+        "start future work after draft candidate review"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+      expectNoCandidateSkillActivation(
+        submitted.value,
+        {
+          candidateId: draft.candidateId,
+          name: reviewed.value.view.name
+        },
+        references
+      );
+    } finally {
+      rmSync(draft.rootDir, { recursive: true, force: true });
+    }
+
+    const rejected = await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const reviewed = rejected.runtime.reviewSkillCandidate({
+        action: "reject",
+        candidateId: rejected.candidateId,
+        reason: "Reject this broad workflow candidate.",
+        reviewedAt: "2026-05-10T16:15:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+
+      const references = [
+        reviewed.value.view.name,
+        rejected.candidateId,
+        `project:${reviewed.value.view.name}`,
+        `project:${rejected.candidateId}`
+      ];
+      const futureRuntime = new AgentRuntime({
+        cwd: rejected.projectDir,
+        homeDir: rejected.homeDir,
+        skillReferences: references
+      });
+      const submitted = futureRuntime.submitInteractiveTask(
+        "start future work after rejected candidate review"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+      expectNoCandidateSkillActivation(
+        submitted.value,
+        {
+          candidateId: rejected.candidateId,
+          name: reviewed.value.view.name
+        },
+        references
+      );
+    } finally {
+      rmSync(rejected.rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps draft and rejected candidates explicitly reviewable with bounded metadata", async () => {
+    const draft = await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const reviewed = draft.runtime.reviewSkillCandidate({
+        action: "draft",
+        candidateId: draft.candidateId,
+        reason: "Keep this workflow as draft-only learning evidence.",
+        reviewedAt: "2026-05-10T16:20:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+
+      const listed = draft.runtime.listSkillCandidates();
+      const opened = draft.runtime.openSkillCandidate(draft.candidateId);
+
+      expect(listed.ok).toBe(true);
+      expect(opened.ok).toBe(true);
+      if (!listed.ok || !opened.ok) {
+        return;
+      }
+      expect(listed.value).toEqual([
+        expect.objectContaining({
+          candidateId: draft.candidateId,
+          draftSavedAt: "2026-05-10T16:20:00.000Z",
+          lifecycleStatus: "draft",
+          reviewReason: "Keep this workflow as draft-only learning evidence."
+        })
+      ]);
+      expect(opened.value).toMatchObject({
+        candidateId: draft.candidateId,
+        draftSavedAt: "2026-05-10T16:20:00.000Z",
+        lifecycleStatus: "draft",
+        reviewReason: "Keep this workflow as draft-only learning evidence.",
+        reviewedBy: "human"
+      });
+      expect(opened.value.sourceEventIds.length).toBeGreaterThan(0);
+      expect(opened.value.sourceSessionIds).toEqual([
+        expect.stringMatching(/^ses_/)
+      ]);
+      expect(opened.value.sourceSkillSignalIds.length).toBeGreaterThan(0);
+      expect(opened.value.sourceTaskIds).toEqual([
+        expect.stringMatching(/^task_/)
+      ]);
+      expect(JSON.stringify(opened.value)).not.toContain("rawOutput");
+      expect(JSON.stringify(opened.value)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(opened.value)).not.toContain("promotedSkillPath");
+      expect(JSON.stringify(opened.value)).not.toContain(draft.projectDir);
+      expect(JSON.stringify(opened.value)).not.toContain(
+        ".sprite/skill-candidates"
+      );
+    } finally {
+      rmSync(draft.rootDir, { recursive: true, force: true });
+    }
+
+    const rejected = await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const reviewed = rejected.runtime.reviewSkillCandidate({
+        action: "reject",
+        candidateId: rejected.candidateId,
+        reason: "Reject this candidate but keep bounded learning metadata.",
+        reviewedAt: "2026-05-10T16:25:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+
+      const listed = rejected.runtime.listSkillCandidates();
+      const opened = rejected.runtime.openSkillCandidate(rejected.candidateId);
+
+      expect(listed.ok).toBe(true);
+      expect(opened.ok).toBe(true);
+      if (!listed.ok || !opened.ok) {
+        return;
+      }
+      expect(listed.value).toEqual([
+        expect.objectContaining({
+          candidateId: rejected.candidateId,
+          lifecycleStatus: "rejected",
+          rejectionReason:
+            "Reject this candidate but keep bounded learning metadata.",
+          reviewReason:
+            "Reject this candidate but keep bounded learning metadata."
+        })
+      ]);
+      expect(opened.value).toMatchObject({
+        candidateId: rejected.candidateId,
+        lifecycleStatus: "rejected",
+        rejectionReason:
+          "Reject this candidate but keep bounded learning metadata.",
+        reviewReason:
+          "Reject this candidate but keep bounded learning metadata.",
+        reviewedBy: "human"
+      });
+      expect(opened.value.sourceEventIds.length).toBeGreaterThan(0);
+      expect(opened.value.sourceSessionIds).toEqual([
+        expect.stringMatching(/^ses_/)
+      ]);
+      expect(opened.value.sourceSkillSignalIds.length).toBeGreaterThan(0);
+      expect(opened.value.sourceTaskIds).toEqual([
+        expect.stringMatching(/^task_/)
+      ]);
+      expect(JSON.stringify(opened.value)).not.toContain("rawOutput");
+      expect(JSON.stringify(opened.value)).not.toContain("rawSkillContent");
+      expect(JSON.stringify(opened.value)).not.toContain("promotedSkillPath");
+      expect(JSON.stringify(opened.value)).not.toContain(rejected.projectDir);
+      expect(JSON.stringify(opened.value)).not.toContain(
+        ".sprite/skill-candidates"
+      );
+    } finally {
+      rmSync(rejected.rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("promotes a reviewed skill candidate into the manual project registry only after explicit approval", async () => {
     const { artifactPath, candidateId, projectDir, rootDir, runtime } =
       await completeRuntimeTaskWithSkillCandidate();
@@ -2227,6 +2583,66 @@ Check regressions before committing.
           "SKILL_CANDIDATE_ALREADY_REVIEWED"
         );
       }
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes sessions without turning draft candidates into loaded skills", async () => {
+    const { candidateId, homeDir, projectDir, rootDir, runtime, sessionId } =
+      await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const reviewed = runtime.reviewSkillCandidate({
+        action: "draft",
+        candidateId,
+        reason: "Keep draft candidate inert across session resume.",
+        reviewedAt: "2026-05-10T16:30:00.000Z",
+        reviewedBy: "human"
+      });
+
+      expect(reviewed.ok).toBe(true);
+      if (!reviewed.ok) {
+        return;
+      }
+
+      const resumedRuntime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir,
+        skillReferences: [reviewed.value.view.name, candidateId]
+      });
+      const resumed = resumedRuntime.resumeSession(sessionId);
+
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) {
+        return;
+      }
+
+      const active = resumedRuntime.getActiveTask();
+      const openedAfterResume = resumedRuntime.openSkillCandidate(candidateId);
+      const listedAfterResume = listAvailableSkills({ cwd: projectDir, homeDir });
+      const reviewedEvents = resumedRuntime
+        .getEventHistory()
+        .filter((event) => event.type === "skill.candidate.reviewed");
+
+      expect(active.ok).toBe(true);
+      expect(openedAfterResume.ok).toBe(true);
+      if (!active.ok || !openedAfterResume.ok) {
+        return;
+      }
+
+      expect(openedAfterResume.value).toMatchObject({
+        candidateId,
+        draftSavedAt: "2026-05-10T16:30:00.000Z",
+        lifecycleStatus: "draft",
+        reviewReason: "Keep draft candidate inert across session resume."
+      });
+      expect(listedAfterResume.skills).toEqual([]);
+      expect(reviewedEvents).toHaveLength(1);
+      expectNoCandidateSkillActivation(active.value, {
+        candidateId,
+        name: reviewed.value.view.name
+      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

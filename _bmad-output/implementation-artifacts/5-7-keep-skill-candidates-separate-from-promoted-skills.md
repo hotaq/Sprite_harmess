@@ -1,6 +1,6 @@
 # Story 5.7: Keep Skill Candidates Separate from Promoted Skills
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -21,51 +21,51 @@ so that proposed behavior cannot silently change future tasks.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function list before code edits (AC: 1-6)
-  - [ ] Report exact functions/contracts to inspect or modify before touching implementation files.
-  - [ ] Run GitNexus impact analysis before editing existing symbols, especially `listAvailableSkills`, `invokeManualSkill`, `AgentRuntime.loadManualSkillContextEntries`, `createTaskRequest`, `createRuntimeSelfModelSnapshot`, `createSkillsSection`, `AgentRuntime.recordSkillUsage`, `LocalSkillCandidateStore`, and `validateSkillCandidate`.
-  - [ ] Treat this as a separation/influence guardrail story: preferred implementation is regression tests plus minimal code hardening, not new feature surface.
-  - [ ] Preserve Story 5.6 explicit promotion flow; do not add a second promotion path.
+- [x] Confirm implementation function list before code edits (AC: 1-6)
+  - [x] Report exact functions/contracts to inspect or modify before touching implementation files.
+  - [x] Run GitNexus impact analysis before editing existing symbols, especially `listAvailableSkills`, `invokeManualSkill`, `AgentRuntime.loadManualSkillContextEntries`, `createTaskRequest`, `createRuntimeSelfModelSnapshot`, `createSkillsSection`, `AgentRuntime.recordSkillUsage`, `LocalSkillCandidateStore`, and `validateSkillCandidate`.
+  - [x] Treat this as a separation/influence guardrail story: preferred implementation is regression tests plus minimal code hardening, not new feature surface.
+  - [x] Preserve Story 5.6 explicit promotion flow; do not add a second promotion path.
 
-- [ ] Lock registry and invocation separation (AC: 1, 5)
-  - [ ] Extend registry tests to cover proposed, draft, rejected, and promoted candidate scenarios.
-  - [ ] Assert `.sprite/skill-candidates/<candidate-id>.json` is never scanned as a skill registry root or active skill entry.
-  - [ ] Assert `invokeManualSkill()` fails safely for candidate `name`, `candidateId`, and `project:<candidate-name>` while a matching active promoted `SKILL.md` remains invokable.
-  - [ ] Assert serialized list/invocation failures do not leak raw candidate body, raw paths, secrets, or forbidden candidate fields.
+- [x] Lock registry and invocation separation (AC: 1, 5)
+  - [x] Extend registry tests to cover proposed, draft, rejected, and promoted candidate scenarios.
+  - [x] Assert `.sprite/skill-candidates/<candidate-id>.json` is never scanned as a skill registry root or active skill entry.
+  - [x] Assert `invokeManualSkill()` fails safely for candidate `name`, `candidateId`, and `project:<candidate-name>` while a matching active promoted `SKILL.md` remains invokable.
+  - [x] Assert serialized list/invocation failures do not leak raw candidate body, raw paths, secrets, or forbidden candidate fields.
 
-- [ ] Lock task-context separation for future tasks (AC: 2, 3, 5)
-  - [ ] Add runtime tests where `AgentRuntime` starts with `skillReferences` pointing at candidate names/IDs for proposed, draft, and rejected candidates.
-  - [ ] Assert task request skills section is skipped or empty: no candidate content, no candidate name in `skillEntries`, no candidate source in runtime self-model, and no procedural guidance from candidate artifacts.
-  - [ ] Assert failed references emit at most safe `skill.invocation.failed` events and never `skill.invoked` for candidates.
-  - [ ] Assert promoted skill references load only from `.sprite/skills/<skill>/SKILL.md`, not from candidate artifacts.
+- [x] Lock task-context separation for future tasks (AC: 2, 3, 5)
+  - [x] Add runtime tests where `AgentRuntime` starts with `skillReferences` pointing at candidate names/IDs for proposed, draft, and rejected candidates.
+  - [x] Assert task request skills section is skipped or empty: no candidate content, no candidate name in `skillEntries`, no candidate source in runtime self-model, and no procedural guidance from candidate artifacts.
+  - [x] Assert failed references emit at most safe `skill.invocation.failed` events and never `skill.invoked` for candidates.
+  - [x] Assert promoted skill references load only from `.sprite/skills/<skill>/SKILL.md`, not from candidate artifacts.
 
-- [ ] Lock skill influence and usage attribution boundaries (AC: 3, 6)
-  - [ ] Add tests proving `AgentRuntime.recordSkillUsage()` cannot record `loaded` or `used` influence for a candidate artifact that was never loaded via `skill.invoked`.
-  - [ ] Assert `ignored` suggestions may mention only bounded safe text if existing API allows suggestions, but must not create active influence or imply candidate activation.
-  - [ ] Assert final summaries and runtime event histories do not include candidate artifacts as `skillInfluences` unless a real promoted manual skill was invoked.
+- [x] Lock skill influence and usage attribution boundaries (AC: 3, 6)
+  - [x] Add tests proving `AgentRuntime.recordSkillUsage()` cannot record `loaded` or `used` influence for a candidate artifact that was never loaded via `skill.invoked`.
+  - [x] Assert `ignored` suggestions may mention only bounded safe text if existing API allows suggestions, but must not create active influence or imply candidate activation.
+  - [x] Assert final summaries and runtime event histories do not include candidate artifacts as `skillInfluences` unless a real promoted manual skill was invoked.
 
-- [ ] Preserve explicit review access for learning analysis (AC: 4)
-  - [ ] Add runtime/storage tests that rejected and draft candidates remain listable/openable through `AgentRuntime.listSkillCandidates()` and `AgentRuntime.openSkillCandidate()`.
-  - [ ] Assert review metadata survives: `reviewReason`, `rejectionReason` or `draftSavedAt`, lifecycle state, source event IDs, source session/task IDs, source skill signal IDs, examples/counterexamples, known risks, confidence, and trigger reason.
-  - [ ] Assert list/open review views remain bounded and free from raw output, raw skill content, raw paths, secrets, activation grants, autonomous routing rules, diffs, and patches.
+- [x] Preserve explicit review access for learning analysis (AC: 4)
+  - [x] Add runtime/storage tests that rejected and draft candidates remain listable/openable through `AgentRuntime.listSkillCandidates()` and `AgentRuntime.openSkillCandidate()`.
+  - [x] Assert review metadata survives: `reviewReason`, `rejectionReason` or `draftSavedAt`, lifecycle state, source event IDs, source session/task IDs, source skill signal IDs, examples/counterexamples, known risks, confidence, and trigger reason.
+  - [x] Assert list/open review views remain bounded and free from raw output, raw skill content, raw paths, secrets, activation grants, autonomous routing rules, diffs, and patches.
 
-- [ ] Verify resume/replay cannot turn candidates into active skills (AC: 2, 3, 5, 6)
-  - [ ] Add or extend resume tests where proposed/draft/rejected candidates exist before session resume and task start.
-  - [ ] Assert resume does not replay candidate review/promotion side effects and does not auto-load candidates into task context.
-  - [ ] Assert promoted skills remain stable after resume and duplicate promotion or candidate ID invocation still fails safely.
+- [x] Verify resume/replay cannot turn candidates into active skills (AC: 2, 3, 5, 6)
+  - [x] Add or extend resume tests where proposed/draft/rejected candidates exist before session resume and task start.
+  - [x] Assert resume does not replay candidate review/promotion side effects and does not auto-load candidates into task context.
+  - [x] Assert promoted skills remain stable after resume and duplicate promotion or candidate ID invocation still fails safely.
 
-- [ ] Keep scope boundaries tight (AC: 1-6)
-  - [ ] Do not implement autonomous candidate suggestion/loading.
-  - [ ] Do not add candidate entries to `TASK_CONTEXT_SOURCE_ORDER` or the skills context packet.
-  - [ ] Do not add TUI, RPC, MemPalace, vector search, cross-session candidate scoring, or global skill promotion.
-  - [ ] Do not add new dependencies.
-  - [ ] Prefer deleting/centralizing duplicated guard checks over adding parallel registry/candidate abstractions.
+- [x] Keep scope boundaries tight (AC: 1-6)
+  - [x] Do not implement autonomous candidate suggestion/loading.
+  - [x] Do not add candidate entries to `TASK_CONTEXT_SOURCE_ORDER` or the skills context packet.
+  - [x] Do not add TUI, RPC, MemPalace, vector search, cross-session candidate scoring, or global skill promotion.
+  - [x] Do not add new dependencies.
+  - [x] Prefer deleting/centralizing duplicated guard checks over adding parallel registry/candidate abstractions.
 
-- [ ] Run validation and update story status (AC: 1-6)
-  - [ ] Run targeted tests first: skill registry, skill candidates, skill candidate store, runtime loop/session resume, final summary if touched, and CLI smoke if any CLI output changes.
-  - [ ] Run full validation before review: `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
-  - [ ] Run GitNexus detect fallback before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
-  - [ ] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes pass.
+- [x] Run validation and update story status (AC: 1-6)
+  - [x] Run targeted tests first: skill registry, skill candidates, skill candidate store, runtime loop/session resume, final summary if touched, and CLI smoke if any CLI output changes.
+  - [x] Run full validation before review: `rtk run 'git diff --check && npm run typecheck -- --pretty false && npm test -- --run'`.
+  - [x] Run GitNexus detect fallback before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
+  - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes pass.
 
 ## Dev Notes
 
@@ -195,6 +195,7 @@ GPT-5.5
 - Loaded BMad create-story workflow, sprint status, Epic 5 planning, PRD FR59/NFR27, architecture skill evolution and context boundaries, previous Story 5.6 notes, current implementation surfaces, and recent git history.
 - No external web research was required because Story 5.7 introduces no new external SDK, package, or version-sensitive API.
 - 2026-05-11T10:18:03+0700: Development phase started; story and sprint status moved to `in-progress` after story artifact commit `c75c1f6`.
+- 2026-05-11T10:27:02+0700: Added candidate/manual skill separation regression coverage and moved story to `review` after full validation.
 
 ### Completion Notes List
 
@@ -202,13 +203,21 @@ GPT-5.5
 - Scoped this story as separation regression/hardening work rather than new feature surface.
 - Captured Story 5.6 implementation boundaries and remaining transaction risk.
 - Identified target functions and tests likely to prove candidate/skill separation.
+- Added registry regression coverage for proposed, draft, rejected, and promoted candidate artifacts staying outside active manual skill listing/invocation.
+- Added runtime regression coverage proving candidate references do not populate task context, self-model skill metadata, `skill.invoked`, `skill.usage.recorded`, or final summary skill influences.
+- Added explicit review-access coverage proving draft/rejected candidates remain listable/openable with bounded metadata.
+- Added resume coverage proving draft candidates stay inert and do not load into resumed task context.
+- No production runtime changes were needed; existing separation behavior was sufficient once regression coverage was expanded.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/5-7-keep-skill-candidates-separate-from-promoted-skills.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `tests/runtime-loop.test.ts`
+- `tests/skill-registry.test.ts`
 
 ### Change Log
 
 - 2026-05-11: Created ready-for-dev Story 5.7 context for candidate/promoted-skill separation.
 - 2026-05-11: Moved Story 5.7 into development phase.
+- 2026-05-11: Added candidate/promoted-skill separation regression tests and moved story to review.

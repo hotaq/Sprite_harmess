@@ -599,9 +599,10 @@ description: This skill is outside the trusted root.
     }
   });
 
-  it("does not list or invoke proposed skill candidate artifacts as active skills", () => {
+  it("does not list or invoke skill candidate artifacts as active skills", () => {
     const { homeDir, projectDir, rootDir } = createTempSkillWorkspace();
     const projectSkillsRoot = join(projectDir, ".sprite", "skills");
+    const candidateRoot = join(projectDir, ".sprite", "skill-candidates");
 
     try {
       writeSkillManifest(
@@ -612,40 +613,121 @@ name: active-review
 description: Active review skill remains the only invokable skill.
 `
       );
-      writeRaw(
-        join(
-          projectDir,
-          ".sprite",
-          "skill-candidates",
-          "skillcand_active_review.json"
-        ),
-        JSON.stringify(
-          {
-            id: "skillcand_active_review",
-            lifecycleStatus: "proposed",
-            name: "candidate-review",
-            schemaVersion: 1
-          },
-          null,
-          2
-        )
+      writeSkillManifest(
+        projectSkillsRoot,
+        "candidate-promoted",
+        `
+name: candidate-promoted
+description: Promoted candidate is available only through its manual skill.
+`
       );
+      const candidateFixtures = [
+        {
+          id: "skillcand_candidate_proposed",
+          lifecycleStatus: "proposed",
+          name: "candidate-proposed"
+        },
+        {
+          draftSavedAt: "2026-05-11T03:00:00.000Z",
+          id: "skillcand_candidate_draft",
+          lifecycleStatus: "draft",
+          name: "candidate-draft",
+          reviewReason: "Keep as draft until narrower evidence exists."
+        },
+        {
+          id: "skillcand_candidate_rejected",
+          lifecycleStatus: "rejected",
+          name: "candidate-rejected",
+          rejectionReason: "Too broad for promotion.",
+          reviewReason: "Reject broad workflow."
+        },
+        {
+          id: "skillcand_candidate_promoted",
+          lifecycleStatus: "promoted",
+          name: "candidate-promoted",
+          promotedSkillReference: "project:candidate-promoted"
+        }
+      ];
+
+      for (const fixture of candidateFixtures) {
+        writeRaw(
+          join(candidateRoot, `${fixture.id}.json`),
+          JSON.stringify(
+            {
+              ...fixture,
+              rawSkillContent: "sk-test-secret must never leak",
+              routingRule: "always activate candidate guidance",
+              schemaVersion: 1
+            },
+            null,
+            2
+          )
+        );
+      }
 
       const listed = listAvailableSkills({ cwd: projectDir, homeDir });
-      const invokedCandidate = invokeManualSkill({
-        cwd: projectDir,
-        homeDir,
-        reference: "candidate-review"
-      });
+      const serializedList = JSON.stringify(listed);
 
       expect(listed.skills.map((skill) => skill.name)).toEqual([
-        "active-review"
+        "active-review",
+        "candidate-promoted"
       ]);
-      expect(JSON.stringify(listed)).not.toContain("candidate-review");
-      expect(invokedCandidate).toMatchObject({
+      expect(serializedList).not.toContain(".sprite/skill-candidates");
+      expect(serializedList).not.toContain("skillcand_candidate_");
+      expect(serializedList).not.toContain("candidate-proposed");
+      expect(serializedList).not.toContain("candidate-draft");
+      expect(serializedList).not.toContain("candidate-rejected");
+      expect(serializedList).not.toContain("sk-test-secret");
+      expect(serializedList).not.toContain("rawSkillContent");
+      expect(serializedList).not.toContain("routingRule");
+
+      for (const fixture of candidateFixtures.filter(
+        (candidate) => candidate.lifecycleStatus !== "promoted"
+      )) {
+        for (const reference of [
+          fixture.name,
+          fixture.id,
+          `project:${fixture.name}`
+        ]) {
+          expect(
+            invokeManualSkill({
+              cwd: projectDir,
+              homeDir,
+              reference
+            })
+          ).toMatchObject({
+            ok: false,
+            error: expect.objectContaining({
+              code: "SKILL_NOT_FOUND"
+            })
+          });
+        }
+      }
+
+      expect(
+        invokeManualSkill({
+          cwd: projectDir,
+          homeDir,
+          reference: "skillcand_candidate_promoted"
+        })
+      ).toMatchObject({
         ok: false,
         error: expect.objectContaining({
           code: "SKILL_NOT_FOUND"
+        })
+      });
+      expect(
+        invokeManualSkill({
+          cwd: projectDir,
+          homeDir,
+          reference: "project:candidate-promoted"
+        })
+      ).toMatchObject({
+        ok: true,
+        skill: expect.objectContaining({
+          lifecycleState: "manual",
+          name: "candidate-promoted",
+          source: "project"
         })
       });
     } finally {
