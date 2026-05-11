@@ -205,6 +205,10 @@ export function TuiWorkbenchApp({
         text: submittedText
       };
 
+      if (detailPanel !== "details") {
+        setDetailPanel(null);
+      }
+
       setSubmittedPrompts((currentPrompts) =>
         [...currentPrompts, submittedPrompt].slice(-5)
       );
@@ -227,6 +231,10 @@ export function TuiWorkbenchApp({
     }
   });
   const slashCommandSuggestions = getSlashCommandSuggestions(draftText);
+  const conversationActionPrompt =
+    actionPrompt?.type === "cancel" ? actionPrompt : null;
+  const dockActionPrompt =
+    actionPrompt?.type === "approval" ? actionPrompt : null;
 
   return (
     <Box flexDirection="column" minHeight={rows} justifyContent="space-between">
@@ -234,13 +242,14 @@ export function TuiWorkbenchApp({
         <HeaderSection state={state} />
         <DetailsSection detailPanel={detailPanel} state={state} />
         <SubmittedPromptsSection prompts={submittedPrompts} />
+        <ActionPromptSection prompt={conversationActionPrompt} />
         <ActivitySection state={state} />
         <ApprovalsSection state={state} />
-        <ActionPromptSection prompt={actionPrompt} />
       </Box>
       <Box flexDirection="column">
         <SlashCommandSuggestionsSection suggestions={slashCommandSuggestions} />
         <InputSection draftText={draftText} />
+        <ActionPromptSection prompt={dockActionPrompt} />
         <FooterSection state={state} />
       </Box>
     </Box>
@@ -525,19 +534,10 @@ function ActionPromptSection({
   }
 
   return (
-    <Box
-      borderColor="yellow"
-      borderStyle="double"
-      flexDirection="column"
-      marginTop={1}
-      paddingX={1}
-    >
-      <Text bold color="yellow">
-        Confirm action
-      </Text>
-      <Text>
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={prompt.type === "cancel" ? "red" : "yellow"}>
         {prompt.type === "cancel"
-          ? "Cancel active task?"
+          ? "Conversation interrupted"
           : `Send ${formatApprovalPromptAction(prompt.action)} for ${prompt.approvalRequestId}?`}
       </Text>
       <Text dimColor>

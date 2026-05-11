@@ -257,6 +257,8 @@ GPT-5.5
 - User review asked to remove the default `details hidden` diagnostic line and only show runtime/context details through slash commands. Typing `/` now opens command suggestions.
 - User review asked submitted user prompts to render like a clean filled prompt block and found the outline unattractive on the filled background. Submitted prompt echoes now use a stretched dark filled block with no `You` label or outline.
 - User review preferred Pi's minimal startup header and did not want an outlined header box. The live header now renders as plain compact text with shortcut/status hints instead of a bordered card.
+- User review wanted `/details` to remain sticky for monitoring, while lighter diagnostic panels should be temporary. Normal prompt submission now clears `/runtime`, `/context`, and `/help` panels but keeps `/details` visible.
+- User review found the boxed cancel confirmation too heavy and clarified the notice should look like a chat interruption under the sent user prompt, not inside the empty input box. Cancel interruption now renders as inline red `Conversation interrupted` guidance below the latest submitted prompt card.
 
 ### Implementation Plan
 
@@ -294,6 +296,8 @@ GPT-5.5
 - Removed default hidden-details diagnostics from the live first screen and added slash-command suggestions for `/runtime`, `/context`, `/details`, `/hide`, and `/help`.
 - Updated submitted-prompt echo cards to match the provided visual reference: a full-width dark filled block with only the redacted prompt text inside and no border competing with the background.
 - Removed the header outline and converted it to a compact Pi-like text header with command/status hints.
+- Made `/details` sticky across prompt submissions while treating `/runtime`, `/context`, and `/help` as temporary panels that clear on the next real prompt send.
+- Replaced the large boxed cancel prompt with a compact inline red interruption notice below the latest submitted prompt card, leaving the input box clean.
 
 ### File List
 
@@ -332,3 +336,5 @@ GPT-5.5
 - 2026-05-12: Removed default hidden-details diagnostics and added slash-command suggestions.
 - 2026-05-12: Restyled submitted user prompt echoes as full-width filled dark prompt blocks without outlines.
 - 2026-05-12: Simplified the live header into a minimal unboxed Pi-like text header.
+- 2026-05-12: Kept `/details` sticky while clearing temporary slash panels on prompt submission.
+- 2026-05-12: Replaced boxed cancel confirmation with inline red interruption text below the sent prompt card.

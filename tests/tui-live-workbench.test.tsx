@@ -139,6 +139,63 @@ describe("live Ink TUI workbench", () => {
     expect(view.lastFrame() ?? "").toContain("[Runtime]");
     expect(view.lastFrame() ?? "").toContain("provider:");
     expect(interactions).toHaveLength(0);
+
+    view.stdin.write("clear temporary panel");
+    view.stdin.write("\r");
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").not.toContain("[Runtime]");
+    expect(interactions).toHaveLength(1);
+
+    view.stdin.write("/details");
+    view.stdin.write("\r");
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").toContain("[Runtime]");
+    expect(view.lastFrame() ?? "").toContain("[Context]");
+
+    view.stdin.write("keep sticky details");
+    view.stdin.write("\r");
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").toContain("[Runtime]");
+    expect(view.lastFrame() ?? "").toContain("[Context]");
+    expect(interactions).toHaveLength(2);
+  });
+
+  it("renders cancel interruption below the submitted prompt instead of inside the input box", async () => {
+    const liveState = createTuiLiveWorkbenchState({
+      runtimeState: createTuiStartupState({
+        bootstrapState: bootstrapState({})
+      }),
+      workbench: createTuiWorkbenchView()
+    });
+    const interactions: TuiLiveWorkbenchInteraction[] = [];
+    const view = render(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => interactions.push(interaction)}
+        state={liveState}
+      />
+    );
+
+    view.stdin.write("hello");
+    view.stdin.write("\r");
+    await waitForInkInput();
+    view.stdin.write("\u001b");
+    await waitForInkInput();
+
+    const frame = view.lastFrame() ?? "";
+    const submittedPromptIndex = frame.indexOf("hello");
+    const interruptionIndex = frame.indexOf("Conversation interrupted");
+    const inputIndex = frame.indexOf("Type a prompt…");
+
+    expect(submittedPromptIndex).toBeGreaterThanOrEqual(0);
+    expect(interruptionIndex).toBeGreaterThan(submittedPromptIndex);
+    expect(inputIndex).toBeGreaterThan(interruptionIndex);
+    expect(frame).toContain("warning: press Esc again to cancel · dismiss: N");
+    expect(frame).not.toContain("Confirm action");
+    expect(frame).not.toContain("Cancel active task?");
+    expect(interactions).toHaveLength(1);
   });
 
   it("accepts multiline input and dispatches submit, cancel, approval, and exit interactions", async () => {
@@ -179,8 +236,9 @@ describe("live Ink TUI workbench", () => {
     view.stdin.write("\u001b");
     await waitForInkInput();
 
-    expect(view.lastFrame() ?? "").toContain("Confirm action");
-    expect(view.lastFrame() ?? "").toContain("Cancel active task?");
+    expect(view.lastFrame() ?? "").toContain("Conversation interrupted");
+    expect(view.lastFrame() ?? "").not.toContain("Confirm action");
+    expect(view.lastFrame() ?? "").not.toContain("Cancel active task?");
     expect(interactions).toHaveLength(1);
 
     view.stdin.write("\u001b");
