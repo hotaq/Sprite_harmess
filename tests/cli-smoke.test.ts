@@ -185,10 +185,10 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout).toContain("Enter send");
     expect(result.stdout).toContain("Shift+Enter/Ctrl+J newline");
     expect(result.stdout).toContain("Esc cancel");
-    expect(result.stdout).toContain("details hidden");
-    expect(result.stdout).toContain("/runtime, /context, /details, /hide, or /help");
+    expect(result.stdout).not.toContain("details hidden");
+    expect(result.stdout).toContain("/runtime · /context · /details");
     expect(result.stdout).not.toContain("submit /runtime");
-    expect(result.stdout).toContain("menu: A approve");
+    expect(result.stdout).toContain("A approve · D deny · E edit · T timeout");
     expect(result.stdout).not.toContain("actions:");
     expect(result.stdout).not.toContain("Slash commands:");
     expect(result.stdout).not.toContain("[Runtime]");

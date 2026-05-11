@@ -252,6 +252,11 @@ GPT-5.5
 - User review expected live TUI launch to start from a clean screen instead of rendering below previous shell output. `runTuiWorkbench()` now uses Ink `alternateScreen` by default for the live renderer.
 - User review found section titles such as `[Activity]`, `[Approvals]`, and `[Footer]` too report-like. Activity and approval cards now render only when data exists, without section headers or empty pending placeholders.
 - User review found sending a prompt did not feel real because the submitted text disappeared from the visible chat area. Submitted prompts now echo immediately as redacted `You` cards before runtime activity arrives.
+- User review asked to make the live workbench more beautiful. Visual polish is constrained to presentation: rounded cards, softer prompt placeholder, colored activity/approval accents, and cleaner preview copy without changing runtime ownership.
+- User review asked the prompt box and shortcut footer to sit on the inferior/bottom edge of the terminal. The live Ink layout now reserves a bottom dock for input/footer and lets the work area flex above it.
+- User review asked to remove the default `details hidden` diagnostic line and only show runtime/context details through slash commands. Typing `/` now opens command suggestions.
+- User review asked submitted user prompts to render like a clean filled prompt block and found the outline unattractive on the filled background. Submitted prompt echoes now use a stretched dark filled block with no `You` label or outline.
+- User review preferred Pi's minimal startup header and did not want an outlined header box. The live header now renders as plain compact text with shortcut/status hints instead of a bordered card.
 
 ### Implementation Plan
 
@@ -284,6 +289,11 @@ GPT-5.5
 - Enabled Ink alternate-screen rendering for live TUI launches, so the workbench starts on a clean terminal screen and restores the previous shell view on exit.
 - Removed Activity/Approvals/Footer section titles. Activity is conditional on runtime messages; approvals are conditional on pending approval requests; empty states stay hidden.
 - Added local submitted-prompt echo cards so user messages appear in the chat/work area immediately after `Enter send`; slash commands remain control input and are not echoed.
+- Polished the live TUI visual hierarchy with rounded prompt/activity/approval cards, severity/risk accent colors, a cleaner header, a softer empty prompt, and matching static preview output.
+- Docked the prompt box and shortcut/footer metadata to the bottom of the live terminal viewport while keeping runtime/activity/approval content in the flexible upper work area.
+- Removed default hidden-details diagnostics from the live first screen and added slash-command suggestions for `/runtime`, `/context`, `/details`, `/hide`, and `/help`.
+- Updated submitted-prompt echo cards to match the provided visual reference: a full-width dark filled block with only the redacted prompt text inside and no border competing with the background.
+- Removed the header outline and converted it to a compact Pi-like text header with command/status hints.
 
 ### File List
 
@@ -317,3 +327,8 @@ GPT-5.5
 - 2026-05-12: Enabled alternate-screen rendering for clean live TUI startup/exit behavior.
 - 2026-05-12: Removed report-like section titles and hid empty activity/approval placeholders.
 - 2026-05-12: Added immediate redacted user-prompt echo cards after send.
+- 2026-05-12: Polished live TUI visual hierarchy with rounded cards, accent colors, and cleaner static preview text.
+- 2026-05-12: Docked the prompt box and footer shortcuts to the bottom of the live terminal viewport.
+- 2026-05-12: Removed default hidden-details diagnostics and added slash-command suggestions.
+- 2026-05-12: Restyled submitted user prompt echoes as full-width filled dark prompt blocks without outlines.
+- 2026-05-12: Simplified the live header into a minimal unboxed Pi-like text header.

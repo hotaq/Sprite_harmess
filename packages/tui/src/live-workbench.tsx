@@ -4,6 +4,7 @@ import {
   render,
   useApp,
   useInput,
+  useWindowSize,
   type Instance,
   type RenderOptions
 } from "ink";
@@ -16,7 +17,7 @@ import type {
 } from "./index.js";
 
 const BLANK_DRAFT_LINE = " ";
-const EMPTY_DRAFT_PLACEHOLDER = "What should Sprite work on?";
+const EMPTY_DRAFT_PLACEHOLDER = "Type a prompt…";
 
 export type TuiLiveWorkbenchApprovalAction =
   | "allow"
@@ -66,17 +67,46 @@ type TuiDetailPanel = "context" | "details" | "help" | "runtime";
 
 type TuiSlashCommand = TuiDetailPanel | "hide";
 
+interface TuiSlashCommandSuggestion {
+  command: TuiSlashCommand;
+  description: string;
+}
+
 interface TuiSubmittedPrompt {
   id: string;
   mode: TuiSubmitIntentMode;
   text: string;
 }
 
+const SLASH_COMMAND_SUGGESTIONS: readonly TuiSlashCommandSuggestion[] = [
+  {
+    command: "runtime",
+    description: "provider, sandbox, session, latest event"
+  },
+  {
+    command: "context",
+    description: "loaded guidance, skills, memory, warnings"
+  },
+  {
+    command: "details",
+    description: "runtime and context together"
+  },
+  {
+    command: "hide",
+    description: "collapse diagnostics"
+  },
+  {
+    command: "help",
+    description: "show command help"
+  }
+];
+
 export function TuiWorkbenchApp({
   onInteraction,
   state
 }: TuiWorkbenchAppProps): React.JSX.Element {
   const { exit } = useApp();
+  const { rows } = useWindowSize();
   const [draftText, setDraftTextState] = useState(state.workbench.input.text);
   const [detailPanel, setDetailPanel] = useState<TuiDetailPanel | null>(null);
   const [actionPrompt, setActionPrompt] = useState<TuiActionPrompt | null>(
@@ -196,17 +226,23 @@ export function TuiWorkbenchApp({
       setDraftText(`${draftRef.current}${input}`);
     }
   });
+  const slashCommandSuggestions = getSlashCommandSuggestions(draftText);
 
   return (
-    <Box flexDirection="column">
-      <HeaderSection state={state} />
-      <DetailsSection detailPanel={detailPanel} state={state} />
-      <SubmittedPromptsSection prompts={submittedPrompts} />
-      <ActivitySection state={state} />
-      <ApprovalsSection state={state} />
-      <ActionPromptSection prompt={actionPrompt} />
-      <InputSection draftText={draftText} />
-      <FooterSection state={state} />
+    <Box flexDirection="column" minHeight={rows} justifyContent="space-between">
+      <Box flexDirection="column">
+        <HeaderSection state={state} />
+        <DetailsSection detailPanel={detailPanel} state={state} />
+        <SubmittedPromptsSection prompts={submittedPrompts} />
+        <ActivitySection state={state} />
+        <ApprovalsSection state={state} />
+        <ActionPromptSection prompt={actionPrompt} />
+      </Box>
+      <Box flexDirection="column">
+        <SlashCommandSuggestionsSection suggestions={slashCommandSuggestions} />
+        <InputSection draftText={draftText} />
+        <FooterSection state={state} />
+      </Box>
     </Box>
   );
 }
@@ -231,12 +267,15 @@ function HeaderSection({
     <Box flexDirection="column">
       <Text>
         <Text bold color="cyan">
-          Sprite Harness TUI live workbench
+          Sprite Harness
         </Text>
-        <Text dimColor> · first draft</Text>
+        <Text dimColor> live terminal</Text>
       </Text>
       <Text dimColor>
-        {`session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · details hidden`}
+        {`Enter send · Shift+Enter/Ctrl+J newline · Esc cancel · ${getExitShortcutLabel()} exit · / commands`}
+      </Text>
+      <Text dimColor>
+        {`session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · press /help for commands and resources`}
       </Text>
     </Box>
   );
@@ -248,9 +287,9 @@ function DetailsSection({
 }: {
   detailPanel: TuiDetailPanel | null;
   state: TuiLiveWorkbenchState;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   if (detailPanel === null) {
-    return <DetailsHiddenSection state={state} />;
+    return null;
   }
 
   if (detailPanel === "help") {
@@ -269,31 +308,50 @@ function DetailsSection({
   );
 }
 
-function DetailsHiddenSection({
-  state
-}: {
-  state: TuiLiveWorkbenchState;
-}): React.JSX.Element {
+function SlashCommandHelpSection(): React.JSX.Element {
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text dimColor>
-        {`details hidden · /runtime environment · /context guidance · /details all · /hide collapse`}
+    <Box
+      borderColor="yellow"
+      borderStyle="round"
+      flexDirection="column"
+      marginTop={1}
+      paddingX={1}
+    >
+      <Text bold color="yellow">
+        Commands
       </Text>
-      <Text dimColor>
-        {`latest ${state.runtimeState.events.latestType ?? "none"} · warnings ${state.runtimeState.warnings.count} · cwd ${state.runtimeState.workspace.cwd.value}`}
-      </Text>
+      <Text>{`/runtime  provider, sandbox, session, latest event`}</Text>
+      <Text>{`/context  loaded guidance, skills, memory, warnings`}</Text>
+      <Text>{`/details  runtime and context together`}</Text>
+      <Text>{`/hide     collapse diagnostics`}</Text>
     </Box>
   );
 }
 
-function SlashCommandHelpSection(): React.JSX.Element {
+function SlashCommandSuggestionsSection({
+  suggestions
+}: {
+  suggestions: readonly TuiSlashCommandSuggestion[];
+}): React.JSX.Element | null {
+  if (suggestions.length === 0) {
+    return null;
+  }
+
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text color="yellow">[Slash commands]</Text>
-      <Text>{`  /runtime  show provider, sandbox, session, latest event`}</Text>
-      <Text>{`  /context  show loaded guidance, skills, memory, warnings`}</Text>
-      <Text>{`  /details  show runtime and context together`}</Text>
-      <Text>{`  /hide     collapse diagnostic details`}</Text>
+    <Box
+      borderColor="gray"
+      borderStyle="round"
+      flexDirection="column"
+      marginTop={1}
+      paddingX={1}
+    >
+      <Text dimColor>Command suggestions</Text>
+      {suggestions.map((suggestion) => (
+        <Text key={suggestion.command}>
+          <Text color="cyan">{`/${suggestion.command}`}</Text>
+          <Text dimColor>{`  ${suggestion.description}`}</Text>
+        </Text>
+      ))}
     </Box>
   );
 }
@@ -342,18 +400,20 @@ function SubmittedPromptCard({
   prompt: TuiSubmittedPrompt;
 }): React.JSX.Element {
   const promptLines = createVisibleDraftLines(prompt.text);
-  const label = prompt.mode === "steer-task" ? "You · steer" : "You";
 
   return (
     <Box
-      borderStyle="single"
+      alignSelf="stretch"
+      backgroundColor="blackBright"
       flexDirection="column"
       marginTop={1}
       paddingX={1}
+      paddingY={1}
     >
-      <Text dimColor>{label}</Text>
       {promptLines.map((line, index) => (
-        <Text key={`${prompt.id}-line-${index}`}>{line}</Text>
+        <Text color="white" key={`${prompt.id}-line-${index}`}>
+          {line}
+        </Text>
       ))}
     </Box>
   );
@@ -384,6 +444,7 @@ function ActivityCard({
 }: {
   item: TuiMessageStreamItem;
 }): React.JSX.Element {
+  const accentColor = getActivityAccentColor(item.severity);
   const outputLine =
     item.output?.reference === undefined
       ? undefined
@@ -393,13 +454,16 @@ function ActivityCard({
 
   return (
     <Box
-      borderStyle="single"
+      borderColor={accentColor}
+      borderStyle="round"
       flexDirection="column"
       marginTop={1}
       paddingX={1}
     >
       <Text>
-        <Text bold>{formatActivityTitle(item)}</Text>
+        <Text bold color={accentColor}>
+          {formatActivityTitle(item)}
+        </Text>
         <Text dimColor>{` · ${item.createdAt}`}</Text>
       </Text>
       <Text>{item.summary.value}</Text>
@@ -421,23 +485,32 @@ function ApprovalsSection({
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      {approvals.map((approval) => (
-        <Box
-          borderStyle="single"
-          flexDirection="column"
-          key={approval.approvalRequestId.value}
-          marginTop={1}
-          paddingX={1}
-        >
-          <Text>
-            <Text bold>{approval.approvalRequestId.value}</Text>
-            {` · ${approval.requestType} · ${approval.riskLevel}`}
-          </Text>
-          <Text>{`reason: ${approval.reason.value}`}</Text>
-          <Text>{`summary: ${approval.summary.value}`}</Text>
-          <Text>{`menu: A approve · D deny · E edit · T timeout`}</Text>
-        </Box>
-      ))}
+      {approvals.map((approval) => {
+        const accentColor = getApprovalAccentColor(approval.riskLevel);
+
+        return (
+          <Box
+            borderColor={accentColor}
+            borderStyle="round"
+            flexDirection="column"
+            key={approval.approvalRequestId.value}
+            marginTop={1}
+            paddingX={1}
+          >
+            <Text>
+              <Text bold color={accentColor}>
+                Approval required
+              </Text>
+              {` · ${approval.requestType} · ${approval.riskLevel}`}
+            </Text>
+            <Text>{approval.summary.value}</Text>
+            <Text dimColor>{`reason: ${approval.reason.value}`}</Text>
+            <Text dimColor>
+              {`A approve · D deny · E edit · T timeout · ${approval.approvalRequestId.value}`}
+            </Text>
+          </Box>
+        );
+      })}
     </Box>
   );
 }
@@ -453,12 +526,15 @@ function ActionPromptSection({
 
   return (
     <Box
+      borderColor="yellow"
       borderStyle="double"
       flexDirection="column"
       marginTop={1}
       paddingX={1}
     >
-      <Text color="yellow">[Action prompt]</Text>
+      <Text bold color="yellow">
+        Confirm action
+      </Text>
       <Text>
         {prompt.type === "cancel"
           ? "Cancel active task?"
@@ -483,7 +559,8 @@ function InputSection({
 
   return (
     <Box
-      borderStyle="single"
+      borderColor="cyan"
+      borderStyle="round"
       flexDirection="column"
       marginTop={1}
       paddingX={1}
@@ -543,11 +620,39 @@ function createContextLines(state: TuiLiveWorkbenchState): string[] {
 }
 
 function formatActivityTitle(item: TuiMessageStreamItem): string {
-  return `${item.order}. [${item.kind.toUpperCase()}][${item.severity.toUpperCase()}] ${item.eventType}`;
+  return `${item.order}. ${item.kind} · ${item.severity} · ${item.eventType}`;
 }
 
 function formatStateToken(token: string): string {
   return `[${token}]`;
+}
+
+function getActivityAccentColor(
+  severity: TuiMessageStreamItem["severity"]
+): "gray" | "green" | "red" | "yellow" {
+  switch (severity) {
+    case "error":
+      return "red";
+    case "success":
+      return "green";
+    case "warning":
+      return "yellow";
+    case "info":
+    case "pending":
+      return "gray";
+  }
+}
+
+function getApprovalAccentColor(riskLevel: string): "cyan" | "red" | "yellow" {
+  switch (riskLevel) {
+    case "critical":
+    case "high":
+      return "red";
+    case "medium":
+      return "yellow";
+    default:
+      return "cyan";
+  }
 }
 
 function handleActionPromptInput({
@@ -658,6 +763,24 @@ function parseSlashCommand(value: string): TuiSlashCommand | null {
     default:
       return null;
   }
+}
+
+function getSlashCommandSuggestions(
+  value: string
+): readonly TuiSlashCommandSuggestion[] {
+  const normalized = value.trimStart().toLowerCase();
+
+  if (
+    !normalized.startsWith("/") ||
+    normalized.includes("\n") ||
+    normalized.includes(" ")
+  ) {
+    return [];
+  }
+
+  return SLASH_COMMAND_SUGGESTIONS.filter((suggestion) =>
+    `/${suggestion.command}`.startsWith(normalized)
+  );
 }
 
 function resolveDetailPanel(command: TuiSlashCommand): TuiDetailPanel | null {

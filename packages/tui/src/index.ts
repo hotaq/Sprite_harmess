@@ -784,7 +784,7 @@ export function createTuiWorkbenchView({
 
 export function formatTuiWorkbenchView(view: TuiWorkbenchView): string {
   const preview = view.input.isEmpty
-    ? "What should Sprite work on?"
+    ? "Type a prompt…"
     : view.input.preview.value;
 
   return [
@@ -990,11 +990,9 @@ export function formatTuiLiveWorkbenchPreview(
     "Sprite Harness TUI preview (static)",
     "mode: static preview / not interactive / run `sprite tui` in a real TTY for live mode",
     "",
-    "Sprite Harness TUI live workbench · first draft preview",
-    `session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · details hidden`,
-    "",
-    "details hidden · /runtime, /context, /details, /hide, or /help in live mode",
-    `latest ${state.runtimeState.events.latestType ?? "none"} · warnings ${state.runtimeState.warnings.count} · cwd ${state.runtimeState.workspace.cwd.value}`,
+    "Sprite Harness · live terminal preview",
+    `session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · /runtime for details`,
+    "commands: /runtime · /context · /details · /help in live mode",
     ...(activityLines.length === 0 ? [] : ["", ...activityLines]),
     ...(approvalLines.length === 0 ? [] : ["", ...approvalLines]),
     "",
@@ -1033,7 +1031,7 @@ function formatPreviewActivityLines(state: TuiLiveWorkbenchState): string[] {
           ];
 
     return [
-      `╭─ ${item.order}. [${item.kind.toUpperCase()}][${item.severity.toUpperCase()}] ${item.eventType}`,
+      `╭─ ${item.order}. ${item.kind} · ${item.severity} · ${item.eventType}`,
       `│ ${item.summary.value}`,
       ...outputLine,
       "╰─"
@@ -1047,10 +1045,10 @@ function formatPreviewApprovalLines(state: TuiLiveWorkbenchState): string[] {
   }
 
   return state.workbench.approvals.flatMap((approval) => [
-    `╭─ ${approval.approvalRequestId.value} · ${approval.requestType} · ${approval.riskLevel}`,
-    `│ summary: ${approval.summary.value}`,
+    `╭─ Approval required · ${approval.requestType} · ${approval.riskLevel}`,
+    `│ ${approval.summary.value}`,
     `│ reason: ${approval.reason.value}`,
-    "│ menu: A approve · D deny · E edit · T timeout",
+    `│ A approve · D deny · E edit · T timeout · ${approval.approvalRequestId.value}`,
     approval.toolCallId === undefined
       ? "╰─"
       : `╰─ toolCallId: ${approval.toolCallId.value}`

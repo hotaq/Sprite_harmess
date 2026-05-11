@@ -62,14 +62,15 @@ describe("live Ink TUI workbench", () => {
     const view = render(<TuiWorkbenchApp state={liveState} />);
     const frame = view.lastFrame() ?? "";
 
-    expect(frame).toContain("Sprite Harness TUI live workbench");
+    expect(frame).toContain("Sprite Harness");
+    expect(frame).toContain("live terminal");
     expect(frame).toContain("events 1");
     expect(frame).toContain(`${exitShortcutLabel()} exit`);
     expect(frame).toContain("Enter send");
     expect(frame).toContain("Shift+Enter/Ctrl+J newline");
     expect(frame).toContain("Esc cancel");
-    expect(frame).toContain("details hidden");
-    expect(frame).toContain("menu: A approve");
+    expect(frame).not.toContain("details hidden");
+    expect(frame).toContain("A approve · D deny · E edit · T timeout");
     expect(frame).not.toContain("[Runtime]");
     expect(frame).not.toContain("[Context]");
     expect(frame).not.toContain("[Activity]");
@@ -106,8 +107,17 @@ describe("live Ink TUI workbench", () => {
     expect(view.lastFrame() ?? "").not.toContain("[Runtime]");
     expect(view.lastFrame() ?? "").not.toContain("[PENDING] no runtime events yet");
     expect(view.lastFrame() ?? "").not.toContain("[PENDING] no approvals");
+    expect(view.lastFrame() ?? "").not.toContain("details hidden");
 
-    view.stdin.write("/context");
+    view.stdin.write("/");
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").toContain("Command suggestions");
+    expect(view.lastFrame() ?? "").toContain("/runtime");
+    expect(view.lastFrame() ?? "").toContain("/context");
+    expect(view.lastFrame() ?? "").toContain("/details");
+
+    view.stdin.write("context");
     view.stdin.write("\r");
     await waitForInkInput();
 
@@ -120,7 +130,7 @@ describe("live Ink TUI workbench", () => {
     await waitForInkInput();
 
     expect(view.lastFrame() ?? "").not.toContain("[Context]");
-    expect(view.lastFrame() ?? "").toContain("details hidden");
+    expect(view.lastFrame() ?? "").not.toContain("details hidden");
 
     view.stdin.write("/runtime");
     view.stdin.write("\r");
@@ -161,16 +171,15 @@ describe("live Ink TUI workbench", () => {
     view.stdin.write("\r");
     await waitForInkInput();
 
-    expect(view.lastFrame() ?? "").toContain("You");
     expect(view.lastFrame() ?? "").toContain("first line");
     expect(view.lastFrame() ?? "").toContain("second line");
-    expect(view.lastFrame() ?? "").toContain("What should Sprite work on?");
+    expect(view.lastFrame() ?? "").toContain("Type a prompt…");
     expect(interactions).toHaveLength(1);
 
     view.stdin.write("\u001b");
     await waitForInkInput();
 
-    expect(view.lastFrame() ?? "").toContain("[Action prompt]");
+    expect(view.lastFrame() ?? "").toContain("Confirm action");
     expect(view.lastFrame() ?? "").toContain("Cancel active task?");
     expect(interactions).toHaveLength(1);
 
@@ -227,7 +236,7 @@ describe("live Ink TUI workbench", () => {
     await waitForInkInput();
 
     expect(interactions).toHaveLength(1);
-    expect(view.lastFrame() ?? "").toContain("You");
+    expect(view.lastFrame() ?? "").not.toContain("You");
     expect(view.lastFrame() ?? "").toContain("[REDACTED]");
     expect(view.lastFrame() ?? "").not.toContain("sk-secret");
     expect(view.lastFrame() ?? "").not.toContain("OPENAI_API_KEY");
@@ -251,8 +260,8 @@ describe("live Ink TUI workbench", () => {
     expect(preview).toContain("Enter send");
     expect(preview).toContain("Shift+Enter/Ctrl+J newline");
     expect(preview).toContain("Esc cancel");
-    expect(preview).toContain("details hidden");
-    expect(preview).toContain("/runtime, /context, /details, /hide, or /help");
+    expect(preview).not.toContain("details hidden");
+    expect(preview).toContain("/runtime · /context · /details");
     expect(preview).not.toContain("submit /runtime");
     expect(preview).not.toContain("[Runtime]");
     expect(preview).not.toContain("[Context]");
