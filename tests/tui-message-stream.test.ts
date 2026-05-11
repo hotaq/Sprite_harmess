@@ -88,6 +88,17 @@ describe("TUI message stream adapter", () => {
         toolCallId: "tool-3",
         toolName: "apply_patch"
       }),
+      event("file.activity.recorded", {
+        activityId: "activity-1",
+        kind: "read",
+        path: "packages/tui/src/index.ts",
+        returnedItemCount: 1,
+        status: "recorded",
+        summary: "File activity recorded.",
+        toolCallId: "tool-4",
+        toolName: "read_file",
+        totalItemCount: 1
+      }),
       event("memory.candidate.created", {
         candidateId: "memory-1",
         confidence: "medium",
@@ -168,6 +179,7 @@ describe("TUI message stream adapter", () => {
       "approval",
       "approval",
       "file",
+      "file",
       "memory",
       "skill",
       "session",
@@ -213,9 +225,27 @@ describe("TUI message stream adapter", () => {
       severity: "error",
       status: "deny"
     });
+    expect(
+      stream.items.find((item) => item.eventType === "file.activity.recorded")
+    ).toMatchObject({
+      kind: "file",
+      metadata: {
+        kind: "read",
+        path: "packages/tui/src/index.ts",
+        returnedItemCount: 1,
+        totalItemCount: 1
+      },
+      severity: "info",
+      status: "recorded"
+    });
+    expect(formatted).toContain(
+      "#1 2026-05-11T00:00:01.000Z [TASK][PENDING] task.started planned"
+    );
     expect(formatted).toContain("[TOOL][SUCCESS] tool.call.completed completed");
     expect(formatted).toContain("toolCallId=tool-1");
-    expect(formatted).toContain("output=stored reference=.sprite/logs/tool-output.log");
+    expect(formatted).toContain(
+      "output=collapsed reference=.sprite/logs/tool-output.log reason=large-output"
+    );
     expect(formatted).toContain("[VALIDATION][SUCCESS] validation.completed passed");
     expect(formatted).not.toMatch(/\u001b\[/u);
   });
@@ -225,7 +255,7 @@ describe("TUI message stream adapter", () => {
       { length: TUI_OUTPUT_PREVIEW_MAX_LINES + 5 },
       (_, index) => `line-${index + 1}-${"x".repeat(80)}`
     ).join("\n");
-    const secretOutput = `${largeOutput}\nOPENAI_API_KEY=sk-secret`;
+    const secretOutput = `OPENAI_API_KEY=sk-secret\n${largeOutput}`;
     const events = [
       event("tool.call.failed", {
         command: "npm test",
@@ -258,16 +288,52 @@ describe("TUI message stream adapter", () => {
     expect(item?.severity).toBe("error");
     expect(item?.output).toMatchObject({
       fullOutputStored: true,
-      hiddenLineCount: 6,
       isTruncated: true,
       originalLineCount: TUI_OUTPUT_PREVIEW_MAX_LINES + 6
     });
+    expect(item?.output?.hiddenLineCount).toBeGreaterThan(6);
     expect(item?.output?.preview?.redacted).toBe(true);
+    expect(item?.output?.preview?.value).toContain("[REDACTED]");
+    expect(item?.output?.preview?.value).not.toContain("sk-secret");
     expect(item?.output?.reference?.redacted).toBe(true);
     expect(formatted).toContain("output=truncated");
+    expect(formatted).toContain("reason=captured-output");
     expect(formatted).toContain(`lines=${TUI_OUTPUT_PREVIEW_MAX_LINES + 6}`);
     expect(formatted).not.toContain("sk-secret");
     expect(formatted).not.toContain(`line-${TUI_OUTPUT_PREVIEW_MAX_LINES + 5}`);
+  });
+
+  it("marks display string truncation in output preview metadata", () => {
+    const stream = createTuiMessageStream(
+      [
+        event("tool.call.completed", {
+          command: "npm test",
+          cwd: "/repo",
+          durationMs: 10,
+          exitCode: 0,
+          status: "completed",
+          summary: "Tool completed.",
+          toolCallId: "tool-small",
+          toolName: "run_command"
+        })
+      ],
+      {
+        outputPreviews: {
+          "evt-1": "small output ".repeat(20)
+        },
+        stringLimit: 24
+      }
+    );
+    const item = stream.items[0];
+
+    expect(item?.output).toMatchObject({
+      fullOutputStored: false,
+      isTruncated: true,
+      originalLineCount: 1
+    });
+    expect(item?.output?.hiddenByteCount).toBeGreaterThan(0);
+    expect(item?.output?.preview?.value.endsWith("…")).toBe(true);
+    expect(formatTuiMessageStream(stream)).toContain("output=truncated");
   });
 
   it("keeps task messages independent from tool and validation summary wording", () => {

@@ -1,6 +1,6 @@
 # Story 6.2: Display Message Stream, Tool Activity, and Validation Results
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -36,7 +36,7 @@ so that I can inspect messages, tool calls, validation, and outcomes.
   - [x] Add a stream item output-preview model with `isTruncated`, `hiddenLineCount`/`hiddenByteCount` when knowable, `outputReference`, and `fullOutputStored`.
   - [x] Apply the Story 6.2 large-output threshold: 32 KB or 500 lines.
   - [x] Use existing redaction/bounding helpers such as `createRedactedPreview()` and `containsSecretLikeValue()` from `@sprite/shared` before inventing new masking logic.
-  - [x] Never read `outputReference.path` from the TUI mapper; display a bounded local reference label only.
+  - [x] Never read/dereference the file at `outputReference.path` from the TUI mapper; display a bounded local reference label only.
   - [x] Do not render forbidden raw fields already blocked by runtime events (`rawOutput`, `stdout`, `stderr`, `rawContent`, `patch`, `diff`, `env`, `snippets`, credentials).
 
 - [x] Render stream output in a deterministic formatter (AC: 1, 3, 4, 5)
@@ -155,6 +155,25 @@ Expected new functions/contracts before implementation:
 - Preserve auditability: keep event IDs and correlation IDs available in the stream model even if the default formatter hides some detail.
 - Keep references local and bounded. A log/reference path can be displayed as a safe label; the TUI mapper must not dereference it.
 
+## Senior Developer Review
+
+### Review Result
+
+Approved after fixes.
+
+### UI Scope Decision
+
+Story 6.2 intentionally develops the TUI display layer as a pure event-stream read model plus deterministic formatter. It includes the UI contract for message/tool/validation display, but does not add live Ink/React interaction. Live multiline input, steering, cancellation, and approval response UI are deferred to Story 6.3.
+
+### Findings Fixed
+
+- Formatter now displays event order and timestamp in each stream item header.
+- `file.activity.recorded` events now surface safe activity metadata: kind, path label, returned count, and total count.
+- Output-reference-only results now render as collapsed output with a visible reason when available.
+- Large-output hidden line counts now account for byte truncation after line bounding.
+- Display-level `stringLimit` truncation now sets truncation metadata.
+- Regression coverage now proves visible secret-like output previews are redacted, not merely flagged.
+
 ### Architecture Compliance Guardrails
 
 - `packages/core` must not import from `packages/tui`.
@@ -212,6 +231,7 @@ GPT-5.5
 - Red test confirmed missing Story 6.2 stream exports: `npm test -- --run tests/tui-message-stream.test.ts` failed with `createTuiMessageStream is not a function`.
 - Implemented pure message-stream read model/formatter in `packages/tui/src/index.ts`; no runtime contract, CLI entrypoint, or Ink/React dependency was added.
 - Validation passed: targeted stream tests, TUI state regression tests, typecheck, full Vitest suite, `git diff --check`, GitNexus analyze/status, and GitNexus impact checks for new stream exports.
+- Three-agent code review completed for code correctness, edge cases, and UX acceptance. Findings were fixed in the TUI stream formatter, safe file activity metadata, output truncation accounting, and review regression tests.
 
 ### Implementation Plan
 
@@ -231,6 +251,7 @@ GPT-5.5
 - Formatter emits deterministic text tokens such as `[TOOL][SUCCESS]` and `[APPROVAL][ERROR]` without ANSI/color-only signaling.
 - Output previews are bounded at 32 KB or 500 lines, preserve safe local references, redact secret-like content, and keep full output out of the stream formatter.
 - No Ink/React dependency was added; Story 6.2 is satisfied through pure adapter contracts and tests.
+- Review fixes added visible order/timestamp headers, richer file activity display metadata, clearer collapsed output-reference wording, stricter truncation accounting, and focused redaction/string-limit regression coverage.
 
 ### File List
 
@@ -244,3 +265,4 @@ GPT-5.5
 - 2026-05-11: Started Story 6.2 development and marked sprint/story in-progress.
 - 2026-05-11: Added typed TUI message-stream adapter, deterministic formatter, large-output preview/reference model, and stream tests.
 - 2026-05-11: Marked Story 6.2 ready for review after targeted/full validation and GitNexus checks passed.
+- 2026-05-11: Closed Story 6.2 after three-agent review fixes and full validation passed.

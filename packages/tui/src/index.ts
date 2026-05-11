@@ -538,8 +538,10 @@ function createMessageMetadata(
     "entryId",
     "errorCode",
     "exitCode",
+    "kind",
     "learningReviewArtifactPath",
     "memoryType",
+    "path",
     "requestType",
     "riskLevel",
     "ruleId",
@@ -547,6 +549,8 @@ function createMessageMetadata(
     "skillSignalId",
     "toolCallId",
     "toolName",
+    "returnedItemCount",
+    "totalItemCount",
     "trigger",
     "validationId"
   ];
@@ -652,13 +656,19 @@ function createSafeOutputPreview(
     byteLimitedOutput,
     Math.min(stringLimit, maxBytes)
   );
-  const previewByteLength = byteLength(byteLimitedOutput);
+  const previewByteLength = byteLength(preview.value);
+  const visibleLineCount = splitLines(byteLimitedOutput).length;
   const isTruncated =
-    originalByteLength > previewByteLength || originalLineCount > maxLines;
+    originalByteLength > byteLength(byteLimitedOutput) ||
+    originalLineCount > maxLines ||
+    preview.value.endsWith("…");
 
   return {
     hiddenByteCount: Math.max(0, originalByteLength - previewByteLength),
-    hiddenLineCount: Math.max(0, originalLineCount - Math.min(originalLineCount, maxLines)),
+    hiddenLineCount: Math.max(
+      0,
+      originalLineCount - Math.min(originalLineCount, visibleLineCount)
+    ),
     isTruncated,
     originalByteLength,
     originalLineCount,
@@ -670,8 +680,11 @@ function createSafeOutputPreview(
 }
 
 function formatTuiMessageStreamItem(item: TuiMessageStreamItem): string {
+  const sequence = `#${item.order + 1}`;
+  const createdAt = createSafeString(item.createdAt).value;
+
   return [
-    `${formatMessageToken(item.kind)}${formatMessageToken(item.severity)} ${item.eventType} ${item.status}`,
+    `${sequence} ${createdAt} ${formatMessageToken(item.kind)}${formatMessageToken(item.severity)} ${item.eventType} ${item.status}`,
     item.summary.value,
     formatMessageMetadata(item.metadata),
     item.output === undefined ? "" : formatMessageOutput(item.output)
@@ -697,8 +710,10 @@ function formatMessageOutput(output: TuiOutputPreview): string {
   const hasPreview = output.preview !== undefined;
   const state = hasPreview && output.isTruncated
     ? "truncated"
-    : output.fullOutputStored
-      ? "stored"
+    : output.fullOutputStored && output.isTruncated
+      ? "collapsed"
+      : output.fullOutputStored
+        ? "stored"
       : hasPreview
         ? "preview"
         : "stored";
@@ -722,6 +737,10 @@ function formatMessageOutput(output: TuiOutputPreview): string {
 
   if (output.reference !== undefined) {
     parts.push(`reference=${output.reference.value}`);
+  }
+
+  if (output.reason !== undefined) {
+    parts.push(`reason=${output.reason.value}`);
   }
 
   return parts.join(" ");
