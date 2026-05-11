@@ -66,6 +66,7 @@ import {
   type PolicyRequest
 } from "@sprite/sandbox";
 import {
+  SKILL_CANDIDATE_ID_PATTERN,
   SpriteError,
   createRedactedPreview,
   err,
@@ -2517,10 +2518,49 @@ export class AgentRuntime {
     );
     const suggestedIgnored =
       request.trigger === "suggested" && request.status === "ignored";
+    const referencedCandidateEvent = task.events.some((event) => {
+      if (event.type === "skill.candidate.created") {
+        return (
+          sourceEventIds.includes(event.eventId) ||
+          event.payload.candidateId === request.skillId ||
+          event.payload.name === request.name
+        );
+      }
+
+      if (event.type === "skill.candidate.reviewed") {
+        return (
+          sourceEventIds.includes(event.eventId) ||
+          event.payload.candidateId === request.skillId
+        );
+      }
+
+      return false;
+    });
+    const candidateList = this.skillCandidateStore.listCandidates(
+      task.request.cwd
+    );
+    const referencedStoredCandidate =
+      candidateList.ok &&
+      candidateList.value.some(
+        (candidate) =>
+          candidate.id === request.skillId ||
+          candidate.candidateId === request.skillId ||
+          candidate.name === request.name
+      );
+    const referencedCandidateArtifact =
+      SKILL_CANDIDATE_ID_PATTERN.test(request.skillId) ||
+      referencedCandidateEvent ||
+      referencedStoredCandidate;
 
     if (loadedSkillEvent === undefined && !suggestedIgnored) {
       return invalidSkillUsage(
         "Skill usage must reference a skill that was loaded in the active task unless it records an ignored suggestion."
+      );
+    }
+
+    if (loadedSkillEvent === undefined && referencedCandidateArtifact) {
+      return invalidSkillUsage(
+        "Skill usage suggestions must not reference skill candidate artifacts; promote the candidate into a manual skill before recording influence."
       );
     }
 

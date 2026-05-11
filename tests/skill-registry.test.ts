@@ -687,35 +687,53 @@ description: Promoted candidate is available only through its manual skill.
         for (const reference of [
           fixture.name,
           fixture.id,
-          `project:${fixture.name}`
+          `project:${fixture.name}`,
+          `project:${fixture.id}`
         ]) {
-          expect(
-            invokeManualSkill({
-              cwd: projectDir,
-              homeDir,
-              reference
-            })
-          ).toMatchObject({
+          const failed = invokeManualSkill({
+            cwd: projectDir,
+            homeDir,
+            reference
+          });
+          const serializedFailure = JSON.stringify(failed);
+
+          expect(failed).toMatchObject({
             ok: false,
             error: expect.objectContaining({
               code: "SKILL_NOT_FOUND"
             })
           });
+          expect(serializedFailure).not.toContain("sk-test-secret");
+          expect(serializedFailure).not.toContain("rawSkillContent");
+          expect(serializedFailure).not.toContain("routingRule");
+          expect(serializedFailure).not.toContain("always activate");
+          expect(serializedFailure).not.toContain(".sprite/skill-candidates");
         }
       }
 
-      expect(
-        invokeManualSkill({
+      for (const reference of [
+        "skillcand_candidate_promoted",
+        "project:skillcand_candidate_promoted"
+      ]) {
+        const failed = invokeManualSkill({
           cwd: projectDir,
           homeDir,
-          reference: "skillcand_candidate_promoted"
-        })
-      ).toMatchObject({
-        ok: false,
-        error: expect.objectContaining({
-          code: "SKILL_NOT_FOUND"
-        })
-      });
+          reference
+        });
+        const serializedFailure = JSON.stringify(failed);
+
+        expect(failed).toMatchObject({
+          ok: false,
+          error: expect.objectContaining({
+            code: "SKILL_NOT_FOUND"
+          })
+        });
+        expect(serializedFailure).not.toContain("sk-test-secret");
+        expect(serializedFailure).not.toContain("rawSkillContent");
+        expect(serializedFailure).not.toContain("routingRule");
+        expect(serializedFailure).not.toContain("always activate");
+        expect(serializedFailure).not.toContain(".sprite/skill-candidates");
+      }
       expect(
         invokeManualSkill({
           cwd: projectDir,

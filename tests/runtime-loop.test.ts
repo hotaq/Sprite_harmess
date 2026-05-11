@@ -20,6 +20,19 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const CANDIDATE_CONTEXT_LEAK_SENTINEL =
+  "candidate procedural sentinel must never become task guidance";
+const FORBIDDEN_CANDIDATE_REVIEW_SNIPPETS = [
+  '"activationGrant"',
+  '"activationRule"',
+  '"diff"',
+  '"patch"',
+  '"rawOutput"',
+  '"rawSkillContent"',
+  '"routingRule"',
+  "sk-test-secret"
+] as const;
+
 function createTempProject(): { projectDir: string; rootDir: string } {
   const rootDir = mkdtempSync(join(tmpdir(), "sprite-runtime-loop-"));
   const projectDir = join(rootDir, "project");
@@ -134,6 +147,29 @@ async function completeRuntimeTaskWithSkillCandidate(): Promise<{
   };
 }
 
+function addCandidateContextLeakSentinel(artifactPath: string): void {
+  const candidate = JSON.parse(readFileSync(artifactPath, "utf8")) as {
+    summary?: string;
+    workflowSteps?: string[];
+  };
+
+  writeFileSync(
+    artifactPath,
+    JSON.stringify(
+      {
+        ...candidate,
+        summary: CANDIDATE_CONTEXT_LEAK_SENTINEL,
+        workflowSteps: [
+          ...(candidate.workflowSteps ?? []),
+          CANDIDATE_CONTEXT_LEAK_SENTINEL
+        ]
+      },
+      null,
+      2
+    )
+  );
+}
+
 function findContextSection(
   task: PlannedExecutionFlow,
   source: TaskContextSection["source"]
@@ -147,6 +183,7 @@ function expectNoCandidateSkillActivation(
   task: PlannedExecutionFlow,
   candidate: {
     candidateId: string;
+    forbiddenSnippets?: readonly string[];
     name: string;
   },
   expectedFailedReferences: readonly string[] = []
@@ -157,6 +194,7 @@ function expectNoCandidateSkillActivation(
     "runtime-self-model"
   );
   const contextPacketJson = JSON.stringify(task.request.contextPacket);
+  const runtimeSelfModelJson = JSON.stringify(runtimeSelfModelSection);
   const invokedEvents = task.events.filter(
     (event) => event.type === "skill.invoked"
   );
@@ -174,19 +212,20 @@ function expectNoCandidateSkillActivation(
     }),
     status: "skipped"
   });
-  expect(runtimeSelfModelSection?.content).not.toContain(candidate.candidateId);
-  expect(runtimeSelfModelSection?.content).not.toContain(candidate.name);
-  expect(contextPacketJson).not.toContain(candidate.candidateId);
-  expect(contextPacketJson).not.toContain(candidate.name);
+  for (const forbidden of [
+    candidate.candidateId,
+    candidate.name,
+    ...(candidate.forbiddenSnippets ?? [])
+  ]) {
+    expect(runtimeSelfModelJson).not.toContain(forbidden);
+    expect(contextPacketJson).not.toContain(forbidden);
+    expect(JSON.stringify(finalSummary.skillInfluences)).not.toContain(
+      forbidden
+    );
+  }
   expect(invokedEvents).toHaveLength(0);
   expect(usageEvents).toHaveLength(0);
   expect(finalSummary.skillInfluences).toEqual([]);
-  expect(JSON.stringify(finalSummary.skillInfluences)).not.toContain(
-    candidate.candidateId
-  );
-  expect(JSON.stringify(finalSummary.skillInfluences)).not.toContain(
-    candidate.name
-  );
 
   if (expectedFailedReferences.length > 0) {
     expect(failedEvents).toHaveLength(expectedFailedReferences.length);
@@ -201,7 +240,24 @@ function expectNoCandidateSkillActivation(
       });
       expect(JSON.stringify(event.payload)).not.toContain("rawSkillContent");
       expect(JSON.stringify(event.payload)).not.toContain("promotedSkillPath");
+      for (const forbidden of candidate.forbiddenSnippets ?? []) {
+        expect(JSON.stringify(event.payload)).not.toContain(forbidden);
+      }
     }
+  }
+}
+
+function expectCandidateReviewViewIsBounded(
+  value: unknown,
+  projectDir: string
+): void {
+  const serialized = JSON.stringify(value);
+
+  expect(serialized).not.toContain(projectDir);
+  expect(serialized).not.toContain(".sprite/skill-candidates");
+  expect(serialized).not.toContain("promotedSkillPath");
+  for (const snippet of FORBIDDEN_CANDIDATE_REVIEW_SNIPPETS) {
+    expect(serialized).not.toContain(snippet);
   }
 }
 
@@ -875,6 +931,18 @@ Check regressions before committing.
         status: "used",
         trigger: "influenced"
       });
+      const candidateSuggestedIgnored = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: "candidate-review",
+        reason:
+          "This ignored suggestion must still fail because it references a skill candidate artifact.",
+        skillId: "skillcand_candidate_review",
+        source: "project",
+        sourceEventIds: [waitingEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
 
       expect(used.ok).toBe(true);
       expect(ignored.ok).toBe(true);
@@ -885,6 +953,7 @@ Check regressions before committing.
       expect(unboundedUsage.ok).toBe(false);
       expect(candidateLoaded.ok).toBe(false);
       expect(candidateUsed.ok).toBe(false);
+      expect(candidateSuggestedIgnored.ok).toBe(false);
       if (!used.ok || !ignored.ok || !contradicted.ok || !suggestedIgnored.ok) {
         return;
       }
@@ -2148,6 +2217,7 @@ Check regressions before committing.
         return;
       }
 
+      addCandidateContextLeakSentinel(proposed.artifactPath);
       const references = [
         opened.value.name,
         proposed.candidateId,
@@ -2171,6 +2241,7 @@ Check regressions before committing.
         submitted.value,
         {
           candidateId: proposed.candidateId,
+          forbiddenSnippets: [CANDIDATE_CONTEXT_LEAK_SENTINEL],
           name: opened.value.name
         },
         references
@@ -2195,6 +2266,7 @@ Check regressions before committing.
         return;
       }
 
+      addCandidateContextLeakSentinel(draft.artifactPath);
       const references = [
         reviewed.value.view.name,
         draft.candidateId,
@@ -2218,6 +2290,7 @@ Check regressions before committing.
         submitted.value,
         {
           candidateId: draft.candidateId,
+          forbiddenSnippets: [CANDIDATE_CONTEXT_LEAK_SENTINEL],
           name: reviewed.value.view.name
         },
         references
@@ -2242,6 +2315,7 @@ Check regressions before committing.
         return;
       }
 
+      addCandidateContextLeakSentinel(rejected.artifactPath);
       const references = [
         reviewed.value.view.name,
         rejected.candidateId,
@@ -2265,12 +2339,80 @@ Check regressions before committing.
         submitted.value,
         {
           candidateId: rejected.candidateId,
+          forbiddenSnippets: [CANDIDATE_CONTEXT_LEAK_SENTINEL],
           name: reviewed.value.view.name
         },
         references
       );
     } finally {
       rmSync(rejected.rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects ignored skill suggestions that point at skill candidate artifacts", async () => {
+    const { candidateId, rootDir, runtime } =
+      await completeRuntimeTaskWithSkillCandidate();
+
+    try {
+      const opened = runtime.openSkillCandidate(candidateId);
+
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) {
+        return;
+      }
+
+      const submitted = runtime.submitInteractiveTask(
+        "start future task where candidate suggestions must stay inert"
+      );
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const waitingEvent = submitted.value.events.find(
+        (event) => event.type === "task.waiting"
+      );
+
+      expect(waitingEvent).toBeDefined();
+      if (waitingEvent === undefined) {
+        return;
+      }
+
+      const candidateSuggestion = runtime.recordSkillUsage({
+        evidenceEventIds: [waitingEvent.eventId],
+        invocationMode: "manual",
+        name: opened.value.name,
+        reason:
+          "This ignored suggestion must not create skill influence for a candidate artifact.",
+        skillId: "skill_project_candidate_review_skill_md",
+        source: "project",
+        sourceEventIds: [waitingEvent.eventId],
+        status: "ignored",
+        trigger: "suggested"
+      });
+      const latestActive = runtime.getActiveTask();
+
+      expect(candidateSuggestion.ok).toBe(false);
+      expect(latestActive.ok).toBe(true);
+      if (!latestActive.ok) {
+        return;
+      }
+      expect(
+        latestActive.value.events.filter(
+          (event) =>
+            event.type === "skill.usage.recorded" &&
+            event.payload.name === opened.value.name
+        )
+      ).toEqual([]);
+      expect(
+        JSON.stringify(createFinalTaskSummary(latestActive.value).skillInfluences)
+      ).not.toContain(opened.value.name);
+      expect(
+        JSON.stringify(createFinalTaskSummary(latestActive.value).skillInfluences)
+      ).not.toContain(candidateId);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
     }
   });
 
@@ -2299,6 +2441,12 @@ Check regressions before committing.
       if (!listed.ok || !opened.ok) {
         return;
       }
+      const listedDraft = listed.value[0];
+
+      expect(listedDraft).toBeDefined();
+      if (listedDraft === undefined) {
+        return;
+      }
       expect(listed.value).toEqual([
         expect.objectContaining({
           candidateId: draft.candidateId,
@@ -2307,13 +2455,33 @@ Check regressions before committing.
           reviewReason: "Keep this workflow as draft-only learning evidence."
         })
       ]);
+      expect(listedDraft).toMatchObject({
+        confidence: expect.stringMatching(/^(low|medium)$/),
+        counterexamples: expect.arrayContaining([expect.any(String)]),
+        examples: expect.arrayContaining([expect.any(String)]),
+        knownRisks: expect.arrayContaining([expect.any(String)]),
+        triggerReason: expect.any(String)
+      });
       expect(opened.value).toMatchObject({
         candidateId: draft.candidateId,
+        confidence: expect.stringMatching(/^(low|medium)$/),
+        counterexamples: expect.arrayContaining([expect.any(String)]),
         draftSavedAt: "2026-05-10T16:20:00.000Z",
+        examples: expect.arrayContaining([expect.any(String)]),
+        knownRisks: expect.arrayContaining([expect.any(String)]),
         lifecycleStatus: "draft",
         reviewReason: "Keep this workflow as draft-only learning evidence.",
-        reviewedBy: "human"
+        reviewedBy: "human",
+        triggerReason: expect.any(String)
       });
+      expect(listedDraft.examples.length).toBeGreaterThan(0);
+      expect(listedDraft.counterexamples.length).toBeGreaterThan(0);
+      expect(listedDraft.knownRisks.length).toBeGreaterThan(0);
+      expect(listedDraft.triggerReason.length).toBeGreaterThan(0);
+      expect(opened.value.examples.length).toBeGreaterThan(0);
+      expect(opened.value.counterexamples.length).toBeGreaterThan(0);
+      expect(opened.value.knownRisks.length).toBeGreaterThan(0);
+      expect(opened.value.triggerReason.length).toBeGreaterThan(0);
       expect(opened.value.sourceEventIds.length).toBeGreaterThan(0);
       expect(opened.value.sourceSessionIds).toEqual([
         expect.stringMatching(/^ses_/)
@@ -2329,6 +2497,8 @@ Check regressions before committing.
       expect(JSON.stringify(opened.value)).not.toContain(
         ".sprite/skill-candidates"
       );
+      expectCandidateReviewViewIsBounded(listed.value, draft.projectDir);
+      expectCandidateReviewViewIsBounded(opened.value, draft.projectDir);
     } finally {
       rmSync(draft.rootDir, { recursive: true, force: true });
     }
@@ -2357,6 +2527,12 @@ Check regressions before committing.
       if (!listed.ok || !opened.ok) {
         return;
       }
+      const listedRejected = listed.value[0];
+
+      expect(listedRejected).toBeDefined();
+      if (listedRejected === undefined) {
+        return;
+      }
       expect(listed.value).toEqual([
         expect.objectContaining({
           candidateId: rejected.candidateId,
@@ -2367,15 +2543,35 @@ Check regressions before committing.
             "Reject this candidate but keep bounded learning metadata."
         })
       ]);
+      expect(listedRejected).toMatchObject({
+        confidence: expect.stringMatching(/^(low|medium)$/),
+        counterexamples: expect.arrayContaining([expect.any(String)]),
+        examples: expect.arrayContaining([expect.any(String)]),
+        knownRisks: expect.arrayContaining([expect.any(String)]),
+        triggerReason: expect.any(String)
+      });
       expect(opened.value).toMatchObject({
         candidateId: rejected.candidateId,
+        confidence: expect.stringMatching(/^(low|medium)$/),
+        counterexamples: expect.arrayContaining([expect.any(String)]),
+        examples: expect.arrayContaining([expect.any(String)]),
+        knownRisks: expect.arrayContaining([expect.any(String)]),
         lifecycleStatus: "rejected",
         rejectionReason:
           "Reject this candidate but keep bounded learning metadata.",
         reviewReason:
           "Reject this candidate but keep bounded learning metadata.",
-        reviewedBy: "human"
+        reviewedBy: "human",
+        triggerReason: expect.any(String)
       });
+      expect(listedRejected.examples.length).toBeGreaterThan(0);
+      expect(listedRejected.counterexamples.length).toBeGreaterThan(0);
+      expect(listedRejected.knownRisks.length).toBeGreaterThan(0);
+      expect(listedRejected.triggerReason.length).toBeGreaterThan(0);
+      expect(opened.value.examples.length).toBeGreaterThan(0);
+      expect(opened.value.counterexamples.length).toBeGreaterThan(0);
+      expect(opened.value.knownRisks.length).toBeGreaterThan(0);
+      expect(opened.value.triggerReason.length).toBeGreaterThan(0);
       expect(opened.value.sourceEventIds.length).toBeGreaterThan(0);
       expect(opened.value.sourceSessionIds).toEqual([
         expect.stringMatching(/^ses_/)
@@ -2391,6 +2587,8 @@ Check regressions before committing.
       expect(JSON.stringify(opened.value)).not.toContain(
         ".sprite/skill-candidates"
       );
+      expectCandidateReviewViewIsBounded(listed.value, rejected.projectDir);
+      expectCandidateReviewViewIsBounded(opened.value, rejected.projectDir);
     } finally {
       rmSync(rejected.rootDir, { recursive: true, force: true });
     }
@@ -2473,6 +2671,67 @@ Check regressions before committing.
         })
       ]);
       expect(JSON.stringify(listed)).not.toContain(candidateId);
+
+      const futureRuntime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir: join(rootDir, "home"),
+        skillReferences: [
+          candidateId,
+          `project:${candidateId}`,
+          promoted.value.promotedSkillReference ?? ""
+        ]
+      });
+      const futureTask = futureRuntime.submitInteractiveTask(
+        "start future work after candidate promotion"
+      );
+
+      expect(futureTask.ok).toBe(true);
+      if (!futureTask.ok) {
+        return;
+      }
+
+      const futureSkillEvents = futureTask.value.events.filter(
+        (event) =>
+          event.type === "skill.invoked" ||
+          event.type === "skill.invocation.failed" ||
+          event.type === "skill.usage.recorded"
+      );
+      const futureSkillSection = findContextSection(futureTask.value, "skills");
+      const futureSummary = createFinalTaskSummary(futureTask.value);
+
+      expect(
+        futureSkillEvents.filter((event) => event.type === "skill.invoked")
+      ).toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            name: promoted.value.view.name,
+            source: "project",
+            status: "loaded"
+          })
+        })
+      ]);
+      expect(
+        futureSkillEvents
+          .filter((event) => event.type === "skill.invocation.failed")
+          .map((event) => event.payload.reference)
+      ).toEqual([candidateId, `project:${candidateId}`]);
+      expect(futureSkillSection).toMatchObject({
+        metadata: expect.objectContaining({
+          names: [promoted.value.view.name],
+          skillCount: 1,
+          sources: ["project"]
+        }),
+        status: "included"
+      });
+      expect(JSON.stringify(futureTask.value.request.contextPacket)).not.toContain(
+        candidateId
+      );
+      expect(JSON.stringify(futureTask.value.request.contextPacket)).not.toContain(
+        ".sprite/skill-candidates"
+      );
+      expect(JSON.stringify(futureSummary.skillInfluences)).not.toContain(
+        candidateId
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -2553,7 +2812,15 @@ Check regressions before committing.
       const listedBeforeResume = listAvailableSkills({ cwd: projectDir, homeDir });
       expect(listedBeforeResume.skills).toHaveLength(1);
 
-      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const resumedRuntime = new AgentRuntime({
+        cwd: projectDir,
+        homeDir,
+        skillReferences: [
+          candidateId,
+          `project:${candidateId}`,
+          promoted.value.promotedSkillReference ?? ""
+        ]
+      });
       const resumed = resumedRuntime.resumeSession(sessionId);
 
       expect(resumed.ok).toBe(true);
@@ -2583,14 +2850,63 @@ Check regressions before committing.
           "SKILL_CANDIDATE_ALREADY_REVIEWED"
         );
       }
+
+      const futureTask = resumedRuntime.submitInteractiveTask(
+        "start future work after resumed candidate promotion"
+      );
+
+      expect(futureTask.ok).toBe(true);
+      if (!futureTask.ok) {
+        return;
+      }
+
+      const invokedEvents = futureTask.value.events.filter(
+        (event) => event.type === "skill.invoked"
+      );
+      const failedReferences = futureTask.value.events
+        .filter((event) => event.type === "skill.invocation.failed")
+        .map((event) => event.payload.reference);
+      const futureSkillSection = findContextSection(futureTask.value, "skills");
+
+      expect(invokedEvents).toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            name: promoted.value.view.name,
+            source: "project",
+            status: "loaded"
+          })
+        })
+      ]);
+      expect(failedReferences).toEqual([candidateId, `project:${candidateId}`]);
+      expect(futureSkillSection).toMatchObject({
+        metadata: expect.objectContaining({
+          names: [promoted.value.view.name],
+          skillCount: 1,
+          sources: ["project"]
+        }),
+        status: "included"
+      });
+      expect(JSON.stringify(futureTask.value.request.contextPacket)).not.toContain(
+        candidateId
+      );
+      expect(JSON.stringify(futureTask.value.request.contextPacket)).not.toContain(
+        ".sprite/skill-candidates"
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
   });
 
   it("resumes sessions without turning draft candidates into loaded skills", async () => {
-    const { candidateId, homeDir, projectDir, rootDir, runtime, sessionId } =
-      await completeRuntimeTaskWithSkillCandidate();
+    const {
+      artifactPath,
+      candidateId,
+      homeDir,
+      projectDir,
+      rootDir,
+      runtime,
+      sessionId
+    } = await completeRuntimeTaskWithSkillCandidate();
 
     try {
       const reviewed = runtime.reviewSkillCandidate({
@@ -2609,7 +2925,12 @@ Check regressions before committing.
       const resumedRuntime = new AgentRuntime({
         cwd: projectDir,
         homeDir,
-        skillReferences: [reviewed.value.view.name, candidateId]
+        skillReferences: [
+          reviewed.value.view.name,
+          candidateId,
+          `project:${reviewed.value.view.name}`,
+          `project:${candidateId}`
+        ]
       });
       const resumed = resumedRuntime.resumeSession(sessionId);
 
@@ -2643,6 +2964,31 @@ Check regressions before committing.
         candidateId,
         name: reviewed.value.view.name
       });
+
+      addCandidateContextLeakSentinel(artifactPath);
+      const futureTask = resumedRuntime.submitInteractiveTask(
+        "start future work after resumed draft candidate"
+      );
+
+      expect(futureTask.ok).toBe(true);
+      if (!futureTask.ok) {
+        return;
+      }
+
+      expectNoCandidateSkillActivation(
+        futureTask.value,
+        {
+          candidateId,
+          forbiddenSnippets: [CANDIDATE_CONTEXT_LEAK_SENTINEL],
+          name: reviewed.value.view.name
+        },
+        [
+          reviewed.value.view.name,
+          candidateId,
+          `project:${reviewed.value.view.name}`,
+          `project:${candidateId}`
+        ]
+      );
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

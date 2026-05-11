@@ -67,6 +67,15 @@ so that proposed behavior cannot silently change future tasks.
   - [x] Run GitNexus detect fallback before commit: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
   - [x] Move status to `in-progress` when development starts, `review` when implementation validation passes, and `done` only after review fixes pass.
 
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][Medium] Reject ignored/suggested skill usage records that point at skill candidate artifacts.
+- [x] [AI-Review][Medium] Assert failed candidate invocation results do not leak raw candidate fields, secrets, routing rules, or candidate paths.
+- [x] [AI-Review][Medium] Add candidate content sentinel assertions so candidate procedural guidance cannot enter task context, runtime self-model, failed events, or final summary skill influences.
+- [x] [AI-Review][Medium] Strengthen draft/rejected candidate list/open tests for bounded metadata, source evidence, examples, counterexamples, known risks, confidence, and trigger reason.
+- [x] [AI-Review][Medium] Cover future-task behavior after resume and after promotion, including `candidateId` and `project:<candidateId>` safe failures while promoted manual skill references still load.
+- [x] [AI-Review][Low] Cover source-qualified candidate IDs in direct registry invocation tests.
+
 ## Dev Notes
 
 ### Story Intent
@@ -196,6 +205,7 @@ GPT-5.5
 - No external web research was required because Story 5.7 introduces no new external SDK, package, or version-sensitive API.
 - 2026-05-11T10:18:03+0700: Development phase started; story and sprint status moved to `in-progress` after story artifact commit `c75c1f6`.
 - 2026-05-11T10:27:02+0700: Added candidate/manual skill separation regression coverage and moved story to `review` after full validation.
+- 2026-05-11T10:46:30+0700: Addressed 3-agent review findings with a candidate ignored-suggestion guard and broader leak/resume/promotion regression coverage.
 
 ### Completion Notes List
 
@@ -207,12 +217,14 @@ GPT-5.5
 - Added runtime regression coverage proving candidate references do not populate task context, self-model skill metadata, `skill.invoked`, `skill.usage.recorded`, or final summary skill influences.
 - Added explicit review-access coverage proving draft/rejected candidates remain listable/openable with bounded metadata.
 - Added resume coverage proving draft candidates stay inert and do not load into resumed task context.
-- No production runtime changes were needed; existing separation behavior was sufficient once regression coverage was expanded.
+- Added production validation so ignored/suggested skill usage records cannot cite stored skill candidate artifacts as skill influence without promotion.
+- Strengthened review follow-up tests for candidate ID source-qualified failures, serialized failure leak checks, candidate context sentinels, explicit review metadata, promoted future-task behavior, and post-resume future-task loading.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/5-7-keep-skill-candidates-separate-from-promoted-skills.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/core/src/agent-runtime.ts`
 - `tests/runtime-loop.test.ts`
 - `tests/skill-registry.test.ts`
 
@@ -221,3 +233,4 @@ GPT-5.5
 - 2026-05-11: Created ready-for-dev Story 5.7 context for candidate/promoted-skill separation.
 - 2026-05-11: Moved Story 5.7 into development phase.
 - 2026-05-11: Added candidate/promoted-skill separation regression tests and moved story to review.
+- 2026-05-11: Addressed code review findings for candidate influence bypass and regression coverage gaps.
