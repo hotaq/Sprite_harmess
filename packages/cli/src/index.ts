@@ -56,6 +56,8 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
 const CLI_VERSION = packageJson.version;
+const LIVE_TUI_APPROVAL_EDIT_MAX_BYTES = 4096;
+const LIVE_TUI_APPROVAL_EDIT_MAX_FILE_EDITS = 10;
 
 export interface CliIO {
   stdout: { write: (value: string) => void };
@@ -915,15 +917,6 @@ async function dispatchLiveTuiApprovalInteraction(
   runtime: AgentRuntime,
   interaction: Extract<TuiLiveWorkbenchInteraction, { type: "approval" }>
 ): Promise<Result<TuiDispatchResult>> {
-  if (interaction.action === "edit") {
-    return err(
-      new SpriteError(
-        "TUI_APPROVAL_EDIT_UNSUPPORTED",
-        "Live approval edits require a bounded edit prompt before dispatch."
-      )
-    );
-  }
-
   const approval = runtime
     .getPendingApprovals()
     .find(
@@ -940,13 +933,15 @@ async function dispatchLiveTuiApprovalInteraction(
     );
   }
 
+  const selection = createLiveTuiApprovalSelection(approval, interaction);
+
+  if (!selection.ok) {
+    return err(selection.error);
+  }
+
   const intent = createTuiApprovalResponseIntent(
     createTuiApprovalSummaryFromRuntimeApproval(approval),
-    interaction.action === "allow"
-      ? { action: "allow" }
-      : interaction.action === "deny"
-        ? { action: "deny" }
-        : { action: "timeout" }
+    selection.value
   );
 
   if (!intent.ok) {
@@ -954,6 +949,241 @@ async function dispatchLiveTuiApprovalInteraction(
   }
 
   return dispatchTuiUserIntent(runtime, intent.value);
+}
+
+function createLiveTuiApprovalSelection(
+  approval: RuntimePendingApproval,
+  interaction: Extract<TuiLiveWorkbenchInteraction, { type: "approval" }>
+) {
+  switch (interaction.action) {
+    case "allow":
+      return {
+        ok: true as const,
+        value: { action: "allow" as const }
+      };
+    case "deny":
+      return {
+        ok: true as const,
+        value: { action: "deny" as const }
+      };
+    case "timeout":
+      return {
+        ok: true as const,
+        value: { action: "timeout" as const }
+      };
+    case "edit":
+      return createLiveTuiApprovalEditSelection(approval, interaction.editText);
+  }
+}
+
+function createLiveTuiApprovalEditSelection(
+  approval: RuntimePendingApproval,
+  editText: string | undefined
+) {
+  const boundedText = validateLiveTuiApprovalEditText(editText);
+
+  if (!boundedText.ok) {
+    return err(boundedText.error);
+  }
+
+  return approval.requestType === "command"
+    ? createLiveTuiCommandEditSelection(approval, boundedText.value)
+    : createLiveTuiFileEditSelection(boundedText.value);
+}
+
+function validateLiveTuiApprovalEditText(
+  editText: string | undefined
+): Result<string> {
+  if (editText === undefined || editText.trim().length === 0) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_EMPTY",
+        "Approval edit payload cannot be empty."
+      )
+    );
+  }
+
+  if (Buffer.byteLength(editText, "utf8") > LIVE_TUI_APPROVAL_EDIT_MAX_BYTES) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_TOO_LARGE",
+        `Approval edit payload is limited to ${LIVE_TUI_APPROVAL_EDIT_MAX_BYTES} bytes.`
+      )
+    );
+  }
+
+  return { ok: true, value: editText.trim() };
+}
+
+function createLiveTuiCommandEditSelection(
+  approval: RuntimePendingApproval,
+  editText: string
+) {
+  const parsedJson = tryParseJsonObject(editText);
+  const cwd = approval.cwd;
+
+  if (cwd === undefined || cwd.trim().length === 0) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_CWD_MISSING",
+        "Command approval edits require the original approval cwd."
+      )
+    );
+  }
+
+  if (parsedJson !== null) {
+    const command = readRequiredString(parsedJson, "command");
+
+    if (!command.ok) {
+      return err(command.error);
+    }
+
+    const args = readOptionalStringArray(parsedJson, "args");
+
+    if (!args.ok) {
+      return err(args.error);
+    }
+
+    const timeoutMs = readOptionalPositiveInteger(parsedJson, "timeoutMs");
+
+    if (!timeoutMs.ok) {
+      return err(timeoutMs.error);
+    }
+
+    const editedCwd = readOptionalString(parsedJson, "cwd");
+
+    if (!editedCwd.ok) {
+      return err(editedCwd.error);
+    }
+
+    return {
+      ok: true as const,
+      value: {
+        action: "edit" as const,
+        modifiedRequest: {
+          ...(args.value === undefined ? {} : { args: args.value }),
+          command: command.value,
+          cwd: editedCwd.value ?? cwd,
+          timeoutMs: timeoutMs.value ?? approval.timeoutMs,
+          type: "command" as const
+        }
+      }
+    };
+  }
+
+  if (editText.trimStart().startsWith("{")) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_JSON_INVALID",
+        "Command approval edit JSON must be a valid object."
+      )
+    );
+  }
+
+  if (/\s/u.test(editText)) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_COMMAND_JSON_REQUIRED",
+        'Command edits with arguments must use JSON, for example {"command":"node","args":["--version"]}.'
+      )
+    );
+  }
+
+  return {
+    ok: true as const,
+    value: {
+      action: "edit" as const,
+      modifiedRequest: {
+        command: editText,
+        cwd,
+        timeoutMs: approval.timeoutMs,
+        type: "command" as const
+      }
+    }
+  };
+}
+
+function createLiveTuiFileEditSelection(editText: string) {
+  const parsedJson = tryParseJsonObject(editText);
+
+  if (parsedJson === null) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_JSON_REQUIRED",
+        "File edit approvals require bounded JSON with an edits array."
+      )
+    );
+  }
+
+  const editsInput = parsedJson.edits;
+
+  if (
+    !Array.isArray(editsInput) ||
+    editsInput.length === 0 ||
+    editsInput.length > LIVE_TUI_APPROVAL_EDIT_MAX_FILE_EDITS
+  ) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_EDITS_INVALID",
+        `File edit approvals require 1-${LIVE_TUI_APPROVAL_EDIT_MAX_FILE_EDITS} edits.`
+      )
+    );
+  }
+
+  const edits = [];
+
+  for (const editInput of editsInput) {
+    if (!isPlainObject(editInput)) {
+      return err(
+        new SpriteError(
+          "TUI_APPROVAL_EDIT_EDIT_INVALID",
+          "Each file edit entry must be an object."
+        )
+      );
+    }
+
+    const path = readRequiredString(editInput, "path");
+    const oldText = readStringField(editInput, "oldText", true);
+    const newText = readStringField(editInput, "newText", true);
+
+    if (!path.ok) {
+      return err(path.error);
+    }
+
+    if (!oldText.ok) {
+      return err(oldText.error);
+    }
+
+    if (!newText.ok) {
+      return err(newText.error);
+    }
+
+    edits.push({
+      newText: newText.value,
+      oldText: oldText.value,
+      path: path.value
+    });
+  }
+
+  const summary = readOptionalString(parsedJson, "summary");
+
+  if (!summary.ok) {
+    return err(summary.error);
+  }
+
+  return {
+    ok: true as const,
+    value: {
+      action: "edit" as const,
+      modifiedToolCall: {
+        input: {
+          edits,
+          ...(summary.value === undefined ? {} : { summary: summary.value })
+        },
+        toolName: "apply_patch" as const
+      }
+    }
+  };
 }
 
 function applyLiveTuiDispatchResult(
@@ -1009,6 +1239,108 @@ function toLiveTuiDispatchError(error: unknown): SpriteError {
     "TUI_LIVE_DISPATCH_FAILED",
     `Live TUI dispatch failed: ${String(error)}`
   );
+}
+
+function tryParseJsonObject(value: string): Record<string, unknown> | null {
+  if (!value.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readRequiredString(
+  value: Record<string, unknown>,
+  key: string
+): Result<string> {
+  return readStringField(value, key, false);
+}
+
+function readOptionalString(
+  value: Record<string, unknown>,
+  key: string
+): Result<string | undefined> {
+  if (value[key] === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  return readStringField(value, key, false);
+}
+
+function readStringField(
+  value: Record<string, unknown>,
+  key: string,
+  allowEmpty: boolean
+): Result<string> {
+  const field = value[key];
+
+  if (typeof field !== "string" || (!allowEmpty && field.trim().length === 0)) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_FIELD_INVALID",
+        `Approval edit field '${key}' must be a${allowEmpty ? "" : " non-empty"} string.`
+      )
+    );
+  }
+
+  return { ok: true, value: allowEmpty ? field : field.trim() };
+}
+
+function readOptionalStringArray(
+  value: Record<string, unknown>,
+  key: string
+): Result<string[] | undefined> {
+  const field = value[key];
+
+  if (field === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (
+    !Array.isArray(field) ||
+    !field.every((item) => typeof item === "string")
+  ) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_FIELD_INVALID",
+        `Approval edit field '${key}' must be an array of strings.`
+      )
+    );
+  }
+
+  return { ok: true, value: field };
+}
+
+function readOptionalPositiveInteger(
+  value: Record<string, unknown>,
+  key: string
+): Result<number | undefined> {
+  const field = value[key];
+
+  if (field === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  if (typeof field !== "number" || !Number.isInteger(field) || field <= 0) {
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_FIELD_INVALID",
+        `Approval edit field '${key}' must be a positive integer.`
+      )
+    );
+  }
+
+  return { ok: true, value: field };
 }
 
 function formatPathList(paths: string[]): string[] {

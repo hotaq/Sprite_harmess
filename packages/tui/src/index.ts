@@ -1069,6 +1069,10 @@ function formatPreviewApprovalShortcuts(
     labels.push("D deny");
   }
 
+  if (actions.includes("EDIT")) {
+    labels.push("E edit");
+  }
+
   if (actions.includes("TIMEOUT")) {
     labels.push("T timeout");
   }

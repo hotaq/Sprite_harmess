@@ -41,6 +41,7 @@ export type TuiLiveWorkbenchInteraction =
     }
   | {
       action: TuiLiveWorkbenchApprovalAction;
+      editText?: string;
       approvalRequestId: string;
       type: "approval";
     }
@@ -70,6 +71,10 @@ type TuiActionPrompt =
       action: TuiLiveWorkbenchApprovalAction;
       approvalRequestId: string;
       type: "approval";
+    }
+  | {
+      approvalRequestId: string;
+      type: "approval-edit";
     };
 
 type TuiVisibleActionPrompt =
@@ -81,6 +86,13 @@ type TuiVisibleActionPrompt =
       approvalRequestLabel: string;
       approvalRequestId: string;
       type: "approval";
+    }
+  | {
+      approvalRequestId: string;
+      approvalRequestLabel: string;
+      editText: string;
+      requestType: "command" | "file_edit";
+      type: "approval-edit";
     };
 
 type TuiDetailPanel = "context" | "details" | "help" | "runtime";
@@ -136,6 +148,8 @@ export function TuiWorkbenchApp({
     readonly TuiSubmittedPrompt[]
   >([]);
   const draftRef = useRef(draftText);
+  const [editDraftText, setEditDraftTextState] = useState("");
+  const editDraftRef = useRef(editDraftText);
   const externalDraftRef = useRef(state.workbench.input.text);
   const submittedPromptIdRef = useRef(0);
 
@@ -157,17 +171,65 @@ export function TuiWorkbenchApp({
     setDraftTextState(value);
   };
 
+  const setEditDraftText = (value: string): void => {
+    editDraftRef.current = value;
+    setEditDraftTextState(value);
+  };
+
   useEffect(() => {
     if (
-      actionPrompt?.type === "approval" &&
-      resolveVisibleActionPrompt(actionPrompt, state.workbench.approvals) === null
+      (actionPrompt?.type === "approval" ||
+        actionPrompt?.type === "approval-edit") &&
+      resolveVisibleActionPrompt(
+        actionPrompt,
+        state.workbench.approvals,
+        editDraftText
+      ) === null
     ) {
       setActionPrompt(null);
+      setEditDraftText("");
     }
   }, [actionPrompt, state.workbench.approvals]);
 
   useInput((input, key) => {
     if (actionPrompt !== null) {
+      if (actionPrompt.type === "approval-edit") {
+        handleApprovalEditPromptInput({
+          draftText: editDraftRef.current,
+          input,
+          key,
+          onChange: setEditDraftText,
+          onConfirm: () => {
+            const currentApprovalPrompt = resolveVisibleActionPrompt(
+              actionPrompt,
+              state.workbench.approvals,
+              editDraftRef.current
+            );
+
+            if (
+              currentApprovalPrompt === null ||
+              currentApprovalPrompt.type !== "approval-edit" ||
+              editDraftRef.current.trim().length === 0
+            ) {
+              return;
+            }
+
+            onInteraction?.({
+              action: "edit",
+              approvalRequestId: currentApprovalPrompt.approvalRequestId,
+              editText: editDraftRef.current,
+              type: "approval"
+            });
+            setEditDraftText("");
+          },
+          onDismiss: () => {
+            setActionPrompt(null);
+            setEditDraftText("");
+          }
+        });
+        return;
+      }
+
       handleActionPromptInput({
         actionPrompt,
         input,
@@ -180,7 +242,8 @@ export function TuiWorkbenchApp({
 
           const currentApprovalPrompt = resolveVisibleActionPrompt(
             confirmedPrompt,
-            state.workbench.approvals
+            state.workbench.approvals,
+            editDraftText
           );
 
           if (
@@ -196,7 +259,10 @@ export function TuiWorkbenchApp({
             type: "approval"
           });
         },
-        onDismiss: () => setActionPrompt(null)
+        onDismiss: () => {
+          setActionPrompt(null);
+          setEditDraftText("");
+        }
       });
       return;
     }
@@ -223,9 +289,10 @@ export function TuiWorkbenchApp({
       }
 
       setActionPrompt({
-        action: approvalAction,
         approvalRequestId: approval.controlApprovalRequestId,
-        type: "approval"
+        ...(approvalAction === "edit"
+          ? { type: "approval-edit" }
+          : { action: approvalAction, type: "approval" })
       });
       return;
     }
@@ -292,12 +359,25 @@ export function TuiWorkbenchApp({
   const slashCommandSuggestions = getSlashCommandSuggestions(draftText);
   const visibleActionPrompt =
     actionPrompt?.type === "approval"
-      ? resolveVisibleActionPrompt(actionPrompt, state.workbench.approvals)
+      ? resolveVisibleActionPrompt(
+          actionPrompt,
+          state.workbench.approvals,
+          editDraftText
+        )
+      : actionPrompt?.type === "approval-edit"
+        ? resolveVisibleActionPrompt(
+            actionPrompt,
+            state.workbench.approvals,
+            editDraftText
+          )
       : actionPrompt;
   const conversationActionPrompt =
     visibleActionPrompt?.type === "cancel" ? visibleActionPrompt : null;
   const dockActionPrompt =
-    visibleActionPrompt?.type === "approval" ? visibleActionPrompt : null;
+    visibleActionPrompt?.type === "approval" ||
+    visibleActionPrompt?.type === "approval-edit"
+      ? visibleActionPrompt
+      : null;
 
   return (
     <Box flexDirection="column" minHeight={rows} justifyContent="space-between">
@@ -706,17 +786,64 @@ function ActionPromptSection({
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={prompt.type === "cancel" ? "red" : "yellow"}>
-        {prompt.type === "cancel"
-          ? "Conversation interrupted"
-          : `Send ${formatApprovalPromptAction(prompt.action)} for ${prompt.approvalRequestLabel}?`}
+        {formatActionPromptTitle(prompt)}
       </Text>
+      {prompt.type === "approval-edit"
+        ? createApprovalEditHintLines(prompt.requestType).map((line) => (
+            <Text dimColor key={`edit-hint-${line}`}>
+              {line}
+            </Text>
+          ))
+        : null}
+      {prompt.type === "approval-edit"
+        ? createVisibleDraftLines(prompt.editText).map((line, index) => (
+            <Text key={`approval-edit-draft-${index}`}>
+              <Text color="yellow">{index === 0 ? "› " : "  "}</Text>
+              {line}
+            </Text>
+          ))
+        : null}
       <Text dimColor>
-        {prompt.type === "cancel"
-          ? "warning: press Esc again to cancel · dismiss: N"
-          : "confirm: Y / Enter · dismiss: N / Esc"}
+        {formatActionPromptControls(prompt)}
       </Text>
     </Box>
   );
+}
+
+function formatActionPromptTitle(prompt: TuiVisibleActionPrompt): string {
+  switch (prompt.type) {
+    case "cancel":
+      return "Conversation interrupted";
+    case "approval":
+      return `Send ${formatApprovalPromptAction(prompt.action)} for ${prompt.approvalRequestLabel}?`;
+    case "approval-edit":
+      return `Edit approval for ${prompt.approvalRequestLabel}`;
+  }
+}
+
+function formatActionPromptControls(prompt: TuiVisibleActionPrompt): string {
+  switch (prompt.type) {
+    case "cancel":
+      return "warning: press Esc again to cancel · dismiss: N";
+    case "approval":
+      return "confirm: Y / Enter · dismiss: N / Esc";
+    case "approval-edit":
+      return "Enter submit edit · Ctrl+J newline · Esc dismiss";
+  }
+}
+
+function createApprovalEditHintLines(
+  requestType: "command" | "file_edit"
+): readonly string[] {
+  if (requestType === "command") {
+    return [
+      'bounded command edit: type a single executable like "pwd", or JSON {"command":"node","args":["--version"]}'
+    ];
+  }
+
+  return [
+    'bounded file edit JSON: {"edits":[{"path":"src/file.ts","oldText":"old","newText":"new"}],"summary":"why"}'
+  ];
 }
 
 function InputSection({
@@ -830,6 +957,7 @@ function handleActionPromptInput({
   actionPrompt: TuiActionPrompt;
   input: string;
   key: {
+    backspace?: boolean;
     ctrl?: boolean;
     escape?: boolean;
     return?: boolean;
@@ -856,6 +984,53 @@ function handleActionPromptInput({
   if (confirmCancel || confirmApproval) {
     onConfirm(actionPrompt);
     onDismiss();
+  }
+}
+
+function handleApprovalEditPromptInput({
+  draftText,
+  input,
+  key,
+  onChange,
+  onConfirm,
+  onDismiss
+}: {
+  draftText: string;
+  input: string;
+  key: {
+    backspace?: boolean;
+    ctrl?: boolean;
+    escape?: boolean;
+    return?: boolean;
+    shift?: boolean;
+  };
+  onChange: (value: string) => void;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}): void {
+  if (key.escape === true || input.toLowerCase() === "n") {
+    onDismiss();
+    return;
+  }
+
+  if (isNewlineInput(input, key)) {
+    onChange(`${draftText}\n`);
+    return;
+  }
+
+  if (isSendInput(input, key)) {
+    onConfirm();
+    onDismiss();
+    return;
+  }
+
+  if (key.backspace || input === "\u007f") {
+    onChange(Array.from(draftText).slice(0, -1).join(""));
+    return;
+  }
+
+  if (isPrintableInput(input)) {
+    onChange(`${draftText}${input}`);
   }
 }
 
@@ -887,6 +1062,10 @@ function formatApprovalShortcutLabels(
     labels.push("D deny");
   }
 
+  if (actions.includes("EDIT")) {
+    labels.push("E edit");
+  }
+
   if (actions.includes("TIMEOUT")) {
     labels.push("T timeout");
   }
@@ -896,7 +1075,8 @@ function formatApprovalShortcutLabels(
 
 function resolveVisibleActionPrompt(
   actionPrompt: TuiActionPrompt,
-  approvals: readonly TuiWorkbenchApprovalView[]
+  approvals: readonly TuiWorkbenchApprovalView[],
+  editText: string
 ): TuiVisibleActionPrompt | null {
   if (actionPrompt.type === "cancel") {
     return actionPrompt;
@@ -909,9 +1089,22 @@ function resolveVisibleActionPrompt(
 
   if (
     approval === undefined ||
-    !approval.actions.includes(toApprovalActionLabel(actionPrompt.action))
+    !approval.actions.includes(
+      actionPrompt.type === "approval-edit"
+        ? "EDIT"
+        : toApprovalActionLabel(actionPrompt.action)
+    )
   ) {
     return null;
+  }
+
+  if (actionPrompt.type === "approval-edit") {
+    return {
+      ...actionPrompt,
+      approvalRequestLabel: approval.approvalRequestId.value,
+      editText,
+      requestType: approval.requestType
+    };
   }
 
   return {
@@ -966,6 +1159,8 @@ function readApprovalAction(
       return "allow";
     case "d":
       return "deny";
+    case "e":
+      return "edit";
     case "t":
       return "timeout";
     default:

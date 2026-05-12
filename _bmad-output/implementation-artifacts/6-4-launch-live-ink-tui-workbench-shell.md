@@ -1,6 +1,6 @@
 # Story 6.4: Launch Live Ink TUI Workbench Shell
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -267,6 +267,7 @@ GPT-5.5
 - Heavy review on 2026-05-12 moved this story back to `review`: the live shell is safer with edit hidden, but Story 6.4 cannot claim full approval-action completion until bounded live edit support exists or the story criteria are explicitly narrowed.
 - Heavy review also found live dispatch failures were swallowed. The CLI bridge now preserves dispatch results/errors in live state, and the renderer shows compact dispatch feedback.
 - Heavy review found cached approval prompts could outlive runtime pending approvals. Approval confirmation now re-validates against current runtime-derived approvals and dismisses stale prompts.
+- Implemented bounded live approval edit prompt on 2026-05-12. The live shell now exposes `E edit`, collects bounded edit input, and dispatches through Story 6.3 approval intent helpers.
 
 ### Implementation Plan
 
@@ -312,7 +313,7 @@ GPT-5.5
 - Routed live approval allow/deny/timeout actions through raw runtime approval IDs while still rendering bounded display IDs; edit remains hidden until a safe bounded edit prompt is implemented.
 - Live dispatch failures now surface as timeline feedback instead of disappearing, including stale approval choices and runtime approval denial/timeout results.
 - Approval confirmation prompts now stay tied to current runtime-derived pending approvals and are dismissed before dispatch if the approval disappears or the action is no longer available.
-- Remaining review gap: bounded live approval edit UI must be designed/implemented before Story 6.4 can return to `done`.
+- Bounded live approval edit UI is now implemented for command and file-edit approval paths, so Story 6.4 can return to `done`.
 
 ### File List
 
@@ -357,3 +358,4 @@ GPT-5.5
 - 2026-05-12: Converted live startup, submitted prompts, and activity rendering to a command-timeline style with matching header/input accent color.
 - 2026-05-12: Fixed live event subscription and approval dispatch regressions; raw approval IDs now stay internal while bounded labels remain visible.
 - 2026-05-12: Heavy review moved Story 6.4 back to review, surfaced live dispatch errors, and prevented stale approval prompt dispatch.
+- 2026-05-12: Added bounded live approval edit UI and returned Story 6.4 to done after targeted validation.

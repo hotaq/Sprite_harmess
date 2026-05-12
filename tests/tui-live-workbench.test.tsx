@@ -70,8 +70,7 @@ describe("live Ink TUI workbench", () => {
     expect(frame).toContain("Shift+Enter/Ctrl+J newline");
     expect(frame).toContain("Esc cancel");
     expect(frame).not.toContain("details hidden");
-    expect(frame).toContain("A approve · D deny · T timeout");
-    expect(frame).not.toContain("E edit");
+    expect(frame).toContain("A approve · D deny · E edit · T timeout");
     expect(frame).not.toContain("│ Type a prompt");
     expect(frame).toContain("─");
     expect(frame).not.toContain("[Runtime]");
@@ -388,6 +387,44 @@ describe("live Ink TUI workbench", () => {
     await waitForInkInput();
 
     expect(interactions).toEqual([]);
+  });
+
+  it("collects bounded approval edit text before dispatching edit", async () => {
+    const interactions: TuiLiveWorkbenchInteraction[] = [];
+    const liveState = createTuiLiveWorkbenchState({
+      runtimeState: createTuiStartupState({
+        bootstrapState: bootstrapState({})
+      }),
+      workbench: createTuiWorkbenchView({
+        pendingApprovals: [approvalRequest({ approvalRequestId: "appr-edit" })]
+      })
+    });
+    const view = render(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => interactions.push(interaction)}
+        state={liveState}
+      />
+    );
+
+    view.stdin.write("e");
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").toContain("Edit approval for appr-edit");
+    expect(view.lastFrame() ?? "").toContain("bounded file edit JSON");
+
+    view.stdin.write(
+      '{"edits":[{"path":"README.md","oldText":"old","newText":"new"}]}'
+    );
+    view.stdin.write("\r");
+    await waitForInkInput();
+
+    expect(interactions).toContainEqual({
+      action: "edit",
+      approvalRequestId: "appr-edit",
+      editText:
+        '{"edits":[{"path":"README.md","oldText":"old","newText":"new"}]}',
+      type: "approval"
+    });
   });
 
   it("renders live dispatch errors as visible timeline feedback", () => {

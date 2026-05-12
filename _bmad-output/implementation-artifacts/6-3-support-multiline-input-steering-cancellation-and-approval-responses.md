@@ -1,6 +1,6 @@
 # Story 6.3: Support Multiline Input, Steering, Cancellation, and Approval Responses
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -219,6 +219,7 @@ GPT-5.5
 - Follow-up live-TUI review found the visible bounded approval ID could accidentally be used as the control ID. The workbench view now carries both `approvalRequestId` for display and `controlApprovalRequestId` for dispatch.
 - Follow-up live-TUI review kept approval edit support out of the live shortcut path until a bounded edit-prompt flow exists; the underlying Story 6.3 edit intent helpers remain covered for command/file-edit semantics.
 - Heavy review on 2026-05-12 kept this story in `review` because live approval edit is not yet available as a bounded TUI prompt, even though the pure Story 6.3 edit intent helpers are implemented and tested.
+- Implemented bounded live approval edit prompt on 2026-05-12. Command approval edits now dispatch `modifiedRequest`; file-edit approvals now dispatch `modifiedToolCall` through the existing Story 6.3 intent helper.
 
 ### Implementation Plan
 
@@ -242,7 +243,7 @@ GPT-5.5
 - Display-bounded approval IDs are separated from raw runtime control IDs, preserving safe rendering without breaking `AgentRuntime.respondToApproval()`.
 - Added CLI live runtime-fixture coverage for runtime event refresh and approval resolution through the live TUI adapter.
 - Heavy review follow-up fixed stale approval/no-op behavior by reporting missing pending approvals as dispatch errors instead of silently ignoring them.
-- Remaining review gap: implement a bounded live approval edit prompt before Story 6.3 can honestly return to `done`.
+- Bounded live approval edit support is now implemented and covered for both command and file-edit approval paths.
 
 ### File List
 
@@ -261,3 +262,4 @@ GPT-5.5
 - 2026-05-11: Implemented Story 6.3 TUI control intents, runtime dispatch, approval response helpers, safe workbench view, and validation tests; marked story ready for review.
 - 2026-05-12: Closed live-TUI review gaps by separating display/control approval IDs and proving live CLI approval dispatch through runtime fixtures.
 - 2026-05-12: Heavy review moved Story 6.3 back to review until bounded live approval edit support is implemented; stale approval choices now surface dispatch errors.
+- 2026-05-12: Implemented bounded live approval edit support and returned Story 6.3 to done after targeted validation.

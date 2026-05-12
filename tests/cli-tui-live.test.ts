@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -103,6 +103,138 @@ describe("live TUI CLI bridge", () => {
       },
       ok: false
     });
+  });
+
+  it("dispatches bounded command approval edits through modifiedRequest", async () => {
+    const { projectDir, runtime, rootDir } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+    const submitted = runtime.submitInteractiveTask("edit live TUI command approval");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await requestApproval(runtime, projectDir);
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const result = await handleLiveTuiInteraction(runtime, {
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId,
+      editText: "pwd",
+      type: "approval"
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        intentType: "approval-response",
+        status: "approval-recorded"
+      }
+    });
+    expect(runtime.getPendingApprovals()).toEqual([]);
+    expect(
+      runtime
+        .getEventHistory(submitted.value.taskId)
+        .filter((event) => event.type === "policy.decision.recorded")
+    ).toHaveLength(2);
+  });
+
+  it("rejects malformed command approval edit JSON instead of treating it as an executable", async () => {
+    const { projectDir, runtime, rootDir } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+    const submitted = runtime.submitInteractiveTask("reject malformed live TUI command edit");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await requestApproval(runtime, projectDir);
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const result = await handleLiveTuiInteraction(runtime, {
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId,
+      editText: "{bad}",
+      type: "approval"
+    });
+
+    expect(result).toMatchObject({
+      error: {
+        code: "TUI_APPROVAL_EDIT_JSON_INVALID"
+      },
+      ok: false
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+  });
+
+  it("dispatches bounded file approval edits through modifiedToolCall", async () => {
+    const { projectDir, runtime, rootDir } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+    mkdirSync(join(projectDir, "src"), { recursive: true });
+    writeFileSync(join(projectDir, "package.json"), '{"name":"old"}\n');
+    writeFileSync(join(projectDir, "src", "edit.ts"), "export const value = 1;\n");
+    const submitted = runtime.submitInteractiveTask("edit live TUI file approval");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            path: "package.json",
+            oldText: '"old"',
+            newText: '"new"'
+          }
+        ]
+      },
+      toolName: "apply_patch"
+    });
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const result = await handleLiveTuiInteraction(runtime, {
+      action: "edit",
+      approvalRequestId: approval.approvalRequestId,
+      editText: JSON.stringify({
+        edits: [
+          {
+            path: "src/edit.ts",
+            oldText: "value = 1",
+            newText: "value = 2"
+          }
+        ],
+        summary: "Apply safer file edit."
+      }),
+      type: "approval"
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        intentType: "approval-response",
+        status: "approval-recorded"
+      }
+    });
+    expect(runtime.getPendingApprovals()).toEqual([]);
   });
 });
 
