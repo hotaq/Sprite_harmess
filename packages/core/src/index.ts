@@ -8,3 +8,8 @@ export * from "./session-inspection.js";
 export * from "./skill-registry.js";
 export * from "./task-context.js";
 export * from "./task-state.js";
+export {
+  readLearningReviewLessonCandidates,
+  type StoredLearningReviewLessonCandidate
+} from "@sprite/storage";
+export { listToolNames } from "@sprite/tools";

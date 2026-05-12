@@ -217,8 +217,7 @@ export interface CreateTuiMessageStreamOptions {
   stringLimit?: number;
 }
 
-export interface CreateTuiEventStreamItemOptions
-  extends CreateTuiMessageStreamOptions {
+export interface CreateTuiEventStreamItemOptions extends CreateTuiMessageStreamOptions {
   order?: number;
 }
 
@@ -267,7 +266,11 @@ export interface TuiRuntimeControlPort {
   submitInteractiveTask(task: string): Result<PlannedExecutionFlow>;
 }
 
-export type TuiApprovalAction = "allow" | "alwaysAllowForSession" | "deny" | "edit";
+export type TuiApprovalAction =
+  | "allow"
+  | "alwaysAllowForSession"
+  | "deny"
+  | "edit";
 export type TuiApprovalRequestType = "command" | "file_edit";
 export type TuiRiskLevel = "critical" | "high" | "low" | "medium";
 
@@ -450,7 +453,8 @@ export function createTuiRuntimeState({
     sandbox: createSandboxState(runtimeSnapshot, {
       mode: flow.request.startup.sandboxMode,
       outputFormat: flow.request.startup.outputFormat,
-      pendingApprovalCount: flow.waitingState?.reason === "approval-required" ? 1 : 0,
+      pendingApprovalCount:
+        flow.waitingState?.reason === "approval-required" ? 1 : 0,
       validationCommandCount: flow.request.startup.validationCommands.length
     }),
     session: {
@@ -502,8 +506,9 @@ export function createTuiMessageStream(
     items,
     source: "runtime-events",
     totalCount: events.length,
-    truncatedOutputCount: items.filter((item) => item.output?.isTruncated === true)
-      .length
+    truncatedOutputCount: items.filter(
+      (item) => item.output?.isTruncated === true
+    ).length
   };
 }
 
@@ -563,7 +568,10 @@ export function updateTuiInputDraft(
       return createTuiInputDraft(`${draft.text}${action.text}`, options);
     }
     case "backspace": {
-      return createTuiInputDraft(Array.from(draft.text).slice(0, -1).join(""), options);
+      return createTuiInputDraft(
+        Array.from(draft.text).slice(0, -1).join(""),
+        options
+      );
     }
     case "clear": {
       return createTuiInputDraft("", options);
@@ -652,7 +660,9 @@ export function createTuiApprovalResponseIntent(
           response: {
             action: "deny",
             approvalRequestId: approvalRequest.approvalRequestId,
-            ...(selection.reason === undefined ? {} : { reason: selection.reason })
+            ...(selection.reason === undefined
+              ? {}
+              : { reason: selection.reason })
           },
           type: "approval-response"
         }
@@ -679,7 +689,9 @@ export function createTuiApprovalResponseIntent(
               action: "edit",
               approvalRequestId: approvalRequest.approvalRequestId,
               modifiedRequest: selection.modifiedRequest,
-              ...(selection.reason === undefined ? {} : { reason: selection.reason })
+              ...(selection.reason === undefined
+                ? {}
+                : { reason: selection.reason })
             } as RuntimeApprovalResponse,
             type: "approval-response"
           }
@@ -693,7 +705,9 @@ export function createTuiApprovalResponseIntent(
             action: "edit",
             approvalRequestId: approvalRequest.approvalRequestId,
             modifiedToolCall: selection.modifiedToolCall,
-            ...(selection.reason === undefined ? {} : { reason: selection.reason })
+            ...(selection.reason === undefined
+              ? {}
+              : { reason: selection.reason })
           } as RuntimeApprovalResponse,
           type: "approval-response"
         }
@@ -788,11 +802,7 @@ export function formatTuiWorkbenchView(view: TuiWorkbenchView): string {
     ? "Type a prompt…"
     : view.input.preview.value;
 
-  return [
-    "╭─ Prompt",
-    `│ ${preview}`,
-    "╰─"
-  ].join("\n");
+  return ["╭─ Prompt", `│ ${preview}`, "╰─"].join("\n");
 }
 
 export interface TuiLiveWorkbenchState {
@@ -858,8 +868,7 @@ export function createTuiLiveWorkbenchState({
 }: CreateTuiLiveWorkbenchStateInput): TuiLiveWorkbenchState {
   const resolvedMessageStream =
     messageStream ?? createTuiMessageStream(events, streamOptions);
-  const latestEventType =
-    events.at(-1)?.type ?? runtimeState.events.latestType;
+  const latestEventType = events.at(-1)?.type ?? runtimeState.events.latestType;
   const resolvedRuntimeState =
     runtimeState.events.count === events.length &&
     runtimeState.events.latestType === latestEventType
@@ -892,7 +901,10 @@ export async function reduceTuiLiveWorkbenchEvent(
 ): Promise<TuiLiveWorkbenchState> {
   switch (action.type) {
     case "dispatch-intent": {
-      const dispatchResult = await dispatchTuiUserIntent(action.port, action.intent);
+      const dispatchResult = await dispatchTuiUserIntent(
+        action.port,
+        action.intent
+      );
 
       if (!dispatchResult.ok) {
         return createTuiLiveWorkbenchState({
@@ -902,7 +914,8 @@ export async function reduceTuiLiveWorkbenchEvent(
       }
 
       const shouldClearDraft =
-        action.intent.type === "submit-task" || action.intent.type === "steer-task";
+        action.intent.type === "submit-task" ||
+        action.intent.type === "steer-task";
       return createTuiLiveWorkbenchState({
         ...state,
         latestDispatchError: undefined,
@@ -993,7 +1006,7 @@ export function formatTuiLiveWorkbenchPreview(
     "",
     "Sprite Harness · live terminal preview",
     `session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · /runtime for details`,
-    "commands: /runtime · /context · /details · /help in live mode",
+    "commands: /new · /resume · /model · /memory · /skills · /tools · /compact · /review-learning · /exit · /runtime · /context · /details · /hide · /help in live mode",
     ...(activityLines.length === 0 ? [] : ["", ...activityLines]),
     ...(approvalLines.length === 0 ? [] : ["", ...approvalLines]),
     "",
@@ -1006,9 +1019,7 @@ export function formatTuiLiveWorkbenchPreview(
   ].join("\n");
 }
 
-export function createTuiCommandPreview(
-  state: TuiLiveWorkbenchState
-): string {
+export function createTuiCommandPreview(state: TuiLiveWorkbenchState): string {
   return formatTuiLiveWorkbenchPreview(state);
 }
 
@@ -1092,6 +1103,7 @@ export type {
   TuiWorkbenchAppProps,
   TuiWorkbenchStateSubscriber
 } from "./live-workbench.js";
+export * from "./slash-commands.js";
 
 function normalizeInputText(text: string): string {
   return text.replace(/\r\n|\r/u, "\n");
@@ -1199,7 +1211,9 @@ function formatWorkbenchAction(action: TuiWorkbenchActionLabel): string {
   return `[${action}]`;
 }
 
-function getEventKind(eventType: RuntimeEventRecord["type"]): TuiMessageStreamKind {
+function getEventKind(
+  eventType: RuntimeEventRecord["type"]
+): TuiMessageStreamKind {
   if (eventType.startsWith("approval.")) {
     return "approval";
   }
@@ -1307,7 +1321,9 @@ function classifySeverity(
     return "error";
   }
 
-  if (["pending", "planned", "requested", "started"].includes(normalizedStatus)) {
+  if (
+    ["pending", "planned", "requested", "started"].includes(normalizedStatus)
+  ) {
     return "pending";
   }
 
@@ -1316,9 +1332,15 @@ function classifySeverity(
   }
 
   if (
-    ["applied", "completed", "loaded", "passed", "resolved", "saved", "used"].includes(
-      normalizedStatus
-    )
+    [
+      "applied",
+      "completed",
+      "loaded",
+      "passed",
+      "resolved",
+      "saved",
+      "used"
+    ].includes(normalizedStatus)
   ) {
     return "success";
   }
@@ -1413,19 +1435,26 @@ function createOutputPreview(
     return undefined;
   }
 
-  const maxBytes = options.outputPreviewMaxBytes ?? TUI_OUTPUT_PREVIEW_MAX_BYTES;
-  const maxLines = options.outputPreviewMaxLines ?? TUI_OUTPUT_PREVIEW_MAX_LINES;
-  const preview = rawPreview === undefined
-    ? undefined
-    : createSafeOutputPreview(rawPreview, maxBytes, maxLines, options.stringLimit);
+  const maxBytes =
+    options.outputPreviewMaxBytes ?? TUI_OUTPUT_PREVIEW_MAX_BYTES;
+  const maxLines =
+    options.outputPreviewMaxLines ?? TUI_OUTPUT_PREVIEW_MAX_LINES;
+  const preview =
+    rawPreview === undefined
+      ? undefined
+      : createSafeOutputPreview(
+          rawPreview,
+          maxBytes,
+          maxLines,
+          options.stringLimit
+        );
 
   return {
     fullOutputStored: outputReference?.fullOutputStored ?? false,
     hiddenByteCount: preview?.hiddenByteCount,
     hiddenLineCount: preview?.hiddenLineCount,
     isTruncated:
-      preview?.isTruncated ??
-      (outputReference?.fullOutputStored === true),
+      preview?.isTruncated ?? outputReference?.fullOutputStored === true,
     originalByteLength: preview?.originalByteLength,
     originalLineCount: preview?.originalLineCount,
     preview: preview?.preview,
@@ -1520,15 +1549,16 @@ function formatMessageMetadata(
 
 function formatMessageOutput(output: TuiOutputPreview): string {
   const hasPreview = output.preview !== undefined;
-  const state = hasPreview && output.isTruncated
-    ? "truncated"
-    : output.fullOutputStored && output.isTruncated
-      ? "collapsed"
-      : output.fullOutputStored
-        ? "stored"
-      : hasPreview
-        ? "preview"
-        : "stored";
+  const state =
+    hasPreview && output.isTruncated
+      ? "truncated"
+      : output.fullOutputStored && output.isTruncated
+        ? "collapsed"
+        : output.fullOutputStored
+          ? "stored"
+          : hasPreview
+            ? "preview"
+            : "stored";
   const parts = [`output=${state}`];
 
   if (output.originalLineCount !== undefined) {
@@ -1611,11 +1641,7 @@ function readStringArray(
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  );
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function splitLines(value: string): string[] {
@@ -1665,7 +1691,10 @@ function createProviderState(
     startupProvider ??
     "not-configured";
   const rawModel =
-    snapshotProvider?.model ?? provider?.model ?? startupModel ?? "not-configured";
+    snapshotProvider?.model ??
+    provider?.model ??
+    startupModel ??
+    "not-configured";
 
   return {
     auth,
@@ -1686,7 +1715,8 @@ function createSandboxState(
   }
 ): TuiSandboxState {
   return {
-    mode: createSafeString(runtimeSnapshot?.sandbox.mode ?? fallback.mode).value,
+    mode: createSafeString(runtimeSnapshot?.sandbox.mode ?? fallback.mode)
+      .value,
     outputFormat: createSafeString(
       runtimeSnapshot?.sandbox.outputFormat ?? fallback.outputFormat
     ).value,
@@ -1706,7 +1736,9 @@ function createContextStateFromBootstrap(
   return {
     blockedCount: bootstrapState.projectContext.blockedCount,
     loadedCount: bootstrapState.projectContext.loadedCount,
-    redacted: bootstrapState.projectContext.records.some((record) => record.redacted),
+    redacted: bootstrapState.projectContext.records.some(
+      (record) => record.redacted
+    ),
     skippedCount: bootstrapState.projectContext.skippedCount,
     truncatedCount: bootstrapState.projectContext.truncatedCount
   };
@@ -1736,7 +1768,8 @@ function createMemoryState(
 
   return {
     available,
-    durableRetrievalAvailable: runtimeSnapshot?.memory.durableRetrievalAvailable,
+    durableRetrievalAvailable:
+      runtimeSnapshot?.memory.durableRetrievalAvailable,
     entryCount: section === undefined ? undefined : entryCount,
     providerName:
       runtimeSnapshot === undefined
@@ -1754,8 +1787,7 @@ function createSkillsState(
   section: TaskContextSection | undefined
 ): TuiSkillsState {
   const names =
-    runtimeSnapshot?.skills.names ??
-    readMetadataStringArray(section, "names");
+    runtimeSnapshot?.skills.names ?? readMetadataStringArray(section, "names");
   const activeCount =
     runtimeSnapshot?.skills.names.length ??
     readMetadataNumber(section, "skillCount");
@@ -1787,7 +1819,9 @@ function createSkillCandidateState(
 }
 
 function createWarningsState(warnings: readonly string[]): TuiWarningsState {
-  const nonEmptyWarnings = warnings.filter((warning) => warning.trim().length > 0);
+  const nonEmptyWarnings = warnings.filter(
+    (warning) => warning.trim().length > 0
+  );
 
   return {
     count: nonEmptyWarnings.length,
@@ -1855,18 +1889,23 @@ function formatToken(token: TuiStateToken): string {
 }
 
 function formatOptional(label: string, value: string | undefined): string {
-  return value === undefined ? "" : ` / ${label}: ${createSafeString(value).value}`;
+  return value === undefined
+    ? ""
+    : ` / ${label}: ${createSafeString(value).value}`;
 }
 
 function formatList(list: TuiBoundedList): string {
   const items = list.values.length === 0 ? "" : ` / ${list.values.join(", ")}`;
   const hidden = list.hiddenCount === 0 ? "" : ` (+${list.hiddenCount} more)`;
-  const redacted = list.redactedCount === 0 ? "" : ` / ${list.redactedCount} redacted`;
+  const redacted =
+    list.redactedCount === 0 ? "" : ` / ${list.redactedCount} redacted`;
 
   return `${items}${hidden}${redacted}`;
 }
 
-function formatStatusCounts(statusCounts: Readonly<Record<string, number>>): string {
+function formatStatusCounts(
+  statusCounts: Readonly<Record<string, number>>
+): string {
   const entries = Object.entries(statusCounts).sort(([left], [right]) =>
     left.localeCompare(right)
   );

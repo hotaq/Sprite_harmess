@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   createToolRegistry,
+  listToolNames,
   summarizeToolOutput,
   type ToolExecutionResult
 } from "@sprite/tools";
@@ -49,6 +50,16 @@ afterEach(() => {
 });
 
 describe("tool registry repository inspection", () => {
+  it("exposes a bounded source of truth for registered tool names", () => {
+    expect(listToolNames()).toEqual([
+      "apply_patch",
+      "list_files",
+      "read_file",
+      "run_command",
+      "search_files"
+    ]);
+  });
+
   it("reads a UTF-8 file inside the project boundary", async () => {
     const { projectDir } = createTempProject();
     writeText(join(projectDir, "src/example.ts"), "export const value = 1;\n");

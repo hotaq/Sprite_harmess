@@ -1,6 +1,6 @@
 # Story 6.5: Implement Slash Commands as Runtime Intents
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -21,59 +21,64 @@ so that I can inspect and control sessions, model, memory, skills, tools, compac
 
 ## Tasks / Subtasks
 
-- [ ] Confirm implementation function/package list before code edits (AC: 1-6)
-  - [ ] Report exact new and modified functions to the user before implementation; include which functions are pure TUI parsing, which are CLI/runtime bridge helpers, and which are renderer-only.
-  - [ ] Run GitNexus impact analysis before editing existing symbols such as `TuiWorkbenchApp`, `handleLiveTuiInteraction`, `runLiveTuiCommand`, `createProgram`, `createTuiLiveWorkbenchState`, `reduceTuiLiveWorkbenchEvent`, `AgentRuntime`, `compactSessionManually`, `resumeSession`, `listMemoryCandidates`, `listSkillCandidates`, or tool registry exports.
-  - [ ] Treat this story as slash-command intent wiring, not final summary/learning review display polish, JSON-RPC implementation, provider auth switching, or a new UI redesign.
-  - [ ] Keep dependency plan unchanged unless proven necessary; do not add new packages for slash parsing.
+- [x] Confirm implementation function/package list before code edits (AC: 1-6)
+  - [x] Report exact new and modified functions to the user before implementation; include which functions are pure TUI parsing, which are CLI/runtime bridge helpers, and which are renderer-only.
+  - [x] Run GitNexus impact analysis before editing existing symbols such as `TuiWorkbenchApp`, `handleLiveTuiInteraction`, `runLiveTuiCommand`, `createProgram`, `createTuiLiveWorkbenchState`, `reduceTuiLiveWorkbenchEvent`, `AgentRuntime`, `compactSessionManually`, `resumeSession`, `listMemoryCandidates`, `listSkillCandidates`, or tool registry exports.
+  - [x] Treat this story as slash-command intent wiring, not final summary/learning review display polish, JSON-RPC implementation, provider auth switching, or a new UI redesign.
+  - [x] Keep dependency plan unchanged unless proven necessary; do not add new packages for slash parsing.
 
-- [ ] Add typed slash command contracts in `packages/tui` (AC: 1, 2, 3, 5)
-  - [ ] Add or extract a small module such as `packages/tui/src/slash-commands.ts` instead of growing `live-workbench.tsx` or `index.ts` into an unreviewable monolith.
-  - [ ] Define `TuiSlashCommandName`, `TuiSlashCommandIntent`, `TuiSlashCommandResult`, and `TuiSlashCommandSuggestion` or equivalent typed contracts.
-  - [ ] Implement a pure parser such as `parseTuiSlashCommand(input)` that recognizes `/new`, `/resume`, `/model`, `/memory`, `/skills`, `/tools`, `/compact`, `/review-learning`, `/exit`, `/runtime`, `/context`, `/details`, `/hide`, and `/help`.
-  - [ ] Validate bounded arguments: no unbounded free-form payloads, no secret-looking raw args in visible error messages, and predictable error codes for missing/invalid arguments.
-  - [ ] Keep local diagnostic commands clearly typed separately from runtime commands so `/runtime` and `/details` do not require runtime mutation.
+- [x] Add typed slash command contracts in `packages/tui` (AC: 1, 2, 3, 5)
+  - [x] Add or extract a small module such as `packages/tui/src/slash-commands.ts` instead of growing `live-workbench.tsx` or `index.ts` into an unreviewable monolith.
+  - [x] Define `TuiSlashCommandName`, `TuiSlashCommandIntent`, `TuiSlashCommandResult`, and `TuiSlashCommandSuggestion` or equivalent typed contracts.
+  - [x] Implement a pure parser such as `parseTuiSlashCommand(input)` that recognizes `/new`, `/resume`, `/model`, `/memory`, `/skills`, `/tools`, `/compact`, `/review-learning`, `/exit`, `/runtime`, `/context`, `/details`, `/hide`, and `/help`.
+  - [x] Validate bounded arguments: no unbounded free-form payloads, no secret-looking raw args in visible error messages, and predictable error codes for missing/invalid arguments.
+  - [x] Keep local diagnostic commands clearly typed separately from runtime commands so `/runtime` and `/details` do not require runtime mutation.
 
-- [ ] Add runtime command dispatch through a thin port (AC: 1, 2, 3)
-  - [ ] Add a `TuiSlashCommandRuntimePort` or equivalent adapter shape that exposes only the runtime services needed by slash commands.
-  - [ ] Route `/resume <sessionId>` through `AgentRuntime.resumeSession(sessionId)` or a small bridge wrapper; do not replay tools, commands, approvals, or provider calls outside runtime resume behavior.
-  - [ ] Route `/compact [sessionId]` through `compactSessionManually(cwd, sessionId)` using the current visible session ID when no explicit session ID is provided; return a structured unavailable error when there is no session ID.
-  - [ ] Route `/memory` to safe memory views already exposed by runtime/storage, prioritizing candidate summaries and redacted memory metadata over raw content.
-  - [ ] Route `/skills` to manual skill registry and skill-candidate review summaries; do not promote, edit, or invoke skills implicitly from this story.
-  - [ ] Route `/tools` to a bounded list of registered tools. If the registry lacks a list API, add a minimal exported constant/helper in `packages/tools` rather than duplicating tool names in the TUI.
-  - [ ] Route `/model` to current provider/model/auth state from bootstrap/runtime state; model switching can return `unsupported` unless a safe existing runtime API already exists.
-  - [ ] Route `/review-learning` to bounded learning review metadata for the current/resumed session when available; do not implement Story 6.6 full final-summary/learning-review panels here.
-  - [ ] Route `/new` through a deliberate live-bridge reset/new-runtime action if implemented; otherwise return a structured `unsupported` result with a next action. Do not silently clear state and call it a new session.
-  - [ ] Route `/exit` as a local exit action only; it should not create runtime events or mutate session state.
+- [x] Add runtime command dispatch through a thin port (AC: 1, 2, 3)
+  - [x] Add a `TuiSlashCommandRuntimePort` or equivalent adapter shape that exposes only the runtime services needed by slash commands.
+  - [x] Route `/resume <sessionId>` through `AgentRuntime.resumeSession(sessionId)` or a small bridge wrapper; do not replay tools, commands, approvals, or provider calls outside runtime resume behavior.
+  - [x] Route `/compact [sessionId]` through `compactSessionManually(cwd, sessionId)` using the current visible session ID when no explicit session ID is provided; return a structured unavailable error when there is no session ID.
+  - [x] Route `/memory` to safe memory views already exposed by runtime/storage, prioritizing candidate summaries and redacted memory metadata over raw content.
+  - [x] Route `/skills` to manual skill registry and skill-candidate review summaries; do not promote, edit, or invoke skills implicitly from this story.
+  - [x] Route `/tools` to a bounded list of registered tools. If the registry lacks a list API, add a minimal exported constant/helper in `packages/tools` rather than duplicating tool names in the TUI.
+  - [x] Route `/model` to current provider/model/auth state from bootstrap/runtime state; model switching can return `unsupported` unless a safe existing runtime API already exists.
+  - [x] Route `/review-learning` to bounded learning review metadata for the current/resumed session when available; do not implement Story 6.6 full final-summary/learning-review panels here.
+  - [x] Route `/new` through a deliberate live-bridge reset/new-runtime action if implemented; otherwise return a structured `unsupported` result with a next action. Do not silently clear state and call it a new session.
+  - [x] Route `/exit` as a local exit action only; it should not create runtime events or mutate session state.
 
-- [ ] Integrate slash commands into the live Ink workbench (AC: 1, 3, 4, 5)
-  - [ ] Replace the current local-only `parseSlashCommand()` path in `packages/tui/src/live-workbench.tsx` with typed slash command intents/results while preserving current `/runtime`, `/context`, `/details`, `/hide`, and `/help` behavior.
-  - [ ] Ensure slash commands are never echoed as submitted user prompts and are never sent through `createTuiSubmitIntent()`.
-  - [ ] Display runtime command results as safe workbench/system cards in the conversation area or details panel, with clear labels such as `command`, `status`, `subsystem`, `next action`, and `source`.
-  - [ ] Preserve the UX rule from previous TUI polish: `/details` can remain sticky; other diagnostic/result panels should be temporary unless the command explicitly opens a persistent view.
-  - [ ] Keep suggestion rendering minimal and close to the input footer; do not reintroduce noisy always-visible runtime/context blocks.
-  - [ ] Make malformed commands recoverable: keep the draft or show a clear error, but do not crash, exit, or submit as task text.
+- [x] Integrate slash commands into the live Ink workbench (AC: 1, 3, 4, 5)
+  - [x] Replace the current local-only `parseSlashCommand()` path in `packages/tui/src/live-workbench.tsx` with typed slash command intents/results while preserving current `/runtime`, `/context`, `/details`, `/hide`, and `/help` behavior.
+  - [x] Ensure slash commands are never echoed as submitted user prompts and are never sent through `createTuiSubmitIntent()`.
+  - [x] Display runtime command results as safe workbench/system cards in the conversation area or details panel, with clear labels such as `command`, `status`, `subsystem`, `next action`, and `source`.
+  - [x] Preserve the UX rule from previous TUI polish: `/details` can remain sticky; other diagnostic/result panels should be temporary unless the command explicitly opens a persistent view.
+  - [x] Keep suggestion rendering minimal and close to the input footer; do not reintroduce noisy always-visible runtime/context blocks.
+  - [x] Make malformed commands recoverable: keep the draft or show a clear error, but do not crash, exit, or submit as task text.
 
-- [ ] Wire the CLI live bridge to slash command dispatch (AC: 1, 2, 3, 6)
-  - [ ] Extend `TuiLiveWorkbenchInteraction` with a slash-command interaction or typed command result flow if needed.
-  - [ ] Update `handleLiveTuiInteraction()` and/or `runLiveTuiCommand()` as the thin bridge between TUI intents and `AgentRuntime`/session/memory/skill/tool services.
-  - [ ] Preserve existing `sprite tui --preview` and `sprite tui --demo` behavior.
-  - [ ] Do not duplicate CLI `session inspect`, `session compact`, `session resume`, or `skills candidates` command logic in a second implementation; extract reusable helpers only when needed.
+- [x] Wire the CLI live bridge to slash command dispatch (AC: 1, 2, 3, 6)
+  - [x] Extend `TuiLiveWorkbenchInteraction` with a slash-command interaction or typed command result flow if needed.
+  - [x] Update `handleLiveTuiInteraction()` and/or `runLiveTuiCommand()` as the thin bridge between TUI intents and `AgentRuntime`/session/memory/skill/tool services.
+  - [x] Preserve existing `sprite tui --preview` and `sprite tui --demo` behavior.
+  - [x] Do not duplicate CLI `session inspect`, `session compact`, `session resume`, or `skills candidates` command logic in a second implementation; extract reusable helpers only when needed.
 
-- [ ] Add deterministic tests (AC: 1-6)
-  - [ ] Add parser tests for every slash command, aliases if any, missing args, invalid session IDs, unsupported args, and secret-looking input redaction.
-  - [ ] Add TUI renderer tests proving slash suggestions include runtime commands and existing diagnostics.
-  - [ ] Add live workbench tests proving `/runtime`, `/context`, `/details`, `/hide`, and `/help` keep existing behavior.
-  - [ ] Add interaction tests proving runtime slash commands do not produce normal submit interactions and do produce safe command result/error cards.
-  - [ ] Add CLI bridge/runtime fixture tests for `/resume`, `/compact`, `/memory`, `/skills`, `/tools`, `/model`, `/review-learning`, `/new` unsupported-or-reset behavior, and `/exit` local action.
-  - [ ] Add regression tests proving slash command errors show structured safe messages and do not leak raw secrets, raw memory contents, raw learning review contents, or raw filesystem paths beyond existing safe previews.
+- [x] Add deterministic tests (AC: 1-6)
+  - [x] Add parser tests for every slash command, aliases if any, missing args, invalid session IDs, unsupported args, and secret-looking input redaction.
+  - [x] Add TUI renderer tests proving slash suggestions include runtime commands and existing diagnostics.
+  - [x] Add live workbench tests proving `/runtime`, `/context`, `/details`, `/hide`, and `/help` keep existing behavior.
+  - [x] Add interaction tests proving runtime slash commands do not produce normal submit interactions and do produce safe command result/error cards.
+  - [x] Add CLI bridge/runtime fixture tests for `/resume`, `/compact`, `/memory`, `/skills`, `/tools`, `/model`, `/review-learning`, `/new` unsupported-or-reset behavior, and `/exit` local action.
+  - [x] Add regression tests proving slash command errors show structured safe messages and do not leak raw secrets, raw memory contents, raw learning review contents, or raw filesystem paths beyond existing safe previews.
 
-- [ ] Validate and update story status during development (AC: 1-6)
-  - [ ] Start with red tests for parser and live workbench dispatch.
-  - [ ] Run targeted tests first: `npm test -- --run tests/tui-live-workbench.test.tsx tests/tui-control-intents.test.ts tests/cli-tui-live.test.ts tests/cli-smoke.test.ts` or updated equivalents.
-  - [ ] Run full validation before review: `rtk run 'git diff --check && npm run lint && npm test'`.
-  - [ ] Run GitNexus detect/analyze/status before commit according to project rules: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
-  - [ ] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
+- [x] Validate and update story status during development (AC: 1-6)
+  - [x] Start with red tests for parser and live workbench dispatch.
+  - [x] Run targeted tests first: `npm test -- --run tests/tui-live-workbench.test.tsx tests/tui-control-intents.test.ts tests/cli-tui-live.test.ts tests/cli-smoke.test.ts` or updated equivalents.
+  - [x] Run full validation before review: `rtk run 'git diff --check && npm run lint && npm test'`.
+  - [x] Run GitNexus detect/analyze/status before commit according to project rules: `rtk run 'npx gitnexus analyze . --force --skip-agents-md --no-stats && npx gitnexus status'`.
+  - [x] Move status to `in-progress` when development starts, `review` after implementation validation passes, and `done` only after review fixes pass.
+
+### Review Findings
+
+- [x] [Review][Patch] Redact slash command result card headers for unsupported secret-like command names [packages/tui/src/live-workbench.tsx:753] — fixed by rendering command labels through the same redacted bounded preview used by command result details; regression added for `/OPENAI_API_KEY=sk-secret`.
+- [x] [Review][Patch] Use the visible TUI session id for `/compact` when no explicit session id is provided [packages/cli/src/index.ts:1137] — fixed by passing `visibleSessionId` with slash-command interactions and using it before the active-task fallback; regression added for a fresh runtime compacting a visible persisted session.
 
 ## Dev Notes
 
@@ -239,18 +244,43 @@ GPT-5.5
 - Loaded BMad create-story workflow, sprint status, Epic 6 Story 6.5, PRD slash command requirements, architecture adapter/runtime boundaries, current TUI slash implementation, current CLI live bridge, current runtime APIs, current package versions, GitNexus query output, and previous Story 6.3/6.4 implementation notes.
 - External research checked Ink and npm package status on 2026-05-12; no dependency change is required for this story.
 - This story file intentionally does not modify implementation code.
+- 2026-05-13: Started BMad dev-story implementation for Story 6.5; moved story and sprint status to in-progress.
+- 2026-05-13: Reported planned pure parser, renderer, CLI bridge, and tool-list helper functions before code edits.
+- 2026-05-13: Ran GitNexus status/impact checks before implementation; avoided changing high-risk AgentRuntime and critical createTuiLiveWorkbenchState.
+- 2026-05-13: Added red tests for slash parser/contracts, live workbench slash command cards/errors, CLI bridge dispatch, and tool-list helper; confirmed failing behavior before implementation.
+- 2026-05-13: Implemented typed slash command contracts, live TUI command cards, CLI bridge dispatch, bounded tools/learning-review metadata, and safe unsupported /new behavior.
+- 2026-05-13: Validation passed: rtk run validation command for git diff check, lint, and full test suite (25 files, 373 tests).
+- 2026-05-13: GitNexus re-index/status passed with force analyze, skip AGENTS update, no stats, then status.
+- 2026-05-13: BMad code review found and fixed two patch findings: secret-like unsupported command names in command-card headers and `/compact` visible-session fallback.
+- 2026-05-13: Post-review validation passed: rtk run validation command for git diff check, lint, and full test suite (25 files, 374 tests).
 
 ### Completion Notes List
 
-- Created ready-for-dev Story 6.5 context for slash commands as typed runtime intents.
-- Preserved current Story 6.4 UI/UX decisions while expanding slash commands beyond local diagnostics.
-- Scoped JSON-RPC, full learning-review panels, provider model switching, and skill/memory mutation out unless existing safe runtime APIs already support them.
+- Created `packages/tui/src/slash-commands.ts` with typed slash command names, intents, results, suggestions, parser validation, result formatting, and redaction helpers.
+- Integrated runtime slash command intents into the live Ink workbench while preserving `/runtime`, `/context`, `/details`, `/hide`, and `/help`; `/details` remains sticky and malformed slash commands render recoverable safe result cards instead of normal prompt submissions.
+- Added CLI live bridge dispatch for `/resume`, `/compact`, `/memory`, `/skills`, `/tools`, `/model`, `/review-learning`, `/new`, and local `/exit` behavior without adding external dependencies or changing `AgentRuntime`.
+- Added `listToolNames()` as the tool registry source of truth and exposed bounded learning-review lesson metadata through core exports for CLI bridge use.
+- Added deterministic parser, renderer, CLI bridge, and tool registry tests covering success/failure paths and secret redaction.
+- Fixed code-review findings by redacting command-card headers for unsupported secret-like slash names and by routing `/compact` through the visible TUI session id when no explicit id is supplied.
+- Preserved scope boundaries: no Story 6.6 full final-summary/learning-review UI, no Story 7 JSON-RPC, no provider model switching, and no skill/memory mutation.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/6-5-implement-slash-commands-as-runtime-intents.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/cli/src/index.ts`
+- `packages/core/src/index.ts`
+- `packages/tools/src/tool-registry.ts`
+- `packages/tui/src/index.ts`
+- `packages/tui/src/live-workbench.tsx`
+- `packages/tui/src/slash-commands.ts`
+- `tests/cli-tui-live.test.ts`
+- `tests/tool-registry.test.ts`
+- `tests/tui-live-workbench.test.tsx`
+- `tests/tui-slash-commands.test.ts`
 
 ### Change Log
 
 - 2026-05-12: Created Story 6.5 and marked it ready-for-dev in sprint status.
+- 2026-05-13: Implemented Story 6.5 slash commands as typed runtime intents and marked ready for review after full validation.
+- 2026-05-13: Completed BMad code review fixes, revalidated, and marked Story 6.5 done.

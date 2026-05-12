@@ -107,7 +107,9 @@ describe("live Ink TUI workbench", () => {
 
     expect(view.lastFrame() ?? "").not.toContain("[Context]");
     expect(view.lastFrame() ?? "").not.toContain("[Runtime]");
-    expect(view.lastFrame() ?? "").not.toContain("[PENDING] no runtime events yet");
+    expect(view.lastFrame() ?? "").not.toContain(
+      "[PENDING] no runtime events yet"
+    );
     expect(view.lastFrame() ?? "").not.toContain("[PENDING] no approvals");
     expect(view.lastFrame() ?? "").not.toContain("details hidden");
 
@@ -115,6 +117,8 @@ describe("live Ink TUI workbench", () => {
     await waitForInkInput();
 
     expect(view.lastFrame() ?? "").toContain("Command suggestions");
+    expect(view.lastFrame() ?? "").toContain("/new");
+    expect(view.lastFrame() ?? "").toContain("/resume");
     expect(view.lastFrame() ?? "").toContain("/runtime");
     expect(view.lastFrame() ?? "").toContain("/context");
     expect(view.lastFrame() ?? "").toContain("/details");
@@ -124,7 +128,9 @@ describe("live Ink TUI workbench", () => {
     await waitForInkInput();
 
     expect(view.lastFrame() ?? "").toContain("[Context]");
-    expect(view.lastFrame() ?? "").toContain("warning: Project context guidance warning.");
+    expect(view.lastFrame() ?? "").toContain(
+      "warning: Project context guidance warning."
+    );
     expect(interactions).toHaveLength(0);
 
     view.stdin.write("/hide");
@@ -471,6 +477,101 @@ describe("live Ink TUI workbench", () => {
     expect(view.lastFrame() ?? "").not.toContain("OPENAI_API_KEY");
   });
 
+  it("dispatches runtime slash commands as command intents and renders safe result cards", async () => {
+    const interactions: TuiLiveWorkbenchInteraction[] = [];
+    const liveState = createTuiLiveWorkbenchState({
+      runtimeState: createTuiStartupState({
+        bootstrapState: bootstrapState({})
+      }),
+      workbench: createTuiWorkbenchView()
+    });
+    const view = render(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => {
+          interactions.push(interaction);
+
+          if (interaction.type !== "slash-command") {
+            return undefined;
+          }
+
+          return Promise.resolve({
+            command: interaction.intent.command,
+            items: [{ label: "session", value: "ses_live" }],
+            nextAction: "Continue in the resumed session.",
+            source: "runtime",
+            status: "OK",
+            subsystem: "session",
+            summary: "Session resumed."
+          });
+        }}
+        state={liveState}
+      />
+    );
+
+    view.stdin.write("/resume ses_live");
+    view.stdin.write("\r");
+    await waitForInkInput();
+    await waitForInkInput();
+
+    expect(interactions).toEqual([
+      {
+        intent: {
+          args: {
+            sessionId: "ses_live"
+          },
+          command: "resume",
+          raw: "/resume ses_live",
+          type: "runtime"
+        },
+        type: "slash-command"
+      }
+    ]);
+    expect(view.lastFrame() ?? "").toContain("command /resume · OK");
+    expect(view.lastFrame() ?? "").toContain("Session resumed.");
+    expect(view.lastFrame() ?? "").not.toContain("› /resume ses_live");
+  });
+
+  it("shows malformed slash commands as recoverable errors without submitting secrets", async () => {
+    const interactions: TuiLiveWorkbenchInteraction[] = [];
+    const liveState = createTuiLiveWorkbenchState({
+      runtimeState: createTuiStartupState({
+        bootstrapState: bootstrapState({})
+      }),
+      workbench: createTuiWorkbenchView()
+    });
+    const view = render(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => interactions.push(interaction)}
+        state={liveState}
+      />
+    );
+
+    view.stdin.write("/resume OPENAI_API_KEY=sk-secret");
+    view.stdin.write("\r");
+    await waitForInkInput();
+
+    const frame = view.lastFrame() ?? "";
+
+    expect(interactions).toEqual([]);
+    expect(frame).toContain("command /resume · ERROR");
+    expect(frame).toContain("Session id must match");
+    expect(frame).toContain("[REDACTED]");
+    expect(frame).not.toContain("sk-secret");
+    expect(frame).not.toContain("OPENAI_API_KEY");
+
+    view.stdin.write("/OPENAI_API_KEY=sk-secret");
+    view.stdin.write("\r");
+    await waitForInkInput();
+
+    const unsupportedSecretFrame = view.lastFrame() ?? "";
+
+    expect(unsupportedSecretFrame).toContain(
+      "command /[REDACTED] · UNSUPPORTED"
+    );
+    expect(unsupportedSecretFrame).not.toContain("sk-secret");
+    expect(unsupportedSecretFrame).not.toContain("OPENAI_API_KEY");
+  });
+
   it("labels command previews as static and non-interactive", () => {
     const preview = createTuiCommandPreview(
       createTuiLiveWorkbenchState({
@@ -539,18 +640,15 @@ describe("live Ink TUI workbench", () => {
       }),
       type: "runtime-event"
     });
-    const submitted = await reduceTuiLiveWorkbenchEvent(
-      next,
-      {
-        intent: {
-          preview: { redacted: false, value: "hello" },
-          text: "hello",
-          type: "submit-task"
-        },
-        port,
-        type: "dispatch-intent"
-      }
-    );
+    const submitted = await reduceTuiLiveWorkbenchEvent(next, {
+      intent: {
+        preview: { redacted: false, value: "hello" },
+        text: "hello",
+        type: "submit-task"
+      },
+      port,
+      type: "dispatch-intent"
+    });
 
     expect(submitted.events).toHaveLength(1);
     expect(submitted.messageStream.totalCount).toBe(1);
@@ -560,16 +658,19 @@ describe("live Ink TUI workbench", () => {
       status: "submitted"
     });
 
-    const approvalIntent = createTuiApprovalResponseIntent(approvalRequest({}), {
-      action: "edit",
-      modifiedToolCall: {
-        input: {
-          edits: [{ newText: "new", oldText: "old", path: "README.md" }],
-          summary: "Safe test edit."
-        },
-        toolName: "apply_patch"
+    const approvalIntent = createTuiApprovalResponseIntent(
+      approvalRequest({}),
+      {
+        action: "edit",
+        modifiedToolCall: {
+          input: {
+            edits: [{ newText: "new", oldText: "old", path: "README.md" }],
+            summary: "Safe test edit."
+          },
+          toolName: "apply_patch"
+        }
       }
-    });
+    );
     expect(approvalIntent.ok).toBe(true);
     if (!approvalIntent.ok) {
       return;

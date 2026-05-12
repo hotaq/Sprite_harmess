@@ -17,6 +17,16 @@ import type {
   TuiWorkbenchActionLabel,
   TuiSubmitIntentMode
 } from "./index.js";
+import {
+  createTuiSlashCommandSuggestions,
+  formatTuiSlashCommandResult,
+  isTuiSlashCommandResult,
+  parseTuiSlashCommand,
+  type TuiLocalSlashCommandName,
+  type TuiSlashCommandIntent,
+  type TuiSlashCommandResult,
+  type TuiSlashCommandSuggestion
+} from "./slash-commands.js";
 
 const BLANK_DRAFT_LINE = " ";
 const BRAND_ACCENT_COLOR = "cyan";
@@ -47,10 +57,15 @@ export type TuiLiveWorkbenchInteraction =
     }
   | {
       type: "exit";
+    }
+  | {
+      intent: Extract<TuiSlashCommandIntent, { type: "runtime" }>;
+      type: "slash-command";
+      visibleSessionId?: string;
     };
 
 export interface TuiWorkbenchAppProps {
-  onInteraction?: (interaction: TuiLiveWorkbenchInteraction) => void;
+  onInteraction?: (interaction: TuiLiveWorkbenchInteraction) => unknown;
   state: TuiLiveWorkbenchState;
 }
 
@@ -95,14 +110,10 @@ type TuiVisibleActionPrompt =
       type: "approval-edit";
     };
 
-type TuiDetailPanel = "context" | "details" | "help" | "runtime";
-
-type TuiSlashCommand = TuiDetailPanel | "hide";
-
-interface TuiSlashCommandSuggestion {
-  command: TuiSlashCommand;
-  description: string;
-}
+type TuiDetailPanel = Extract<
+  TuiLocalSlashCommandName,
+  "context" | "details" | "help" | "runtime"
+>;
 
 interface TuiSubmittedPrompt {
   id: string;
@@ -110,28 +121,10 @@ interface TuiSubmittedPrompt {
   text: string;
 }
 
-const SLASH_COMMAND_SUGGESTIONS: readonly TuiSlashCommandSuggestion[] = [
-  {
-    command: "runtime",
-    description: "provider, sandbox, session, latest event"
-  },
-  {
-    command: "context",
-    description: "loaded guidance, skills, memory, warnings"
-  },
-  {
-    command: "details",
-    description: "runtime and context together"
-  },
-  {
-    command: "hide",
-    description: "collapse diagnostics"
-  },
-  {
-    command: "help",
-    description: "show command help"
-  }
-];
+interface TuiCommandResultCardState {
+  id: string;
+  result: TuiSlashCommandResult;
+}
 
 export function TuiWorkbenchApp({
   onInteraction,
@@ -147,11 +140,15 @@ export function TuiWorkbenchApp({
   const [submittedPrompts, setSubmittedPrompts] = useState<
     readonly TuiSubmittedPrompt[]
   >([]);
+  const [commandResults, setCommandResults] = useState<
+    readonly TuiCommandResultCardState[]
+  >([]);
   const draftRef = useRef(draftText);
   const [editDraftText, setEditDraftTextState] = useState("");
   const editDraftRef = useRef(editDraftText);
   const externalDraftRef = useRef(state.workbench.input.text);
   const submittedPromptIdRef = useRef(0);
+  const commandResultIdRef = useRef(0);
 
   useEffect(() => {
     if (externalDraftRef.current === state.workbench.input.text) {
@@ -312,10 +309,51 @@ export function TuiWorkbenchApp({
     }
 
     if (isSendInput(input, key)) {
-      const slashCommand = parseSlashCommand(draftRef.current);
+      const slashCommand = parseTuiSlashCommand(draftRef.current);
 
       if (slashCommand !== null) {
-        setDetailPanel(resolveDetailPanel(slashCommand));
+        if (slashCommand.ok) {
+          switch (slashCommand.value.type) {
+            case "exit": {
+              onInteraction?.({ type: "exit" });
+              exit();
+              break;
+            }
+            case "local": {
+              setDetailPanel(resolveDetailPanel(slashCommand.value.command));
+              break;
+            }
+            case "runtime": {
+              dispatchRuntimeSlashCommand({
+                intent: slashCommand.value,
+                onInteraction,
+                onResult: (result) => {
+                  setCommandResults((currentResults) =>
+                    [
+                      ...currentResults,
+                      {
+                        id: `command-result-${commandResultIdRef.current++}`,
+                        result
+                      }
+                    ].slice(-5)
+                  );
+                },
+                visibleSessionId: state.runtimeState.session.sessionId
+              });
+              break;
+            }
+          }
+        } else {
+          setCommandResults((currentResults) =>
+            [
+              ...currentResults,
+              {
+                id: `command-result-${commandResultIdRef.current++}`,
+                result: slashCommand.result
+              }
+            ].slice(-5)
+          );
+        }
         setDraftText("");
         return;
       }
@@ -356,7 +394,7 @@ export function TuiWorkbenchApp({
       setDraftText(`${draftRef.current}${input}`);
     }
   });
-  const slashCommandSuggestions = getSlashCommandSuggestions(draftText);
+  const slashCommandSuggestions = createTuiSlashCommandSuggestions(draftText);
   const visibleActionPrompt =
     actionPrompt?.type === "approval"
       ? resolveVisibleActionPrompt(
@@ -370,7 +408,7 @@ export function TuiWorkbenchApp({
             state.workbench.approvals,
             editDraftText
           )
-      : actionPrompt;
+        : actionPrompt;
   const conversationActionPrompt =
     visibleActionPrompt?.type === "cancel" ? visibleActionPrompt : null;
   const dockActionPrompt =
@@ -385,6 +423,7 @@ export function TuiWorkbenchApp({
         <HeaderSection state={state} />
         <DetailsSection detailPanel={detailPanel} state={state} />
         <SubmittedPromptsSection prompts={submittedPrompts} />
+        <CommandResultsSection results={commandResults} />
         <ActionPromptSection prompt={conversationActionPrompt} />
         <DispatchStatusSection state={state} />
         <ActivitySection state={state} />
@@ -465,19 +504,19 @@ function HeaderSection({
           {timelineLead}
         </Text>
         <Text>
-          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          <Text color={BRAND_ACCENT_COLOR}>│ ✓ </Text>
           {`Loading workspace: ${state.runtimeState.workspace.cwd.value}`}
         </Text>
         <Text>
-          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          <Text color={BRAND_ACCENT_COLOR}>│ ✓ </Text>
           {`Sandbox environment: ${state.runtimeState.sandbox.mode}`}
         </Text>
         <Text>
-          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          <Text color={BRAND_ACCENT_COLOR}>│ ✓ </Text>
           {`Model: ${state.runtimeState.provider.model}`}
         </Text>
         <Text>
-          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          <Text color={BRAND_ACCENT_COLOR}>│ ✓ </Text>
           {`Memory: ${
             state.runtimeState.memory.available ? "ready" : "missing"
           }`}
@@ -548,11 +587,74 @@ function SlashCommandHelpSection(): React.JSX.Element {
       <Text bold color="yellow">
         Commands
       </Text>
+      <Text>{`/new     start a new runtime session when supported`}</Text>
+      <Text>{`/resume  resume a persisted session: /resume ses_...`}</Text>
+      <Text>{`/model   show current provider, model, and auth state`}</Text>
+      <Text>{`/memory  show bounded memory candidate metadata`}</Text>
+      <Text>{`/skills  show manual skills and skill candidate metadata`}</Text>
+      <Text>{`/tools   list registered runtime tools`}</Text>
+      <Text>{`/compact compact current or explicit session: /compact [ses_...]`}</Text>
+      <Text>{`/review-learning show bounded learning-review lesson metadata`}</Text>
+      <Text>{`/exit    exit the live TUI`}</Text>
       <Text>{`/runtime  provider, sandbox, session, latest event`}</Text>
       <Text>{`/context  loaded guidance, skills, memory, warnings`}</Text>
       <Text>{`/details  runtime and context together`}</Text>
       <Text>{`/hide     collapse diagnostics`}</Text>
     </Box>
+  );
+}
+
+function dispatchRuntimeSlashCommand({
+  intent,
+  onInteraction,
+  onResult,
+  visibleSessionId
+}: {
+  intent: Extract<TuiSlashCommandIntent, { type: "runtime" }>;
+  onInteraction: TuiWorkbenchAppProps["onInteraction"];
+  onResult: (result: TuiSlashCommandResult) => void;
+  visibleSessionId?: string;
+}): void {
+  const maybeResult = onInteraction?.({
+    intent,
+    type: "slash-command",
+    ...(visibleSessionId === undefined ? {} : { visibleSessionId })
+  });
+
+  if (isTuiSlashCommandResult(maybeResult)) {
+    onResult(maybeResult);
+    return;
+  }
+
+  if (isPromiseLike(maybeResult)) {
+    void maybeResult
+      .then((result) => {
+        if (isTuiSlashCommandResult(result)) {
+          onResult(result);
+        }
+      })
+      .catch((error: unknown) => {
+        onResult({
+          command: intent.command,
+          nextAction: "Check the runtime state and try again.",
+          source: "tui",
+          status: "ERROR",
+          subsystem: "slash-command",
+          summary:
+            error instanceof Error
+              ? error.message
+              : "Slash command failed unexpectedly."
+        });
+      });
+  }
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
   );
 }
 
@@ -622,6 +724,61 @@ function SubmittedPromptsSection({
   );
 }
 
+function CommandResultsSection({
+  results
+}: {
+  results: readonly TuiCommandResultCardState[];
+}): React.JSX.Element | null {
+  if (results.length === 0) {
+    return null;
+  }
+
+  return (
+    <Box flexDirection="column">
+      {results.map((result) => (
+        <CommandResultCard key={result.id} result={result.result} />
+      ))}
+    </Box>
+  );
+}
+
+function CommandResultCard({
+  result
+}: {
+  result: TuiSlashCommandResult;
+}): React.JSX.Element {
+  const accentColor = getCommandResultAccentColor(result.status);
+  const [summaryLine, ...detailLines] = formatTuiSlashCommandResult(result);
+  const commandLabel = createRedactedPreview(String(result.command), 96);
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text color={accentColor}>│ </Text>
+        <Text bold color={accentColor}>
+          {`command /${commandLabel.length === 0 ? "unknown" : commandLabel} · ${result.status}`}
+        </Text>
+      </Text>
+      <Text>
+        <Text color={accentColor}>│ </Text>
+        {summaryLine}
+      </Text>
+      {detailLines.slice(0, 6).map((line, index) => (
+        <Text dimColor key={`command-result-${result.command}-${index}`}>
+          <Text color={accentColor}>│ </Text>
+          {line}
+        </Text>
+      ))}
+      {detailLines.length > 6 ? (
+        <Text dimColor>
+          <Text color={accentColor}>│ </Text>
+          {`... ${detailLines.length - 6} more`}
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
 function SubmittedPromptCard({
   prompt
 }: {
@@ -671,7 +828,9 @@ function ActivityCard({
     item.output?.reference === undefined
       ? undefined
       : `output: ${item.output.reference.value}${
-          item.output.reason === undefined ? "" : ` (${item.output.reason.value})`
+          item.output.reason === undefined
+            ? ""
+            : ` (${item.output.reason.value})`
         }`;
 
   return (
@@ -803,9 +962,7 @@ function ActionPromptSection({
             </Text>
           ))
         : null}
-      <Text dimColor>
-        {formatActionPromptControls(prompt)}
-      </Text>
+      <Text dimColor>{formatActionPromptControls(prompt)}</Text>
     </Box>
   );
 }
@@ -846,11 +1003,7 @@ function createApprovalEditHintLines(
   ];
 }
 
-function InputSection({
-  draftText
-}: {
-  draftText: string;
-}): React.JSX.Element {
+function InputSection({ draftText }: { draftText: string }): React.JSX.Element {
   const { columns } = useWindowSize();
   const draftLines = createVisibleDraftLines(draftText);
   const isEmptyDraft = draftText.length === 0;
@@ -935,6 +1088,21 @@ function getActivityAccentColor(
   }
 }
 
+function getCommandResultAccentColor(
+  status: TuiSlashCommandResult["status"]
+): "green" | "red" | "yellow" {
+  switch (status) {
+    case "OK":
+      return "green";
+    case "UNAVAILABLE":
+    case "UNSUPPORTED":
+    case "MISSING_ARG":
+      return "yellow";
+    case "ERROR":
+      return "red";
+  }
+}
+
 function getApprovalAccentColor(riskLevel: string): "cyan" | "red" | "yellow" {
   switch (riskLevel) {
     case "critical":
@@ -975,8 +1143,7 @@ function handleActionPromptInput({
     return;
   }
 
-  const confirmCancel =
-    actionPrompt.type === "cancel" && key.escape === true;
+  const confirmCancel = actionPrompt.type === "cancel" && key.escape === true;
   const confirmApproval =
     actionPrompt.type === "approval" &&
     (key.return === true || normalizedInput === "y");
@@ -1084,7 +1251,8 @@ function resolveVisibleActionPrompt(
 
   const approval = approvals.find(
     (pendingApproval) =>
-      pendingApproval.controlApprovalRequestId === actionPrompt.approvalRequestId
+      pendingApproval.controlApprovalRequestId ===
+      actionPrompt.approvalRequestId
   );
 
   if (
@@ -1145,9 +1313,7 @@ function createVisibleDraftLines(value: string): string[] {
     .split("\n")
     .slice(0, 4)
     .map((line) =>
-      line.length === 0
-        ? BLANK_DRAFT_LINE
-        : createRedactedPreview(line, 96)
+      line.length === 0 ? BLANK_DRAFT_LINE : createRedactedPreview(line, 96)
     );
 }
 
@@ -1168,45 +1334,9 @@ function readApprovalAction(
   }
 }
 
-function parseSlashCommand(value: string): TuiSlashCommand | null {
-  const normalized = value.trim().toLowerCase();
-
-  switch (normalized) {
-    case "/context":
-      return "context";
-    case "/details":
-      return "details";
-    case "/help":
-    case "/?":
-      return "help";
-    case "/hide":
-      return "hide";
-    case "/runtime":
-      return "runtime";
-    default:
-      return null;
-  }
-}
-
-function getSlashCommandSuggestions(
-  value: string
-): readonly TuiSlashCommandSuggestion[] {
-  const normalized = value.trimStart().toLowerCase();
-
-  if (
-    !normalized.startsWith("/") ||
-    normalized.includes("\n") ||
-    normalized.includes(" ")
-  ) {
-    return [];
-  }
-
-  return SLASH_COMMAND_SUGGESTIONS.filter((suggestion) =>
-    `/${suggestion.command}`.startsWith(normalized)
-  );
-}
-
-function resolveDetailPanel(command: TuiSlashCommand): TuiDetailPanel | null {
+function resolveDetailPanel(
+  command: TuiLocalSlashCommandName
+): TuiDetailPanel | null {
   return command === "hide" ? null : command;
 }
 
@@ -1267,7 +1397,9 @@ function isCtrlCInput(
     ctrl?: boolean;
   }
 ): boolean {
-  return input === "\u0003" || (key.ctrl === true && input.toLowerCase() === "c");
+  return (
+    input === "\u0003" || (key.ctrl === true && input.toLowerCase() === "c")
+  );
 }
 
 function isPrintableInput(input: string): boolean {

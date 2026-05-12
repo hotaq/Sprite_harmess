@@ -7,7 +7,9 @@ import {
   createInteractiveTaskMessage,
   createRuntimeEventRecord,
   inspectSessionState,
+  listToolNames,
   listSkills,
+  readLearningReviewLessonCandidates,
   resolveOneShotPrintOutputFormat,
   runOneShotPrintTask,
   type FinalTaskSummary,
@@ -22,6 +24,7 @@ import {
   type SessionResumeResult,
   type SkillCandidateReviewView,
   type SkillRegistryEntry,
+  type StoredLearningReviewLessonCandidate,
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
 import {
@@ -35,11 +38,14 @@ import {
   createTuiSubmitIntent,
   createTuiWorkbenchView,
   dispatchTuiUserIntent,
+  isTuiSlashCommandResult,
   runTuiWorkbench,
   type TuiApprovalRequestSummary,
   type TuiDispatchResult,
   type TuiLiveWorkbenchInteraction,
   type TuiSafeString,
+  type TuiSlashCommandIntent,
+  type TuiSlashCommandResult,
   type TuiLiveWorkbenchState,
   type TuiWorkbenchStateSubscriber
 } from "@sprite/tui";
@@ -161,7 +167,11 @@ function parseSkillCandidateReviewAction(
     );
   }
 
-  if (!SKILL_CANDIDATE_REVIEW_ACTIONS.includes(value as SkillCandidateReviewAction)) {
+  if (
+    !SKILL_CANDIDATE_REVIEW_ACTIONS.includes(
+      value as SkillCandidateReviewAction
+    )
+  ) {
     throw new Error(
       `Skill candidate review action must be one of: ${SKILL_CANDIDATE_REVIEW_ACTIONS.join(", ")}.`
     );
@@ -170,7 +180,10 @@ function parseSkillCandidateReviewAction(
   return value as SkillCandidateReviewAction;
 }
 
-function collectRepeatableOption(value: string, previous: string[] = []): string[] {
+function collectRepeatableOption(
+  value: string,
+  previous: string[] = []
+): string[] {
   return [...previous, value];
 }
 
@@ -207,7 +220,10 @@ function buildSkillCandidateCliEdits(
   return Object.keys(edits).length === 0 ? undefined : edits;
 }
 
-function collectSkillReference(value: string, previous: string[] = []): string[] {
+function collectSkillReference(
+  value: string,
+  previous: string[] = []
+): string[] {
   return [...previous, value];
 }
 
@@ -670,8 +686,17 @@ interface InitialTuiStateOptions {
   demo?: boolean;
 }
 
-type RuntimePendingApproval = ReturnType<AgentRuntime["getPendingApprovals"]>[number];
-type LiveTuiInteractionResult = Result<TuiDispatchResult> | null;
+type RuntimePendingApproval = ReturnType<
+  AgentRuntime["getPendingApprovals"]
+>[number];
+type LiveTuiRuntimeSlashIntent = Extract<
+  TuiSlashCommandIntent,
+  { type: "runtime" }
+>;
+type LiveTuiInteractionResult =
+  | Result<TuiDispatchResult>
+  | TuiSlashCommandResult
+  | null;
 
 function createInitialTuiPreview(
   runtime: AgentRuntime,
@@ -696,7 +721,9 @@ function createInitialTuiState(
   const demoEnabled = options.demo === true;
 
   return createTuiLiveWorkbenchState({
-    events: demoEnabled ? createTuiDemoEvents(runtimeState.workspace.cwd.value) : [],
+    events: demoEnabled
+      ? createTuiDemoEvents(runtimeState.workspace.cwd.value)
+      : [],
     runtimeState,
     workbench: createTuiWorkbenchView({
       pendingApprovals: demoEnabled ? createTuiDemoApprovals() : []
@@ -762,7 +789,9 @@ function createTuiApprovalSummaryFromRuntimeApproval(
     riskLevel: approval.riskLevel,
     summary: approval.summary,
     timeoutMs: approval.timeoutMs,
-    ...(approval.toolCallId === undefined ? {} : { toolCallId: approval.toolCallId })
+    ...(approval.toolCallId === undefined
+      ? {}
+      : { toolCallId: approval.toolCallId })
   };
 }
 
@@ -873,11 +902,19 @@ async function runLiveTuiCommand(
   };
   const instance = runTuiWorkbench({
     onInteraction: (interaction) => {
-      void handleLiveTuiInteraction(runtime, interaction)
+      const handled = handleLiveTuiInteraction(runtime, interaction);
+
+      void handled
         .then((result) => publishLiveState(result))
         .catch((error: unknown) => {
           publishLiveState(err(toLiveTuiDispatchError(error)));
         });
+
+      return interaction.type === "slash-command"
+        ? handled.then((result) =>
+            isTuiSlashCommandResult(result) ? result : undefined
+          )
+        : undefined;
     },
     state: liveState,
     subscribeToState
@@ -894,8 +931,19 @@ export function handleLiveTuiInteraction(
     return Promise.resolve(null);
   }
 
+  if (interaction.type === "slash-command") {
+    return dispatchLiveTuiSlashCommand(
+      runtime,
+      interaction.intent,
+      interaction.visibleSessionId
+    );
+  }
+
   if (interaction.type === "cancel") {
-    return dispatchTuiUserIntent(runtime, createTuiCancelIntent(interaction.note));
+    return dispatchTuiUserIntent(
+      runtime,
+      createTuiCancelIntent(interaction.note)
+    );
   }
 
   if (interaction.type === "approval") {
@@ -911,6 +959,384 @@ export function handleLiveTuiInteraction(
   }
 
   return dispatchTuiUserIntent(runtime, intent.value);
+}
+
+async function dispatchLiveTuiSlashCommand(
+  runtime: AgentRuntime,
+  intent: LiveTuiRuntimeSlashIntent,
+  visibleSessionId?: string
+): Promise<TuiSlashCommandResult> {
+  switch (intent.command) {
+    case "new":
+      return createLiveTuiSlashResult(
+        intent.command,
+        "UNSUPPORTED",
+        "session",
+        {
+          nextAction:
+            "Exit and run `sprite tui` again, or use a future runtime-owned reset API.",
+          summary:
+            "/new is not available until a runtime-owned session reset API exists."
+        }
+      );
+    case "model":
+      return createLiveTuiModelResult(runtime, intent.command);
+    case "memory":
+      return createLiveTuiMemoryResult(runtime, intent.command);
+    case "skills":
+      return createLiveTuiSkillsResult(runtime, intent.command);
+    case "tools":
+      return createLiveTuiToolsResult(intent.command);
+    case "compact":
+      return createLiveTuiCompactionResult(runtime, intent, visibleSessionId);
+    case "resume":
+      return createLiveTuiResumeResult(runtime, intent);
+    case "review-learning":
+      return createLiveTuiLearningReviewResult(
+        runtime,
+        intent.command,
+        intent.args
+      );
+  }
+}
+
+function createLiveTuiModelResult(
+  runtime: AgentRuntime,
+  command: LiveTuiRuntimeSlashIntent["command"]
+): TuiSlashCommandResult {
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return createLiveTuiSlashErrorResult(
+      command,
+      "provider",
+      bootstrapState.error
+    );
+  }
+
+  const provider = bootstrapState.value.provider;
+
+  return createLiveTuiSlashResult(command, "OK", "provider", {
+    items: [
+      {
+        label: "provider",
+        value:
+          provider?.providerName ??
+          bootstrapState.value.startup.provider ??
+          "unknown"
+      },
+      {
+        label: "model",
+        value:
+          provider?.model ?? bootstrapState.value.startup.model ?? "unknown"
+      },
+      {
+        label: "auth",
+        value:
+          provider?.auth.authenticated === true
+            ? provider.auth.secretRedacted
+              ? "configured-redacted"
+              : "configured"
+            : "missing"
+      }
+    ],
+    nextAction:
+      "Use provider configuration commands for changes; switching is out of scope here.",
+    summary: "Current provider and model state loaded."
+  });
+}
+
+function createLiveTuiMemoryResult(
+  runtime: AgentRuntime,
+  command: LiveTuiRuntimeSlashIntent["command"]
+): TuiSlashCommandResult {
+  const candidates = runtime.listMemoryCandidates();
+
+  if (!candidates.ok) {
+    return createLiveTuiSlashErrorResult(command, "memory", candidates.error);
+  }
+
+  return createLiveTuiSlashResult(command, "OK", "memory", {
+    items: candidates.value.slice(0, 5).map((candidate) => ({
+      label: candidate.candidateId,
+      value: `${candidate.memoryType} · ${candidate.lifecycleStatus} · ${candidate.confidence}`
+    })),
+    nextAction:
+      candidates.value.length === 0
+        ? "No memory candidates are waiting for review."
+        : "Use the dedicated memory review workflow for accept/edit/reject actions.",
+    summary: `${candidates.value.length} memory candidate${candidates.value.length === 1 ? "" : "s"} available.`
+  });
+}
+
+function createLiveTuiSkillsResult(
+  runtime: AgentRuntime,
+  command: LiveTuiRuntimeSlashIntent["command"]
+): TuiSlashCommandResult {
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return createLiveTuiSlashErrorResult(
+      command,
+      "skills",
+      bootstrapState.error
+    );
+  }
+
+  const skillList = listSkills({
+    cwd: bootstrapState.value.startup.cwd
+  });
+  const candidates = runtime.listSkillCandidates();
+
+  if (!candidates.ok) {
+    return createLiveTuiSlashErrorResult(command, "skills", candidates.error);
+  }
+
+  const manualSkillItems = skillList.skills.slice(0, 3).map((skill) => ({
+    label: skill.name,
+    value: `${skill.source} · ${skill.lifecycleState}`
+  }));
+  const candidateItems = candidates.value.slice(0, 3).map((candidate) => ({
+    label: candidate.name,
+    value: `${candidate.lifecycleStatus} · ${candidate.confidence}`
+  }));
+
+  return createLiveTuiSlashResult(command, "OK", "skills", {
+    items: [...manualSkillItems, ...candidateItems],
+    nextAction:
+      "Use manual skill invocation or skill candidate review commands for mutations.",
+    summary: `${skillList.skills.length} manual skill${skillList.skills.length === 1 ? "" : "s"} and ${candidates.value.length} skill candidate${candidates.value.length === 1 ? "" : "s"} available.`
+  });
+}
+
+function createLiveTuiToolsResult(
+  command: LiveTuiRuntimeSlashIntent["command"]
+): TuiSlashCommandResult {
+  const toolNames = listToolNames();
+
+  return createLiveTuiSlashResult(command, "OK", "tools", {
+    items: toolNames.map((toolName) => ({
+      label: "tool",
+      value: toolName
+    })),
+    nextAction:
+      "Slash command lists tools only; tool execution still goes through runtime policy.",
+    summary: `${toolNames.length} registered tool${toolNames.length === 1 ? "" : "s"} available.`
+  });
+}
+
+function createLiveTuiCompactionResult(
+  runtime: AgentRuntime,
+  intent: LiveTuiRuntimeSlashIntent,
+  visibleSessionId?: string
+): TuiSlashCommandResult {
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return createLiveTuiSlashErrorResult(
+      intent.command,
+      "compaction",
+      bootstrapState.error
+    );
+  }
+
+  const sessionId =
+    intent.args.sessionId ?? visibleSessionId ?? readActiveSessionId(runtime);
+
+  if (sessionId === undefined) {
+    return createLiveTuiSlashResult(
+      intent.command,
+      "MISSING_ARG",
+      "compaction",
+      {
+        nextAction:
+          "Run /compact ses_... after copying a persisted session id.",
+        summary: "No current session id is visible for compaction."
+      }
+    );
+  }
+
+  const compacted = compactSessionManually(
+    bootstrapState.value.startup.cwd,
+    sessionId
+  );
+
+  if (!compacted.ok) {
+    return createLiveTuiSlashErrorResult(
+      intent.command,
+      "compaction",
+      compacted.error
+    );
+  }
+
+  return createLiveTuiSlashResult(intent.command, "OK", "compaction", {
+    items: [
+      {
+        label: "session",
+        value: compacted.value.sessionId
+      },
+      {
+        label: "artifact",
+        value: compacted.value.artifactId
+      },
+      {
+        label: "event",
+        value: compacted.value.compactionEventId
+      }
+    ],
+    nextAction:
+      "Resume or continue the session with compacted context available.",
+    summary: "Manual session compaction completed."
+  });
+}
+
+function createLiveTuiResumeResult(
+  runtime: AgentRuntime,
+  intent: LiveTuiRuntimeSlashIntent
+): TuiSlashCommandResult {
+  const resumed = runtime.resumeSession(intent.args.sessionId ?? "");
+
+  if (!resumed.ok) {
+    return createLiveTuiSlashErrorResult(
+      intent.command,
+      "session",
+      resumed.error
+    );
+  }
+
+  return createLiveTuiSlashResult(intent.command, "OK", "session", {
+    items: [
+      {
+        label: "session",
+        value: resumed.value.sessionId
+      },
+      {
+        label: "task",
+        value: resumed.value.taskId
+      },
+      {
+        label: "status",
+        value: resumed.value.status
+      },
+      {
+        label: "events",
+        value: String(resumed.value.restoredEventCount)
+      }
+    ],
+    nextAction: "Continue from the restored runtime state.",
+    summary: "Session resumed from local persisted state."
+  });
+}
+
+function createLiveTuiLearningReviewResult(
+  runtime: AgentRuntime,
+  command: LiveTuiRuntimeSlashIntent["command"],
+  args: { sessionId?: string }
+): TuiSlashCommandResult {
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return createLiveTuiSlashErrorResult(
+      command,
+      "learning-review",
+      bootstrapState.error
+    );
+  }
+
+  const candidates = readLearningReviewLessonCandidates(
+    bootstrapState.value.startup.cwd,
+    {
+      artifactLimit: 5,
+      candidateLimit: 5,
+      sessionLimit: 20
+    }
+  );
+
+  if (!candidates.ok) {
+    return createLiveTuiSlashErrorResult(
+      command,
+      "learning-review",
+      candidates.error
+    );
+  }
+
+  const visibleCandidates =
+    args.sessionId === undefined
+      ? candidates.value
+      : candidates.value.filter(
+          (candidate) => candidate.sourceSessionId === args.sessionId
+        );
+
+  return createLiveTuiSlashResult(command, "OK", "learning-review", {
+    items: visibleCandidates
+      .slice(0, 5)
+      .map((candidate) => toLearningReviewResultItem(candidate)),
+    nextAction:
+      "Use the learning-review story/panel for full summaries; this command shows metadata only.",
+    summary: `${visibleCandidates.length} learning-review lesson candidate${visibleCandidates.length === 1 ? "" : "s"} available.`
+  });
+}
+
+function toLearningReviewResultItem(
+  candidate: StoredLearningReviewLessonCandidate
+): { label: string; value: string } {
+  return {
+    label: candidate.sourceId,
+    value: `${candidate.section} · ${candidate.sourceSessionId} · ${candidate.sourceTaskId}`
+  };
+}
+
+function readActiveSessionId(runtime: AgentRuntime): string | undefined {
+  const activeTask = runtime.getActiveTask();
+
+  return activeTask.ok && activeTask.value !== null
+    ? activeTask.value.sessionId
+    : undefined;
+}
+
+function createLiveTuiSlashResult(
+  command: TuiSlashCommandResult["command"],
+  status: TuiSlashCommandResult["status"],
+  subsystem: string,
+  options: {
+    items?: readonly { label: string; value: string }[];
+    nextAction?: string;
+    source?: string;
+    summary: string;
+  }
+): TuiSlashCommandResult {
+  return {
+    command,
+    ...(options.items === undefined
+      ? {}
+      : {
+          items: options.items.map((item) => ({
+            label: createLiveTuiSafeString(item.label).value,
+            value: createLiveTuiSafeString(item.value).value
+          }))
+        }),
+    ...(options.nextAction === undefined
+      ? {}
+      : { nextAction: createLiveTuiSafeString(options.nextAction).value }),
+    source: options.source ?? "runtime",
+    status,
+    subsystem: createLiveTuiSafeString(subsystem).value,
+    summary: createLiveTuiSafeString(options.summary).value
+  };
+}
+
+function createLiveTuiSlashErrorResult(
+  command: TuiSlashCommandResult["command"],
+  subsystem: string,
+  error: Error
+): TuiSlashCommandResult {
+  const codePrefix = error instanceof SpriteError ? `${error.code}: ` : "";
+
+  return createLiveTuiSlashResult(command, "ERROR", subsystem, {
+    nextAction: "Check command arguments and runtime state, then try again.",
+    source: "runtime",
+    summary: `${codePrefix}${error.message}`
+  });
 }
 
 async function dispatchLiveTuiApprovalInteraction(
@@ -1194,6 +1620,10 @@ function applyLiveTuiDispatchResult(
     return state;
   }
 
+  if (isTuiSlashCommandResult(result)) {
+    return state;
+  }
+
   if (!result.ok) {
     return createTuiLiveWorkbenchState({
       ...state,
@@ -1434,7 +1864,10 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
   program
     .command("tui")
     .description("launch the live Ink TUI workbench")
-    .option("--preview", "render a static TUI preview and exit (not interactive)")
+    .option(
+      "--preview",
+      "render a static TUI preview and exit (not interactive)"
+    )
     .option("--demo", "seed the TUI with local demo events and approvals")
     .action(async (options: { demo?: boolean; preview?: boolean }) => {
       const runtime = new AgentRuntime({
@@ -1549,7 +1982,10 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
     .description(
       "review a skill candidate as draft, reject, edit, or promote within a resumed session"
     )
-    .requiredOption("--action <action>", "review action: edit, draft, reject, promote")
+    .requiredOption(
+      "--action <action>",
+      "review action: edit, draft, reject, promote"
+    )
     .requiredOption("--reason <reason>", "bounded human review reason")
     .requiredOption(
       "--session <sessionId>",

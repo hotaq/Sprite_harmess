@@ -82,9 +82,7 @@ describe("live TUI CLI bridge", () => {
     });
     expect(runtime.getPendingApprovals()).toEqual([]);
     expect(
-      runtime
-        .getEventHistory(submitted.value.taskId)
-        .map((event) => event.type)
+      runtime.getEventHistory(submitted.value.taskId).map((event) => event.type)
     ).toContain("approval.resolved");
   });
 
@@ -108,7 +106,9 @@ describe("live TUI CLI bridge", () => {
   it("dispatches bounded command approval edits through modifiedRequest", async () => {
     const { projectDir, runtime, rootDir } = createRuntimeFixture();
     cleanupPaths.push(rootDir);
-    const submitted = runtime.submitInteractiveTask("edit live TUI command approval");
+    const submitted = runtime.submitInteractiveTask(
+      "edit live TUI command approval"
+    );
 
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) {
@@ -148,7 +148,9 @@ describe("live TUI CLI bridge", () => {
   it("rejects malformed command approval edit JSON instead of treating it as an executable", async () => {
     const { projectDir, runtime, rootDir } = createRuntimeFixture();
     cleanupPaths.push(rootDir);
-    const submitted = runtime.submitInteractiveTask("reject malformed live TUI command edit");
+    const submitted = runtime.submitInteractiveTask(
+      "reject malformed live TUI command edit"
+    );
 
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) {
@@ -184,8 +186,13 @@ describe("live TUI CLI bridge", () => {
     cleanupPaths.push(rootDir);
     mkdirSync(join(projectDir, "src"), { recursive: true });
     writeFileSync(join(projectDir, "package.json"), '{"name":"old"}\n');
-    writeFileSync(join(projectDir, "src", "edit.ts"), "export const value = 1;\n");
-    const submitted = runtime.submitInteractiveTask("edit live TUI file approval");
+    writeFileSync(
+      join(projectDir, "src", "edit.ts"),
+      "export const value = 1;\n"
+    );
+    const submitted = runtime.submitInteractiveTask(
+      "edit live TUI file approval"
+    );
 
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) {
@@ -236,9 +243,162 @@ describe("live TUI CLI bridge", () => {
     });
     expect(runtime.getPendingApprovals()).toEqual([]);
   });
+
+  it("dispatches runtime slash commands through safe CLI bridge results", async () => {
+    const { runtime, rootDir } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+
+    await expect(
+      handleLiveTuiInteraction(runtime, {
+        intent: {
+          args: {},
+          command: "model",
+          raw: "/model",
+          type: "runtime"
+        },
+        type: "slash-command"
+      })
+    ).resolves.toMatchObject({
+      command: "model",
+      status: "OK",
+      subsystem: "provider"
+    });
+
+    await expect(
+      handleLiveTuiInteraction(runtime, {
+        intent: {
+          args: {},
+          command: "tools",
+          raw: "/tools",
+          type: "runtime"
+        },
+        type: "slash-command"
+      })
+    ).resolves.toMatchObject({
+      command: "tools",
+      items: expect.arrayContaining([
+        expect.objectContaining({ value: "run_command" })
+      ]),
+      status: "OK",
+      subsystem: "tools"
+    });
+
+    await expect(
+      handleLiveTuiInteraction(runtime, {
+        intent: {
+          args: {},
+          command: "compact",
+          raw: "/compact",
+          type: "runtime"
+        },
+        type: "slash-command"
+      })
+    ).resolves.toMatchObject({
+      command: "compact",
+      status: "MISSING_ARG",
+      subsystem: "compaction"
+    });
+  });
+
+  it("routes resume and visible-session compaction through runtime services", async () => {
+    const { homeDir, projectDir, rootDir, runtime } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+    const submitted = runtime.submitInteractiveTask(
+      "persist live slash session"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const resumeRuntime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir
+    });
+
+    await expect(
+      handleLiveTuiInteraction(resumeRuntime, {
+        intent: {
+          args: {
+            sessionId: submitted.value.sessionId
+          },
+          command: "resume",
+          raw: `/resume ${submitted.value.sessionId}`,
+          type: "runtime"
+        },
+        type: "slash-command"
+      })
+    ).resolves.toMatchObject({
+      command: "resume",
+      status: "OK",
+      subsystem: "session"
+    });
+
+    const compactRuntime = new AgentRuntime({
+      cwd: projectDir,
+      homeDir
+    });
+
+    await expect(
+      handleLiveTuiInteraction(compactRuntime, {
+        intent: {
+          args: {},
+          command: "compact",
+          raw: "/compact",
+          type: "runtime"
+        },
+        type: "slash-command",
+        visibleSessionId: submitted.value.sessionId
+      })
+    ).resolves.toMatchObject({
+      command: "compact",
+      status: "OK",
+      subsystem: "compaction"
+    });
+  });
+
+  it("keeps memory, skills, learning review, and unsupported slash results bounded", async () => {
+    const { runtime, rootDir } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+
+    for (const command of ["memory", "skills", "review-learning"] as const) {
+      await expect(
+        handleLiveTuiInteraction(runtime, {
+          intent: {
+            args: {},
+            command,
+            raw: `/${command}`,
+            type: "runtime"
+          },
+          type: "slash-command"
+        })
+      ).resolves.toMatchObject({
+        command,
+        status: "OK"
+      });
+    }
+
+    await expect(
+      handleLiveTuiInteraction(runtime, {
+        intent: {
+          args: {},
+          command: "new",
+          raw: "/new",
+          type: "runtime"
+        },
+        type: "slash-command"
+      })
+    ).resolves.toMatchObject({
+      command: "new",
+      status: "UNSUPPORTED",
+      subsystem: "session"
+    });
+  });
 });
 
 function createRuntimeFixture(): {
+  homeDir: string;
   projectDir: string;
   rootDir: string;
   runtime: AgentRuntime;
@@ -254,6 +414,7 @@ function createRuntimeFixture(): {
   });
 
   return {
+    homeDir,
     projectDir,
     rootDir,
     runtime

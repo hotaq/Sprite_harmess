@@ -36,6 +36,14 @@ export type ToolName =
   | "run_command"
   | "search_files";
 
+const TOOL_NAMES: readonly ToolName[] = [
+  "apply_patch",
+  "list_files",
+  "read_file",
+  "run_command",
+  "search_files"
+];
+
 export type ToolExecutionStatus = "completed";
 
 export type ToolExecutionResult =
@@ -113,6 +121,10 @@ export class ToolRegistry {
 
 export function createToolRegistry(): ToolRegistry {
   return new ToolRegistry();
+}
+
+export function listToolNames(): readonly ToolName[] {
+  return TOOL_NAMES;
 }
 
 export type {
