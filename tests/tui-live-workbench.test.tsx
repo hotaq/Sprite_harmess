@@ -348,6 +348,66 @@ describe("live Ink TUI workbench", () => {
     });
   });
 
+  it("dismisses stale approval prompts when runtime pending approvals change", async () => {
+    const interactions: TuiLiveWorkbenchInteraction[] = [];
+    const runtimeState = createTuiStartupState({
+      bootstrapState: bootstrapState({})
+    });
+    const initialState = createTuiLiveWorkbenchState({
+      runtimeState,
+      workbench: createTuiWorkbenchView({
+        pendingApprovals: [approvalRequest({ approvalRequestId: "appr-stale" })]
+      })
+    });
+    const view = render(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => interactions.push(interaction)}
+        state={initialState}
+      />
+    );
+
+    view.stdin.write("a");
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").toContain("Send APPROVE for appr-stale?");
+
+    view.rerender(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => interactions.push(interaction)}
+        state={createTuiLiveWorkbenchState({
+          runtimeState,
+          workbench: createTuiWorkbenchView()
+        })}
+      />
+    );
+    await waitForInkInput();
+
+    expect(view.lastFrame() ?? "").not.toContain("Send APPROVE");
+
+    view.stdin.write("y");
+    await waitForInkInput();
+
+    expect(interactions).toEqual([]);
+  });
+
+  it("renders live dispatch errors as visible timeline feedback", () => {
+    const liveState = createTuiLiveWorkbenchState({
+      latestDispatchError: {
+        redacted: false,
+        value: "TUI_APPROVAL_NOT_PENDING: Approval is no longer pending."
+      },
+      runtimeState: createTuiStartupState({
+        bootstrapState: bootstrapState({})
+      }),
+      workbench: createTuiWorkbenchView()
+    });
+    const view = render(<TuiWorkbenchApp state={liveState} />);
+    const frame = view.lastFrame() ?? "";
+
+    expect(frame).toContain("dispatch error");
+    expect(frame).toContain("Approval is no longer pending.");
+  });
+
   it("echoes submitted prompts in the chat area without leaking secrets", async () => {
     const interactions: TuiLiveWorkbenchInteraction[] = [];
     const liveState = createTuiLiveWorkbenchState({

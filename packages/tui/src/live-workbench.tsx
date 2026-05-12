@@ -13,6 +13,7 @@ import { containsSecretLikeValue, createRedactedPreview } from "@sprite/shared";
 import type {
   TuiLiveWorkbenchState,
   TuiMessageStreamItem,
+  TuiWorkbenchApprovalView,
   TuiWorkbenchActionLabel,
   TuiSubmitIntentMode
 } from "./index.js";
@@ -62,6 +63,16 @@ export type TuiWorkbenchStateSubscriber = (
 ) => () => void;
 
 type TuiActionPrompt =
+  | {
+      type: "cancel";
+    }
+  | {
+      action: TuiLiveWorkbenchApprovalAction;
+      approvalRequestId: string;
+      type: "approval";
+    };
+
+type TuiVisibleActionPrompt =
   | {
       type: "cancel";
     }
@@ -146,6 +157,15 @@ export function TuiWorkbenchApp({
     setDraftTextState(value);
   };
 
+  useEffect(() => {
+    if (
+      actionPrompt?.type === "approval" &&
+      resolveVisibleActionPrompt(actionPrompt, state.workbench.approvals) === null
+    ) {
+      setActionPrompt(null);
+    }
+  }, [actionPrompt, state.workbench.approvals]);
+
   useInput((input, key) => {
     if (actionPrompt !== null) {
       handleActionPromptInput({
@@ -158,9 +178,21 @@ export function TuiWorkbenchApp({
             return;
           }
 
+          const currentApprovalPrompt = resolveVisibleActionPrompt(
+            confirmedPrompt,
+            state.workbench.approvals
+          );
+
+          if (
+            currentApprovalPrompt === null ||
+            currentApprovalPrompt.type !== "approval"
+          ) {
+            return;
+          }
+
           onInteraction?.({
-            action: confirmedPrompt.action,
-            approvalRequestId: confirmedPrompt.approvalRequestId,
+            action: currentApprovalPrompt.action,
+            approvalRequestId: currentApprovalPrompt.approvalRequestId,
             type: "approval"
           });
         },
@@ -181,12 +213,18 @@ export function TuiWorkbenchApp({
       draftRef.current.length === 0 &&
       state.workbench.approvals.length > 0
     ) {
+      const approval = state.workbench.approvals[0];
+
+      if (
+        approval === undefined ||
+        !approval.actions.includes(toApprovalActionLabel(approvalAction))
+      ) {
+        return;
+      }
+
       setActionPrompt({
         action: approvalAction,
-        approvalRequestLabel:
-          state.workbench.approvals[0]?.approvalRequestId.value ?? "",
-        approvalRequestId:
-          state.workbench.approvals[0]?.controlApprovalRequestId ?? "",
+        approvalRequestId: approval.controlApprovalRequestId,
         type: "approval"
       });
       return;
@@ -252,10 +290,14 @@ export function TuiWorkbenchApp({
     }
   });
   const slashCommandSuggestions = getSlashCommandSuggestions(draftText);
+  const visibleActionPrompt =
+    actionPrompt?.type === "approval"
+      ? resolveVisibleActionPrompt(actionPrompt, state.workbench.approvals)
+      : actionPrompt;
   const conversationActionPrompt =
-    actionPrompt?.type === "cancel" ? actionPrompt : null;
+    visibleActionPrompt?.type === "cancel" ? visibleActionPrompt : null;
   const dockActionPrompt =
-    actionPrompt?.type === "approval" ? actionPrompt : null;
+    visibleActionPrompt?.type === "approval" ? visibleActionPrompt : null;
 
   return (
     <Box flexDirection="column" minHeight={rows} justifyContent="space-between">
@@ -264,6 +306,7 @@ export function TuiWorkbenchApp({
         <DetailsSection detailPanel={detailPanel} state={state} />
         <SubmittedPromptsSection prompts={submittedPrompts} />
         <ActionPromptSection prompt={conversationActionPrompt} />
+        <DispatchStatusSection state={state} />
         <ActivitySection state={state} />
         <ApprovalsSection state={state} />
       </Box>
@@ -321,6 +364,9 @@ function HeaderSection({
 }: {
   state: TuiLiveWorkbenchState;
 }): React.JSX.Element {
+  const timelineLead = formatSessionTimelineLead(state);
+  const timelineSummary = formatSessionTimelineSummary(state);
+
   return (
     <Box flexDirection="column">
       <Text>
@@ -336,7 +382,7 @@ function HeaderSection({
       <Box flexDirection="column">
         <Text>
           <Text color={BRAND_ACCENT_COLOR}>│ </Text>
-          Initializing session...
+          {timelineLead}
         </Text>
         <Text>
           <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
@@ -358,7 +404,7 @@ function HeaderSection({
         </Text>
         <Text>
           <Text color={BRAND_ACCENT_COLOR}>│ </Text>
-          {`Session ready. events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length}`}
+          {timelineSummary}
         </Text>
         <Text dimColor>
           <Text color={BRAND_ACCENT_COLOR}>│ </Text>
@@ -367,6 +413,20 @@ function HeaderSection({
       </Box>
     </Box>
   );
+}
+
+function formatSessionTimelineLead(state: TuiLiveWorkbenchState): string {
+  if (state.runtimeState.events.latestType !== null) {
+    return `Latest event: ${state.runtimeState.events.latestType}`;
+  }
+
+  return state.runtimeState.session.status === "startup"
+    ? "Initializing session..."
+    : `Monitoring session ${state.runtimeState.session.status}...`;
+}
+
+function formatSessionTimelineSummary(state: TuiLiveWorkbenchState): string {
+  return `Session ${state.runtimeState.session.status}. events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length}`;
 }
 
 function DetailsSection({
@@ -557,6 +617,40 @@ function ActivityCard({
   );
 }
 
+function DispatchStatusSection({
+  state
+}: {
+  state: TuiLiveWorkbenchState;
+}): React.JSX.Element | null {
+  if (state.latestDispatchError !== undefined) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="red">
+          <Text color="red">│ </Text>
+          dispatch error
+        </Text>
+        <Text dimColor>
+          <Text color="red">│ </Text>
+          {state.latestDispatchError.value}
+        </Text>
+      </Box>
+    );
+  }
+
+  if (state.latestDispatchResult !== undefined) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="green">
+          <Text color="green">│ </Text>
+          {`dispatch ok · ${state.latestDispatchResult.intentType} -> ${state.latestDispatchResult.status}`}
+        </Text>
+      </Box>
+    );
+  }
+
+  return null;
+}
+
 function ApprovalsSection({
   state
 }: {
@@ -603,7 +697,7 @@ function ApprovalsSection({
 function ActionPromptSection({
   prompt
 }: {
-  prompt: TuiActionPrompt | null;
+  prompt: TuiVisibleActionPrompt | null;
 }): React.JSX.Element | null {
   if (prompt === null) {
     return null;
@@ -798,6 +892,47 @@ function formatApprovalShortcutLabels(
   }
 
   return labels.join(" · ");
+}
+
+function resolveVisibleActionPrompt(
+  actionPrompt: TuiActionPrompt,
+  approvals: readonly TuiWorkbenchApprovalView[]
+): TuiVisibleActionPrompt | null {
+  if (actionPrompt.type === "cancel") {
+    return actionPrompt;
+  }
+
+  const approval = approvals.find(
+    (pendingApproval) =>
+      pendingApproval.controlApprovalRequestId === actionPrompt.approvalRequestId
+  );
+
+  if (
+    approval === undefined ||
+    !approval.actions.includes(toApprovalActionLabel(actionPrompt.action))
+  ) {
+    return null;
+  }
+
+  return {
+    ...actionPrompt,
+    approvalRequestLabel: approval.approvalRequestId.value
+  };
+}
+
+function toApprovalActionLabel(
+  action: TuiLiveWorkbenchApprovalAction
+): TuiWorkbenchActionLabel {
+  switch (action) {
+    case "allow":
+      return "APPROVE";
+    case "deny":
+      return "DENY";
+    case "edit":
+      return "EDIT";
+    case "timeout":
+      return "TIMEOUT";
+  }
 }
 
 function createPromptRule(columns: number): string {

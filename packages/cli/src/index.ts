@@ -37,10 +37,19 @@ import {
   dispatchTuiUserIntent,
   runTuiWorkbench,
   type TuiApprovalRequestSummary,
+  type TuiDispatchResult,
   type TuiLiveWorkbenchInteraction,
+  type TuiSafeString,
   type TuiLiveWorkbenchState,
   type TuiWorkbenchStateSubscriber
 } from "@sprite/tui";
+import {
+  containsSecretLikeValue,
+  createRedactedPreview,
+  err,
+  SpriteError,
+  type Result
+} from "@sprite/shared";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -660,6 +669,7 @@ interface InitialTuiStateOptions {
 }
 
 type RuntimePendingApproval = ReturnType<AgentRuntime["getPendingApprovals"]>[number];
+type LiveTuiInteractionResult = Result<TuiDispatchResult> | null;
 
 function createInitialTuiPreview(
   runtime: AgentRuntime,
@@ -842,8 +852,9 @@ async function runLiveTuiCommand(
   let liveState = createInitialTuiState(runtime, options);
   const liveEvents = [...liveState.events];
   let stateListener: ((state: TuiLiveWorkbenchState) => void) | undefined;
-  const publishLiveState = (): void => {
+  const publishLiveState = (result?: LiveTuiInteractionResult): void => {
     liveState = createCurrentLiveTuiState(runtime, liveState, liveEvents);
+    liveState = applyLiveTuiDispatchResult(liveState, result);
     stateListener?.(liveState);
   };
   const subscribeToState: TuiWorkbenchStateSubscriber = (listener) => {
@@ -859,10 +870,13 @@ async function runLiveTuiCommand(
     };
   };
   const instance = runTuiWorkbench({
-    onInteraction: (interaction) =>
-      void handleLiveTuiInteraction(runtime, interaction).finally(
-        publishLiveState
-      ),
+    onInteraction: (interaction) => {
+      void handleLiveTuiInteraction(runtime, interaction)
+        .then((result) => publishLiveState(result))
+        .catch((error: unknown) => {
+          publishLiveState(err(toLiveTuiDispatchError(error)));
+        });
+    },
     state: liveState,
     subscribeToState
   });
@@ -873,16 +887,13 @@ async function runLiveTuiCommand(
 export function handleLiveTuiInteraction(
   runtime: AgentRuntime,
   interaction: TuiLiveWorkbenchInteraction
-): Promise<void> {
+): Promise<LiveTuiInteractionResult> {
   if (interaction.type === "exit") {
-    return Promise.resolve();
+    return Promise.resolve(null);
   }
 
   if (interaction.type === "cancel") {
-    return dispatchTuiUserIntent(
-      runtime,
-      createTuiCancelIntent(interaction.note)
-    ).then(() => undefined);
+    return dispatchTuiUserIntent(runtime, createTuiCancelIntent(interaction.note));
   }
 
   if (interaction.type === "approval") {
@@ -894,18 +905,23 @@ export function handleLiveTuiInteraction(
   });
 
   if (!intent.ok) {
-    return Promise.resolve();
+    return Promise.resolve(err(intent.error));
   }
 
-  return dispatchTuiUserIntent(runtime, intent.value).then(() => undefined);
+  return dispatchTuiUserIntent(runtime, intent.value);
 }
 
 async function dispatchLiveTuiApprovalInteraction(
   runtime: AgentRuntime,
   interaction: Extract<TuiLiveWorkbenchInteraction, { type: "approval" }>
-): Promise<void> {
+): Promise<Result<TuiDispatchResult>> {
   if (interaction.action === "edit") {
-    return;
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_EDIT_UNSUPPORTED",
+        "Live approval edits require a bounded edit prompt before dispatch."
+      )
+    );
   }
 
   const approval = runtime
@@ -916,7 +932,12 @@ async function dispatchLiveTuiApprovalInteraction(
     );
 
   if (approval === undefined) {
-    return;
+    return err(
+      new SpriteError(
+        "TUI_APPROVAL_NOT_PENDING",
+        "Approval is no longer pending."
+      )
+    );
   }
 
   const intent = createTuiApprovalResponseIntent(
@@ -929,10 +950,65 @@ async function dispatchLiveTuiApprovalInteraction(
   );
 
   if (!intent.ok) {
-    return;
+    return err(intent.error);
   }
 
-  await dispatchTuiUserIntent(runtime, intent.value);
+  return dispatchTuiUserIntent(runtime, intent.value);
+}
+
+function applyLiveTuiDispatchResult(
+  state: TuiLiveWorkbenchState,
+  result: LiveTuiInteractionResult | undefined
+): TuiLiveWorkbenchState {
+  if (result === undefined || result === null) {
+    return state;
+  }
+
+  if (!result.ok) {
+    return createTuiLiveWorkbenchState({
+      ...state,
+      latestDispatchError: createLiveTuiSafeString(
+        formatLiveTuiDispatchError(result.error)
+      ),
+      latestDispatchResult: undefined
+    });
+  }
+
+  return createTuiLiveWorkbenchState({
+    ...state,
+    latestDispatchError: undefined,
+    latestDispatchResult: result.value
+  });
+}
+
+function formatLiveTuiDispatchError(error: Error): string {
+  return error instanceof SpriteError
+    ? `${error.code}: ${error.message}`
+    : error.message;
+}
+
+function createLiveTuiSafeString(value: string): TuiSafeString {
+  const preview = createRedactedPreview(value, 96);
+
+  return {
+    redacted: containsSecretLikeValue(value),
+    value: preview.length === 0 ? "unknown" : preview
+  };
+}
+
+function toLiveTuiDispatchError(error: unknown): SpriteError {
+  if (error instanceof SpriteError) {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return new SpriteError("TUI_LIVE_DISPATCH_FAILED", error.message);
+  }
+
+  return new SpriteError(
+    "TUI_LIVE_DISPATCH_FAILED",
+    `Live TUI dispatch failed: ${String(error)}`
+  );
 }
 
 function formatPathList(paths: string[]): string[] {

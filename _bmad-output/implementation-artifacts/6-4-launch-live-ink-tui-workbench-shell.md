@@ -1,6 +1,6 @@
 # Story 6.4: Launch Live Ink TUI Workbench Shell
 
-Status: done
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -264,6 +264,9 @@ GPT-5.5
 - Follow-up review found the live CLI did not refresh from runtime events after submit/cancel/approval. Added a live state subscriber so runtime events rebuild the displayed workbench from runtime truth.
 - Follow-up review found live approval keys were display-only and did not dispatch through the runtime approval path. Approval prompts now keep a bounded display label separate from the raw control approval ID, and allow/deny/timeout dispatch through Story 6.3 intents.
 - Follow-up review found the `E edit` shortcut was exposed before the live bounded edit flow existed. The live UI now only advertises/accepts approval actions currently supported by the control surface.
+- Heavy review on 2026-05-12 moved this story back to `review`: the live shell is safer with edit hidden, but Story 6.4 cannot claim full approval-action completion until bounded live edit support exists or the story criteria are explicitly narrowed.
+- Heavy review also found live dispatch failures were swallowed. The CLI bridge now preserves dispatch results/errors in live state, and the renderer shows compact dispatch feedback.
+- Heavy review found cached approval prompts could outlive runtime pending approvals. Approval confirmation now re-validates against current runtime-derived approvals and dismisses stale prompts.
 
 ### Implementation Plan
 
@@ -307,6 +310,9 @@ GPT-5.5
 - Matched the prompt composer outline color to the `Sprite Harness` header accent and kept only horizontal rules so the input/footer area stays visually close to the terminal reference.
 - Wired live TUI state updates to runtime event subscriptions, so submitted tasks, cancellations, approvals, and tool activity are reflected in the live workbench after dispatch.
 - Routed live approval allow/deny/timeout actions through raw runtime approval IDs while still rendering bounded display IDs; edit remains hidden until a safe bounded edit prompt is implemented.
+- Live dispatch failures now surface as timeline feedback instead of disappearing, including stale approval choices and runtime approval denial/timeout results.
+- Approval confirmation prompts now stay tied to current runtime-derived pending approvals and are dismissed before dispatch if the approval disappears or the action is no longer available.
+- Remaining review gap: bounded live approval edit UI must be designed/implemented before Story 6.4 can return to `done`.
 
 ### File List
 
@@ -350,3 +356,4 @@ GPT-5.5
 - 2026-05-12: Replaced boxed cancel confirmation with inline red interruption text below the sent prompt card.
 - 2026-05-12: Converted live startup, submitted prompts, and activity rendering to a command-timeline style with matching header/input accent color.
 - 2026-05-12: Fixed live event subscription and approval dispatch regressions; raw approval IDs now stay internal while bounded labels remain visible.
+- 2026-05-12: Heavy review moved Story 6.4 back to review, surfaced live dispatch errors, and prevented stale approval prompt dispatch.

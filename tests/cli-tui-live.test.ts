@@ -68,18 +68,41 @@ describe("live TUI CLI bridge", () => {
       return;
     }
 
-    await handleLiveTuiInteraction(runtime, {
+    const result = await handleLiveTuiInteraction(runtime, {
       action: "deny",
       approvalRequestId: approval.approvalRequestId,
       type: "approval"
     });
 
+    expect(result).toMatchObject({
+      error: {
+        code: "APPROVAL_DENIED"
+      },
+      ok: false
+    });
     expect(runtime.getPendingApprovals()).toEqual([]);
     expect(
       runtime
         .getEventHistory(submitted.value.taskId)
         .map((event) => event.type)
     ).toContain("approval.resolved");
+  });
+
+  it("reports stale approval choices instead of silently ignoring them", async () => {
+    const { runtime, rootDir } = createRuntimeFixture();
+    cleanupPaths.push(rootDir);
+    const result = await handleLiveTuiInteraction(runtime, {
+      action: "allow",
+      approvalRequestId: "missing-approval",
+      type: "approval"
+    });
+
+    expect(result).toMatchObject({
+      error: {
+        code: "TUI_APPROVAL_NOT_PENDING"
+      },
+      ok: false
+    });
   });
 });
 
