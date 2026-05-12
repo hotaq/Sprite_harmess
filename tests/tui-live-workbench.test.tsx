@@ -70,7 +70,10 @@ describe("live Ink TUI workbench", () => {
     expect(frame).toContain("Shift+Enter/Ctrl+J newline");
     expect(frame).toContain("Esc cancel");
     expect(frame).not.toContain("details hidden");
-    expect(frame).toContain("A approve · D deny · E edit · T timeout");
+    expect(frame).toContain("A approve · D deny · T timeout");
+    expect(frame).not.toContain("E edit");
+    expect(frame).not.toContain("│ Type a prompt");
+    expect(frame).toContain("─");
     expect(frame).not.toContain("[Runtime]");
     expect(frame).not.toContain("[Context]");
     expect(frame).not.toContain("[Activity]");
@@ -161,6 +164,36 @@ describe("live Ink TUI workbench", () => {
     expect(view.lastFrame() ?? "").toContain("[Runtime]");
     expect(view.lastFrame() ?? "").toContain("[Context]");
     expect(interactions).toHaveLength(2);
+  });
+
+  it("updates visible activity when the parent live state receives runtime events", () => {
+    const runtimeState = createTuiStartupState({
+      bootstrapState: bootstrapState({})
+    });
+    const initialState = createTuiLiveWorkbenchState({
+      runtimeState,
+      workbench: createTuiWorkbenchView()
+    });
+    const view = render(<TuiWorkbenchApp state={initialState} />);
+
+    expect(view.lastFrame() ?? "").not.toContain("task.waiting");
+
+    const nextState = createTuiLiveWorkbenchState({
+      events: [
+        runtimeEvent("task.waiting", {
+          message: "Waiting for steering.",
+          reason: "steering-required"
+        })
+      ],
+      runtimeState,
+      workbench: createTuiWorkbenchView()
+    });
+    view.rerender(<TuiWorkbenchApp state={nextState} />);
+
+    const frame = view.lastFrame() ?? "";
+
+    expect(frame).toContain("task.waiting");
+    expect(frame).toContain("Waiting for steering.");
   });
 
   it("renders cancel interruption below the submitted prompt instead of inside the input box", async () => {
@@ -272,6 +305,47 @@ describe("live Ink TUI workbench", () => {
         type: "exit"
       }
     ]);
+  });
+
+  it("confirms approvals with the raw control id instead of the bounded display id", async () => {
+    const interactions: TuiLiveWorkbenchInteraction[] = [];
+    const longApprovalRequestId = `appr-${"x".repeat(140)}`;
+    const liveState = createTuiLiveWorkbenchState({
+      runtimeState: createTuiStartupState({
+        bootstrapState: bootstrapState({})
+      }),
+      workbench: createTuiWorkbenchView({
+        pendingApprovals: [
+          approvalRequest({
+            approvalRequestId: longApprovalRequestId
+          })
+        ]
+      })
+    });
+    const view = render(
+      <TuiWorkbenchApp
+        onInteraction={(interaction) => interactions.push(interaction)}
+        state={liveState}
+      />
+    );
+
+    view.stdin.write("a");
+    await waitForInkInput();
+
+    const approvalFrame = view.lastFrame() ?? "";
+
+    expect(approvalFrame).toContain("Send APPROVE for");
+    expect(approvalFrame).toContain("appr-");
+    expect(approvalFrame).not.toContain(longApprovalRequestId);
+
+    view.stdin.write("y");
+    await waitForInkInput();
+
+    expect(interactions).toContainEqual({
+      action: "allow",
+      approvalRequestId: longApprovalRequestId,
+      type: "approval"
+    });
   });
 
   it("echoes submitted prompts in the chat area without leaking secrets", async () => {

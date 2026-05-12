@@ -25,10 +25,12 @@ import {
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
 import {
+  createTuiApprovalResponseIntent,
   createTuiCancelIntent,
   createTuiCommandPreview,
   createTuiInputDraft,
   createTuiLiveWorkbenchState,
+  createTuiRuntimeState,
   createTuiStartupState,
   createTuiSubmitIntent,
   createTuiWorkbenchView,
@@ -36,7 +38,8 @@ import {
   runTuiWorkbench,
   type TuiApprovalRequestSummary,
   type TuiLiveWorkbenchInteraction,
-  type TuiLiveWorkbenchState
+  type TuiLiveWorkbenchState,
+  type TuiWorkbenchStateSubscriber
 } from "@sprite/tui";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
@@ -656,6 +659,8 @@ interface InitialTuiStateOptions {
   demo?: boolean;
 }
 
+type RuntimePendingApproval = ReturnType<AgentRuntime["getPendingApprovals"]>[number];
+
 function createInitialTuiPreview(
   runtime: AgentRuntime,
   options: InitialTuiStateOptions = {}
@@ -685,6 +690,68 @@ function createInitialTuiState(
       pendingApprovals: demoEnabled ? createTuiDemoApprovals() : []
     })
   });
+}
+
+export function createCurrentLiveTuiState(
+  runtime: AgentRuntime,
+  previousState: TuiLiveWorkbenchState,
+  events: readonly RuntimeEventRecord[]
+): TuiLiveWorkbenchState {
+  const activeTask = runtime.getActiveTask();
+  const runtimeState =
+    activeTask.ok && activeTask.value !== null
+      ? createTuiRuntimeState({
+          events,
+          flow: activeTask.value
+        })
+      : {
+          ...previousState.runtimeState,
+          events: {
+            count: events.length,
+            latestType: events.at(-1)?.type ?? null
+          }
+        };
+
+  return createTuiLiveWorkbenchState({
+    events,
+    latestDispatchError: previousState.latestDispatchError,
+    latestDispatchResult: previousState.latestDispatchResult,
+    runtimeState,
+    workbench: createTuiWorkbenchView({
+      draft: previousState.workbench.input,
+      mode:
+        activeTask.ok &&
+        activeTask.value !== null &&
+        isSteerableTaskStatus(activeTask.value.status)
+          ? "steer-task"
+          : "submit-task",
+      pendingApprovals: runtime
+        .getPendingApprovals()
+        .map(createTuiApprovalSummaryFromRuntimeApproval)
+    })
+  });
+}
+
+function isSteerableTaskStatus(status: string): boolean {
+  return status === "planned" || status === "waiting-for-input";
+}
+
+function createTuiApprovalSummaryFromRuntimeApproval(
+  approval: RuntimePendingApproval
+): TuiApprovalRequestSummary {
+  return {
+    ...(approval.affectedFiles === undefined
+      ? {}
+      : { affectedFiles: approval.affectedFiles }),
+    allowedActions: approval.allowedActions,
+    approvalRequestId: approval.approvalRequestId,
+    reason: approval.reason,
+    requestType: approval.requestType,
+    riskLevel: approval.riskLevel,
+    summary: approval.summary,
+    timeoutMs: approval.timeoutMs,
+    ...(approval.toolCallId === undefined ? {} : { toolCallId: approval.toolCallId })
+  };
 }
 
 function createTuiDemoEvents(cwd: string): RuntimeEventRecord[] {
@@ -772,31 +839,54 @@ async function runLiveTuiCommand(
   runtime: AgentRuntime,
   options: InitialTuiStateOptions
 ): Promise<void> {
-  const liveState = createInitialTuiState(runtime, options);
+  let liveState = createInitialTuiState(runtime, options);
+  const liveEvents = [...liveState.events];
+  let stateListener: ((state: TuiLiveWorkbenchState) => void) | undefined;
+  const publishLiveState = (): void => {
+    liveState = createCurrentLiveTuiState(runtime, liveState, liveEvents);
+    stateListener?.(liveState);
+  };
+  const subscribeToState: TuiWorkbenchStateSubscriber = (listener) => {
+    stateListener = listener;
+    const unsubscribe = runtime.subscribeToEvents((event) => {
+      liveEvents.push(event);
+      queueMicrotask(publishLiveState);
+    });
+
+    return () => {
+      stateListener = undefined;
+      unsubscribe();
+    };
+  };
   const instance = runTuiWorkbench({
     onInteraction: (interaction) =>
-      handleLiveTuiInteraction(runtime, interaction),
-    state: liveState
+      void handleLiveTuiInteraction(runtime, interaction).finally(
+        publishLiveState
+      ),
+    state: liveState,
+    subscribeToState
   });
 
   await instance.waitUntilExit();
 }
 
-function handleLiveTuiInteraction(
+export function handleLiveTuiInteraction(
   runtime: AgentRuntime,
   interaction: TuiLiveWorkbenchInteraction
-): void {
+): Promise<void> {
   if (interaction.type === "exit") {
-    return;
+    return Promise.resolve();
   }
 
   if (interaction.type === "cancel") {
-    void dispatchTuiUserIntent(runtime, createTuiCancelIntent(interaction.note));
-    return;
+    return dispatchTuiUserIntent(
+      runtime,
+      createTuiCancelIntent(interaction.note)
+    ).then(() => undefined);
   }
 
   if (interaction.type === "approval") {
-    return;
+    return dispatchLiveTuiApprovalInteraction(runtime, interaction);
   }
 
   const intent = createTuiSubmitIntent(createTuiInputDraft(interaction.text), {
@@ -804,10 +894,45 @@ function handleLiveTuiInteraction(
   });
 
   if (!intent.ok) {
+    return Promise.resolve();
+  }
+
+  return dispatchTuiUserIntent(runtime, intent.value).then(() => undefined);
+}
+
+async function dispatchLiveTuiApprovalInteraction(
+  runtime: AgentRuntime,
+  interaction: Extract<TuiLiveWorkbenchInteraction, { type: "approval" }>
+): Promise<void> {
+  if (interaction.action === "edit") {
     return;
   }
 
-  void dispatchTuiUserIntent(runtime, intent.value);
+  const approval = runtime
+    .getPendingApprovals()
+    .find(
+      (pendingApproval) =>
+        pendingApproval.approvalRequestId === interaction.approvalRequestId
+    );
+
+  if (approval === undefined) {
+    return;
+  }
+
+  const intent = createTuiApprovalResponseIntent(
+    createTuiApprovalSummaryFromRuntimeApproval(approval),
+    interaction.action === "allow"
+      ? { action: "allow" }
+      : interaction.action === "deny"
+        ? { action: "deny" }
+        : { action: "timeout" }
+  );
+
+  if (!intent.ok) {
+    return;
+  }
+
+  await dispatchTuiUserIntent(runtime, intent.value);
 }
 
 function formatPathList(paths: string[]): string[] {

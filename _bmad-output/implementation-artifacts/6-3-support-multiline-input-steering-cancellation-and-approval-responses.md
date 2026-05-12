@@ -1,6 +1,6 @@
 # Story 6.3: Support Multiline Input, Steering, Cancellation, and Approval Responses
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -215,6 +215,9 @@ GPT-5.5
 - Red test confirmed missing Story 6.3 TUI control exports: `npm test -- --run tests/tui-control-intents.test.ts` failed with `createTuiInputDraft is not a function` and `createTuiApprovalResponseIntent is not a function`.
 - Implemented pure TUI control intents, runtime-control dispatch, approval response construction, and safe workbench view/formatter in `packages/tui/src/index.ts`; no runtime contract, CLI entrypoint, Ink/React dependency, or package lockfile change was added.
 - Validation passed: targeted TUI control tests, TUI state/message regression tests, typecheck, full Vitest suite, `git diff --check`, GitNexus analyze, and GitNexus status.
+- Follow-up live-TUI review found Story 6.3 approval intents were correctly defined but not fully exercised by the live CLI adapter. Added runtime-fixture coverage proving live approval deny resolves a pending runtime approval and removes it from pending approvals.
+- Follow-up live-TUI review found the visible bounded approval ID could accidentally be used as the control ID. The workbench view now carries both `approvalRequestId` for display and `controlApprovalRequestId` for dispatch.
+- Follow-up live-TUI review kept approval edit support out of the live shortcut path until a bounded edit-prompt flow exists; the underlying Story 6.3 edit intent helpers remain covered for command/file-edit semantics.
 
 ### Implementation Plan
 
@@ -234,15 +237,23 @@ GPT-5.5
 - Approval helpers preserve the Story 2.6 contract: command approval edits use `modifiedRequest`; file-edit approval edits use `modifiedToolCall` for `apply_patch`; timeout maps to runtime default-deny response shape.
 - Workbench view formatting exposes non-color-only `SUBMIT`, `STEER`, `CANCEL`, `APPROVE`, `DENY`, `EDIT`, and `TIMEOUT` labels while redacting secret-looking input and approval text.
 - No Ink/React dependency was added; this story is satisfied through pure TUI interaction contracts, runtime fixture tests, and a deterministic safe formatter.
+- Live TUI approval actions now dispatch through the Story 6.3 control-intent path instead of stopping at UI interaction objects.
+- Display-bounded approval IDs are separated from raw runtime control IDs, preserving safe rendering without breaking `AgentRuntime.respondToApproval()`.
+- Added CLI live runtime-fixture coverage for runtime event refresh and approval resolution through the live TUI adapter.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/6-3-support-multiline-input-steering-cancellation-and-approval-responses.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `packages/cli/src/index.ts`
 - `packages/tui/src/index.ts`
+- `packages/tui/src/live-workbench.tsx`
+- `tests/cli-tui-live.test.ts`
+- `tests/tui-live-workbench.test.tsx`
 - `tests/tui-control-intents.test.ts`
 
 ### Change Log
 
 - 2026-05-11: Created Story 6.3 with implementation context for TUI control intents, runtime dispatch, multiline input, cancellation, and approval responses.
 - 2026-05-11: Implemented Story 6.3 TUI control intents, runtime dispatch, approval response helpers, safe workbench view, and validation tests; marked story ready for review.
+- 2026-05-12: Closed live-TUI review gaps by separating display/control approval IDs and proving live CLI approval dispatch through runtime fixtures.

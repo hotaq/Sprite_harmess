@@ -13,11 +13,14 @@ import { containsSecretLikeValue, createRedactedPreview } from "@sprite/shared";
 import type {
   TuiLiveWorkbenchState,
   TuiMessageStreamItem,
+  TuiWorkbenchActionLabel,
   TuiSubmitIntentMode
 } from "./index.js";
 
 const BLANK_DRAFT_LINE = " ";
+const BRAND_ACCENT_COLOR = "cyan";
 const EMPTY_DRAFT_PLACEHOLDER = "Type a prompt…";
+const PROMPT_RULE_CHARACTER = "─";
 
 export type TuiLiveWorkbenchApprovalAction =
   | "allow"
@@ -51,7 +54,12 @@ export interface TuiWorkbenchAppProps {
 
 export interface RunTuiWorkbenchOptions extends TuiWorkbenchAppProps {
   renderOptions?: RenderOptions;
+  subscribeToState?: TuiWorkbenchStateSubscriber;
 }
+
+export type TuiWorkbenchStateSubscriber = (
+  listener: (state: TuiLiveWorkbenchState) => void
+) => () => void;
 
 type TuiActionPrompt =
   | {
@@ -59,6 +67,7 @@ type TuiActionPrompt =
     }
   | {
       action: TuiLiveWorkbenchApprovalAction;
+      approvalRequestLabel: string;
       approvalRequestId: string;
       type: "approval";
     };
@@ -116,11 +125,20 @@ export function TuiWorkbenchApp({
     readonly TuiSubmittedPrompt[]
   >([]);
   const draftRef = useRef(draftText);
+  const externalDraftRef = useRef(state.workbench.input.text);
   const submittedPromptIdRef = useRef(0);
 
   useEffect(() => {
-    draftRef.current = state.workbench.input.text;
-    setDraftTextState(state.workbench.input.text);
+    if (externalDraftRef.current === state.workbench.input.text) {
+      return;
+    }
+
+    externalDraftRef.current = state.workbench.input.text;
+
+    if (draftRef.current.length === 0) {
+      draftRef.current = state.workbench.input.text;
+      setDraftTextState(state.workbench.input.text);
+    }
   }, [state.workbench.input.text]);
 
   const setDraftText = (value: string): void => {
@@ -165,7 +183,10 @@ export function TuiWorkbenchApp({
     ) {
       setActionPrompt({
         action: approvalAction,
-        approvalRequestId: state.workbench.approvals[0]?.approvalRequestId.value ?? "",
+        approvalRequestLabel:
+          state.workbench.approvals[0]?.approvalRequestId.value ?? "",
+        approvalRequestId:
+          state.workbench.approvals[0]?.controlApprovalRequestId ?? "",
         type: "approval"
       });
       return;
@@ -258,13 +279,41 @@ export function TuiWorkbenchApp({
 
 export function runTuiWorkbench({
   renderOptions,
+  subscribeToState,
   ...props
 }: RunTuiWorkbenchOptions): Instance {
-  return render(<TuiWorkbenchApp {...props} />, {
-    alternateScreen: true,
-    exitOnCtrlC: false,
-    ...renderOptions
-  });
+  return render(
+    <TuiWorkbenchHost {...props} subscribeToState={subscribeToState} />,
+    {
+      alternateScreen: true,
+      exitOnCtrlC: false,
+      ...renderOptions
+    }
+  );
+}
+
+function TuiWorkbenchHost({
+  onInteraction,
+  state,
+  subscribeToState
+}: TuiWorkbenchAppProps & {
+  subscribeToState?: TuiWorkbenchStateSubscriber;
+}): React.JSX.Element {
+  const [liveState, setLiveState] = useState(state);
+
+  useEffect(() => {
+    setLiveState(state);
+  }, [state]);
+
+  useEffect(() => {
+    if (subscribeToState === undefined) {
+      return;
+    }
+
+    return subscribeToState(setLiveState);
+  }, [subscribeToState]);
+
+  return <TuiWorkbenchApp onInteraction={onInteraction} state={liveState} />;
 }
 
 function HeaderSection({
@@ -275,17 +324,47 @@ function HeaderSection({
   return (
     <Box flexDirection="column">
       <Text>
-        <Text bold color="cyan">
+        <Text bold color={BRAND_ACCENT_COLOR}>
           Sprite Harness
         </Text>
         <Text dimColor> live terminal</Text>
       </Text>
-      <Text dimColor>
-        {`Enter send · Shift+Enter/Ctrl+J newline · Esc cancel · ${getExitShortcutLabel()} exit · / commands`}
+      <Text>
+        <Text color={BRAND_ACCENT_COLOR}>› </Text>
+        {`session ${state.runtimeState.session.status}`}
       </Text>
-      <Text dimColor>
-        {`session ${state.runtimeState.session.status} · events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length} · press /help for commands and resources`}
-      </Text>
+      <Box flexDirection="column">
+        <Text>
+          <Text color={BRAND_ACCENT_COLOR}>│ </Text>
+          Initializing session...
+        </Text>
+        <Text>
+          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          {`Loading workspace: ${state.runtimeState.workspace.cwd.value}`}
+        </Text>
+        <Text>
+          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          {`Sandbox environment: ${state.runtimeState.sandbox.mode}`}
+        </Text>
+        <Text>
+          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          {`Model: ${state.runtimeState.provider.model}`}
+        </Text>
+        <Text>
+          <Text color={BRAND_ACCENT_COLOR}>│   ✓ </Text>
+          {`Memory: ${
+            state.runtimeState.memory.available ? "ready" : "missing"
+          }`}
+        </Text>
+        <Text>
+          <Text color={BRAND_ACCENT_COLOR}>│ </Text>
+          {`Session ready. events ${state.runtimeState.events.count} · approvals ${state.workbench.approvals.length}`}
+        </Text>
+        <Text dimColor>
+          <Text color={BRAND_ACCENT_COLOR}>│ </Text>
+          Press /help for commands and resources.
+        </Text>
+      </Box>
     </Box>
   );
 }
@@ -411,17 +490,11 @@ function SubmittedPromptCard({
   const promptLines = createVisibleDraftLines(prompt.text);
 
   return (
-    <Box
-      alignSelf="stretch"
-      backgroundColor="blackBright"
-      flexDirection="column"
-      marginTop={1}
-      paddingX={1}
-      paddingY={1}
-    >
+    <Box flexDirection="column" marginTop={1}>
       {promptLines.map((line, index) => (
-        <Text color="white" key={`${prompt.id}-line-${index}`}>
-          {line}
+        <Text key={`${prompt.id}-line-${index}`}>
+          <Text color={BRAND_ACCENT_COLOR}>{index === 0 ? "› " : "  "}</Text>
+          <Text color="white">{line}</Text>
         </Text>
       ))}
     </Box>
@@ -462,21 +535,24 @@ function ActivityCard({
         }`;
 
   return (
-    <Box
-      borderColor={accentColor}
-      borderStyle="round"
-      flexDirection="column"
-      marginTop={1}
-      paddingX={1}
-    >
+    <Box flexDirection="column" marginTop={1}>
       <Text>
+        <Text color={accentColor}>│ </Text>
         <Text bold color={accentColor}>
           {formatActivityTitle(item)}
         </Text>
         <Text dimColor>{` · ${item.createdAt}`}</Text>
       </Text>
-      <Text>{item.summary.value}</Text>
-      {outputLine === undefined ? null : <Text dimColor>{outputLine}</Text>}
+      <Text>
+        <Text color={accentColor}>│ </Text>
+        {item.summary.value}
+      </Text>
+      {outputLine === undefined ? null : (
+        <Text dimColor>
+          <Text color={accentColor}>│ </Text>
+          {outputLine}
+        </Text>
+      )}
     </Box>
   );
 }
@@ -515,7 +591,7 @@ function ApprovalsSection({
             <Text>{approval.summary.value}</Text>
             <Text dimColor>{`reason: ${approval.reason.value}`}</Text>
             <Text dimColor>
-              {`A approve · D deny · E edit · T timeout · ${approval.approvalRequestId.value}`}
+              {`${formatApprovalShortcutLabels(approval.actions)} · ${approval.approvalRequestId.value}`}
             </Text>
           </Box>
         );
@@ -538,7 +614,7 @@ function ActionPromptSection({
       <Text color={prompt.type === "cancel" ? "red" : "yellow"}>
         {prompt.type === "cancel"
           ? "Conversation interrupted"
-          : `Send ${formatApprovalPromptAction(prompt.action)} for ${prompt.approvalRequestId}?`}
+          : `Send ${formatApprovalPromptAction(prompt.action)} for ${prompt.approvalRequestLabel}?`}
       </Text>
       <Text dimColor>
         {prompt.type === "cancel"
@@ -554,25 +630,20 @@ function InputSection({
 }: {
   draftText: string;
 }): React.JSX.Element {
+  const { columns } = useWindowSize();
   const draftLines = createVisibleDraftLines(draftText);
   const isEmptyDraft = draftText.length === 0;
+  const promptRule = createPromptRule(columns);
 
   return (
-    <Box
-      borderColor="cyan"
-      borderStyle="round"
-      flexDirection="column"
-      marginTop={1}
-      paddingX={1}
-    >
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={BRAND_ACCENT_COLOR}>{promptRule}</Text>
       {draftLines.map((line, index) => (
-        <Text
-          dimColor={isEmptyDraft}
-          key={`draft-${index}`}
-        >
+        <Text dimColor={isEmptyDraft} key={`draft-${index}`}>
           {line}
         </Text>
       ))}
+      <Text color={BRAND_ACCENT_COLOR}>{promptRule}</Text>
     </Box>
   );
 }
@@ -583,7 +654,7 @@ function FooterSection({
   state: TuiLiveWorkbenchState;
 }): React.JSX.Element {
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       <Text dimColor>
         {`Enter send · Shift+Enter/Ctrl+J newline · Esc cancel · ${getExitShortcutLabel()} exit · /help`}
       </Text>
@@ -709,6 +780,30 @@ function formatApprovalPromptAction(
   }
 }
 
+function formatApprovalShortcutLabels(
+  actions: readonly TuiWorkbenchActionLabel[]
+): string {
+  const labels: string[] = [];
+
+  if (actions.includes("APPROVE")) {
+    labels.push("A approve");
+  }
+
+  if (actions.includes("DENY")) {
+    labels.push("D deny");
+  }
+
+  if (actions.includes("TIMEOUT")) {
+    labels.push("T timeout");
+  }
+
+  return labels.join(" · ");
+}
+
+function createPromptRule(columns: number): string {
+  return PROMPT_RULE_CHARACTER.repeat(Math.max(1, columns));
+}
+
 function createVisibleDraftLines(value: string): string[] {
   if (value.length === 0) {
     return [EMPTY_DRAFT_PLACEHOLDER];
@@ -736,8 +831,6 @@ function readApprovalAction(
       return "allow";
     case "d":
       return "deny";
-    case "e":
-      return "edit";
     case "t":
       return "timeout";
     default:

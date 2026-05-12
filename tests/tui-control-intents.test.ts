@@ -315,6 +315,22 @@ describe("TUI control intents", () => {
     expect(formatted).not.toContain("sk-secret");
     expect(formatted).not.toContain("TOKEN=secret");
   });
+
+  it("keeps raw approval ids separate from bounded display labels", () => {
+    const longApprovalRequestId = `appr-${"x".repeat(140)}`;
+    const view = createTuiWorkbenchView({
+      pendingApprovals: [
+        approvalRequest({
+          approvalRequestId: longApprovalRequestId
+        })
+      ]
+    });
+    const approval = view.approvals[0];
+
+    expect(approval?.controlApprovalRequestId).toBe(longApprovalRequestId);
+    expect(approval?.approvalRequestId.value).not.toBe(longApprovalRequestId);
+    expect(approval?.approvalRequestId.value).toContain("…");
+  });
 });
 
 function approvalRequest(

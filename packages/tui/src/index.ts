@@ -340,6 +340,7 @@ export type TuiWorkbenchActionLabel =
 export interface TuiWorkbenchApprovalView {
   actions: readonly TuiWorkbenchActionLabel[];
   approvalRequestId: TuiSafeString;
+  controlApprovalRequestId: string;
   reason: TuiSafeString;
   requestType: TuiApprovalRequestType;
   riskLevel: TuiRiskLevel;
@@ -1048,11 +1049,31 @@ function formatPreviewApprovalLines(state: TuiLiveWorkbenchState): string[] {
     `╭─ Approval required · ${approval.requestType} · ${approval.riskLevel}`,
     `│ ${approval.summary.value}`,
     `│ reason: ${approval.reason.value}`,
-    `│ A approve · D deny · E edit · T timeout · ${approval.approvalRequestId.value}`,
+    `│ ${formatPreviewApprovalShortcuts(approval.actions)} · ${approval.approvalRequestId.value}`,
     approval.toolCallId === undefined
       ? "╰─"
       : `╰─ toolCallId: ${approval.toolCallId.value}`
   ]);
+}
+
+function formatPreviewApprovalShortcuts(
+  actions: readonly TuiWorkbenchActionLabel[]
+): string {
+  const labels: string[] = [];
+
+  if (actions.includes("APPROVE")) {
+    labels.push("A approve");
+  }
+
+  if (actions.includes("DENY")) {
+    labels.push("D deny");
+  }
+
+  if (actions.includes("TIMEOUT")) {
+    labels.push("T timeout");
+  }
+
+  return labels.join(" · ");
 }
 
 function getTuiExitShortcutLabel(): string {
@@ -1064,7 +1085,8 @@ export type {
   RunTuiWorkbenchOptions,
   TuiLiveWorkbenchApprovalAction,
   TuiLiveWorkbenchInteraction,
-  TuiWorkbenchAppProps
+  TuiWorkbenchAppProps,
+  TuiWorkbenchStateSubscriber
 } from "./live-workbench.js";
 
 function normalizeInputText(text: string): string {
@@ -1137,6 +1159,7 @@ function createWorkbenchApprovalView(
       "TIMEOUT"
     ]),
     approvalRequestId: createSafeString(approval.approvalRequestId),
+    controlApprovalRequestId: approval.approvalRequestId,
     reason: createSafeString(approval.reason),
     requestType: approval.requestType,
     riskLevel: approval.riskLevel,

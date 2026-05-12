@@ -1,6 +1,6 @@
 # Story 6.4: Launch Live Ink TUI Workbench Shell
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -259,6 +259,11 @@ GPT-5.5
 - User review preferred Pi's minimal startup header and did not want an outlined header box. The live header now renders as plain compact text with shortcut/status hints instead of a bordered card.
 - User review wanted `/details` to remain sticky for monitoring, while lighter diagnostic panels should be temporary. Normal prompt submission now clears `/runtime`, `/context`, and `/help` panels but keeps `/details` visible.
 - User review found the boxed cancel confirmation too heavy and clarified the notice should look like a chat interruption under the sent user prompt, not inside the empty input box. Cancel interruption now renders as inline red `Conversation interrupted` guidance below the latest submitted prompt card.
+- User review requested the live session and ongoing agent work to read like a minimal command timeline, not boxed report sections. Header startup, submitted prompts, and activity cards now render with `›` / `│` timeline cues inspired by the provided reference.
+- User review noted the input-rule outline color did not match the `Sprite Harness` header accent. The prompt rule now shares the same cyan brand accent as the header.
+- Follow-up review found the live CLI did not refresh from runtime events after submit/cancel/approval. Added a live state subscriber so runtime events rebuild the displayed workbench from runtime truth.
+- Follow-up review found live approval keys were display-only and did not dispatch through the runtime approval path. Approval prompts now keep a bounded display label separate from the raw control approval ID, and allow/deny/timeout dispatch through Story 6.3 intents.
+- Follow-up review found the `E edit` shortcut was exposed before the live bounded edit flow existed. The live UI now only advertises/accepts approval actions currently supported by the control surface.
 
 ### Implementation Plan
 
@@ -298,6 +303,10 @@ GPT-5.5
 - Removed the header outline and converted it to a compact Pi-like text header with command/status hints.
 - Made `/details` sticky across prompt submissions while treating `/runtime`, `/context`, and `/help` as temporary panels that clear on the next real prompt send.
 - Replaced the large boxed cancel prompt with a compact inline red interruption notice below the latest submitted prompt card, leaving the input box clean.
+- Restyled startup, submitted prompts, and runtime activity as an unboxed command timeline using `›` prompt cues and `│` work/activity cues, so the TUI feels closer to an active agent session.
+- Matched the prompt composer outline color to the `Sprite Harness` header accent and kept only horizontal rules so the input/footer area stays visually close to the terminal reference.
+- Wired live TUI state updates to runtime event subscriptions, so submitted tasks, cancellations, approvals, and tool activity are reflected in the live workbench after dispatch.
+- Routed live approval allow/deny/timeout actions through raw runtime approval IDs while still rendering bounded display IDs; edit remains hidden until a safe bounded edit prompt is implemented.
 
 ### File List
 
@@ -312,6 +321,7 @@ GPT-5.5
 - `packages/tui/src/index.ts`
 - `packages/tui/src/live-workbench.tsx`
 - `packages/tui/tsconfig.json`
+- `tests/cli-tui-live.test.ts`
 - `tests/cli-smoke.test.ts`
 - `tests/tui-live-workbench.test.tsx`
 - `tests/tsconfig.json`
@@ -338,3 +348,5 @@ GPT-5.5
 - 2026-05-12: Simplified the live header into a minimal unboxed Pi-like text header.
 - 2026-05-12: Kept `/details` sticky while clearing temporary slash panels on prompt submission.
 - 2026-05-12: Replaced boxed cancel confirmation with inline red interruption text below the sent prompt card.
+- 2026-05-12: Converted live startup, submitted prompts, and activity rendering to a command-timeline style with matching header/input accent color.
+- 2026-05-12: Fixed live event subscription and approval dispatch regressions; raw approval IDs now stay internal while bounded labels remain visible.
