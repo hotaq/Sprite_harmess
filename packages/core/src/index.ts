@@ -9,7 +9,10 @@ export * from "./skill-registry.js";
 export * from "./task-context.js";
 export * from "./task-state.js";
 export {
+  readLearningReviewArtifacts,
   readLearningReviewLessonCandidates,
+  type StoredLearningReviewArtifact,
+  type StoredLearningReviewArtifactResult,
   type StoredLearningReviewLessonCandidate
 } from "@sprite/storage";
 export { listToolNames } from "@sprite/tools";

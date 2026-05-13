@@ -4,12 +4,13 @@ import {
   AgentRuntime,
   compactSessionManually,
   createBootstrapMessage,
+  createFinalTaskSummary,
   createInteractiveTaskMessage,
   createRuntimeEventRecord,
   inspectSessionState,
   listToolNames,
   listSkills,
-  readLearningReviewLessonCandidates,
+  readLearningReviewArtifacts,
   resolveOneShotPrintOutputFormat,
   runOneShotPrintTask,
   type FinalTaskSummary,
@@ -17,6 +18,7 @@ import {
   type ManualSessionCompactionResult,
   type OneShotPrintOutputFormat,
   type OneShotPrintTaskResult,
+  type PlannedExecutionFlow,
   type RuntimeSkillCandidateReviewRequest,
   type RuntimeSkillCandidateReviewResult,
   type RuntimeEventRecord,
@@ -24,7 +26,8 @@ import {
   type SessionResumeResult,
   type SkillCandidateReviewView,
   type SkillRegistryEntry,
-  type StoredLearningReviewLessonCandidate,
+  type StoredLearningReviewArtifact,
+  type StoredLearningReviewArtifactResult,
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
 import {
@@ -42,6 +45,12 @@ import {
   runTuiWorkbench,
   type TuiApprovalRequestSummary,
   type TuiDispatchResult,
+  type TuiLearningReviewCommandEvidenceInput,
+  type TuiLearningReviewDetailsInput,
+  type TuiLearningReviewMemoryCandidateInput,
+  type TuiLearningReviewProceduralOutputInput,
+  type TuiLearningReviewSectionItemInput,
+  type TuiLearningReviewSkillSignalInput,
   type TuiLiveWorkbenchInteraction,
   type TuiSafeString,
   type TuiSlashCommandIntent,
@@ -737,6 +746,19 @@ export function createCurrentLiveTuiState(
   events: readonly RuntimeEventRecord[]
 ): TuiLiveWorkbenchState {
   const activeTask = runtime.getActiveTask();
+  const finalSummary =
+    activeTask.ok &&
+    activeTask.value !== null &&
+    shouldShowLiveTuiFinalSummary(activeTask.value)
+      ? createFinalTaskSummary({
+          ...activeTask.value,
+          events: [...events]
+        })
+      : undefined;
+  const learningReviewDetails = createLiveTuiLearningReviewDetails(
+    runtime,
+    events
+  );
   const runtimeState =
     activeTask.ok && activeTask.value !== null
       ? createTuiRuntimeState({
@@ -753,8 +775,10 @@ export function createCurrentLiveTuiState(
 
   return createTuiLiveWorkbenchState({
     events,
+    ...(finalSummary === undefined ? {} : { finalSummary }),
     latestDispatchError: previousState.latestDispatchError,
     latestDispatchResult: previousState.latestDispatchResult,
+    learningReviewDetails,
     runtimeState,
     workbench: createTuiWorkbenchView({
       draft: previousState.workbench.input,
@@ -769,6 +793,192 @@ export function createCurrentLiveTuiState(
         .map(createTuiApprovalSummaryFromRuntimeApproval)
     })
   });
+}
+
+function shouldShowLiveTuiFinalSummary(flow: PlannedExecutionFlow): boolean {
+  return (
+    flow.status === "completed" ||
+    flow.status === "failed" ||
+    flow.status === "cancelled" ||
+    flow.status === "max-iterations" ||
+    flow.waitingState?.reason === "approval-required"
+  );
+}
+
+function createLiveTuiLearningReviewDetails(
+  runtime: AgentRuntime,
+  events: readonly RuntimeEventRecord[]
+): TuiLearningReviewDetailsInput[] {
+  const learningEvents = events.filter(
+    (event) => event.type === "learning.review.created"
+  );
+
+  if (learningEvents.length === 0) {
+    return [];
+  }
+
+  const bootstrapState = runtime.getBootstrapState();
+
+  if (!bootstrapState.ok) {
+    return learningEvents.map(() => ({}));
+  }
+
+  return learningEvents.map((event) => {
+    const reviews = readLearningReviewArtifacts(
+      bootstrapState.value.startup.cwd,
+      {
+        artifactLimit: 1,
+        sessionId: event.sessionId,
+        sessionLimit: 1,
+        taskId: event.taskId
+      }
+    );
+
+    if (!reviews.ok) {
+      return {};
+    }
+
+    const review = reviews.value[0]?.review;
+
+    return review === undefined ? {} : toTuiLearningReviewDetails(review);
+  });
+}
+
+function toTuiLearningReviewDetails(
+  review: StoredLearningReviewArtifact
+): TuiLearningReviewDetailsInput {
+  return {
+    evidence: {
+      commandsRun: readReviewEvidenceArray(review, "commandsRun").flatMap(
+        toTuiLearningReviewCommandEvidence
+      ),
+      eventIds: readReviewEvidenceStringArray(review, "eventIds"),
+      validationResults: readReviewEvidenceArray(
+        review,
+        "validationResults"
+      ).flatMap(toTuiLearningReviewCommandEvidence)
+    },
+    facts: toTuiLearningReviewSectionItems(review.facts),
+    lessons: toTuiLearningReviewSectionItems(review.lessons),
+    memoryCandidates: review.memoryCandidates.flatMap(
+      toTuiLearningReviewMemoryCandidate
+    ),
+    missedAssumptions: toTuiLearningReviewSectionItems(
+      review.missedAssumptions
+    ),
+    mistakes: toTuiLearningReviewSectionItems(review.mistakes),
+    proceduralOutputs: (review.proceduralOutputs ?? []).flatMap(
+      toTuiLearningReviewProceduralOutput
+    ),
+    skillSignals: review.skillSignals.flatMap(toTuiLearningReviewSkillSignal),
+    summary: review.summary,
+    testGaps: toTuiLearningReviewSectionItems(review.testGaps)
+  };
+}
+
+function toTuiLearningReviewSectionItems(
+  items: readonly object[]
+): TuiLearningReviewSectionItemInput[] {
+  return items.flatMap((item) => {
+    const summary = readObjectString(item, "summary");
+
+    if (summary === undefined) {
+      return [];
+    }
+
+    const evidenceEventIds = readObjectStringArray(item, "evidenceEventIds");
+
+    return [
+      {
+        ...(evidenceEventIds.length === 0 ? {} : { evidenceEventIds }),
+        summary
+      }
+    ];
+  });
+}
+
+function toTuiLearningReviewCommandEvidence(
+  item: object
+): TuiLearningReviewCommandEvidenceInput[] {
+  const command = readObjectString(item, "command");
+  const eventId = readObjectString(item, "eventId");
+  const name = readObjectString(item, "name");
+
+  if (command === undefined && eventId === undefined && name === undefined) {
+    return [];
+  }
+
+  return [
+    {
+      ...(command === undefined ? {} : { command }),
+      ...(eventId === undefined ? {} : { eventId }),
+      ...(name === undefined ? {} : { name }),
+      status: readObjectString(item, "status") ?? "unknown"
+    }
+  ];
+}
+
+function toTuiLearningReviewMemoryCandidate(
+  item: object
+): TuiLearningReviewMemoryCandidateInput[] {
+  const candidateId = readObjectString(item, "candidateId");
+
+  if (candidateId === undefined) {
+    return [];
+  }
+
+  const eventId = readObjectString(item, "eventId");
+  const status = readObjectString(item, "status");
+
+  return [
+    {
+      candidateId,
+      ...(eventId === undefined ? {} : { eventId }),
+      ...(status === undefined ? {} : { status })
+    }
+  ];
+}
+
+function toTuiLearningReviewSkillSignal(
+  item: object
+): TuiLearningReviewSkillSignalInput[] {
+  const id = readObjectString(item, "id");
+
+  if (id === undefined) {
+    return [];
+  }
+
+  const evidenceEventIds = readObjectStringArray(item, "evidenceEventIds");
+  const triggerReason = readObjectString(item, "triggerReason");
+  const workflowSummary = readObjectString(item, "workflowSummary");
+
+  return [
+    {
+      ...(evidenceEventIds.length === 0 ? {} : { evidenceEventIds }),
+      id,
+      ...(triggerReason === undefined ? {} : { triggerReason }),
+      ...(workflowSummary === undefined ? {} : { workflowSummary })
+    }
+  ];
+}
+
+function toTuiLearningReviewProceduralOutput(
+  item: object
+): TuiLearningReviewProceduralOutputInput[] {
+  const id = readObjectString(item, "id");
+
+  if (id === undefined) {
+    return [];
+  }
+
+  const workflowSummary = readObjectString(item, "workflowSummary");
+
+  return [
+    {
+      id,
+      ...(workflowSummary === undefined ? {} : { workflowSummary })
+    }
+  ];
 }
 
 function isSteerableTaskStatus(status: string): boolean {
@@ -1243,47 +1453,216 @@ function createLiveTuiLearningReviewResult(
     );
   }
 
-  const candidates = readLearningReviewLessonCandidates(
+  const reviews = readLearningReviewArtifacts(
     bootstrapState.value.startup.cwd,
     {
       artifactLimit: 5,
-      candidateLimit: 5,
+      ...(args.sessionId === undefined ? {} : { sessionId: args.sessionId }),
       sessionLimit: 20
     }
   );
 
-  if (!candidates.ok) {
+  if (!reviews.ok) {
     return createLiveTuiSlashErrorResult(
       command,
       "learning-review",
-      candidates.error
+      reviews.error
     );
   }
 
-  const visibleCandidates =
-    args.sessionId === undefined
-      ? candidates.value
-      : candidates.value.filter(
-          (candidate) => candidate.sourceSessionId === args.sessionId
-        );
-
   return createLiveTuiSlashResult(command, "OK", "learning-review", {
-    items: visibleCandidates
-      .slice(0, 5)
-      .map((candidate) => toLearningReviewResultItem(candidate)),
+    items: reviews.value.flatMap(toLearningReviewResultItems).slice(0, 12),
     nextAction:
-      "Use the learning-review story/panel for full summaries; this command shows metadata only.",
-    summary: `${visibleCandidates.length} learning-review lesson candidate${visibleCandidates.length === 1 ? "" : "s"} available.`
+      reviews.value.length === 0
+        ? "Run a task to completion so Sprite can create a learning review."
+        : "Use these bounded review details to decide what to reuse next.",
+    summary: `${reviews.value.length} learning review${reviews.value.length === 1 ? "" : "s"} available.`
   });
 }
 
-function toLearningReviewResultItem(
-  candidate: StoredLearningReviewLessonCandidate
-): { label: string; value: string } {
-  return {
-    label: candidate.sourceId,
-    value: `${candidate.section} · ${candidate.sourceSessionId} · ${candidate.sourceTaskId}`
-  };
+function toLearningReviewResultItems(
+  artifact: StoredLearningReviewArtifactResult
+): { label: string; value: string }[] {
+  const review = artifact.review;
+
+  return [
+    {
+      label: "summary",
+      value: review.summary
+    },
+    {
+      label: "status",
+      value: `${review.terminalStatus} · ${review.mode} · ${review.sessionId} · ${review.taskId}`
+    },
+    {
+      label: "facts",
+      value: formatReviewSectionSummaries(review.facts)
+    },
+    {
+      label: "lessons",
+      value: formatReviewSectionSummaries(review.lessons)
+    },
+    {
+      label: "missed assumptions",
+      value: formatReviewSectionSummaries(review.missedAssumptions)
+    },
+    {
+      label: "mistakes",
+      value: formatReviewSectionSummaries(review.mistakes)
+    },
+    {
+      label: "test gaps",
+      value: formatReviewSectionSummaries(review.testGaps)
+    },
+    {
+      label: "memory candidates",
+      value: formatReviewObjectIds(review.memoryCandidates, "candidateId")
+    },
+    {
+      label: "skill signals",
+      value: formatReviewObjectIds(review.skillSignals, "id")
+    },
+    {
+      label: "procedural outputs",
+      value: formatReviewObjectIds(review.proceduralOutputs ?? [], "id")
+    },
+    {
+      label: "commands",
+      value: formatReviewCommands(review)
+    },
+    {
+      label: "validation",
+      value: formatReviewValidationResults(review)
+    }
+  ];
+}
+
+function formatReviewSectionSummaries(items: readonly object[]): string {
+  return formatBoundedReviewValues(
+    items.flatMap((item) => {
+      const summary = readObjectString(item, "summary");
+      return summary === undefined ? [] : [summary];
+    })
+  );
+}
+
+function formatReviewObjectIds(
+  items: readonly object[],
+  key: string
+): string {
+  return formatBoundedReviewValues(
+    items.flatMap((item) => {
+      const value = readObjectString(item, key);
+      return value === undefined ? [] : [value];
+    })
+  );
+}
+
+function formatReviewCommands(review: StoredLearningReviewArtifact): string {
+  return formatBoundedReviewValues(
+    readReviewEvidenceArray(review, "commandsRun").flatMap((item) => {
+      const command = readObjectString(item, "command");
+      const status = readObjectString(item, "status");
+
+      if (command === undefined) {
+        return [];
+      }
+
+      return [`${status ?? "unknown"}: ${command}`];
+    })
+  );
+}
+
+function formatReviewValidationResults(
+  review: StoredLearningReviewArtifact
+): string {
+  return formatBoundedReviewValues(
+    readReviewEvidenceArray(review, "validationResults").flatMap((item) => {
+      const command = readObjectString(item, "command");
+      const name = readObjectString(item, "name");
+      const status = readObjectString(item, "status");
+      const label = command ?? name;
+
+      if (label === undefined) {
+        return [];
+      }
+
+      return [`${status ?? "unknown"}: ${label}`];
+    })
+  );
+}
+
+function readReviewEvidenceArray(
+  review: StoredLearningReviewArtifact,
+  key: string
+): readonly object[] {
+  const evidence = review.evidence;
+
+  if (typeof evidence !== "object" || evidence === null) {
+    return [];
+  }
+
+  const value = (evidence as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is object =>
+      typeof item === "object" && item !== null && !Array.isArray(item)
+  );
+}
+
+function readReviewEvidenceStringArray(
+  review: StoredLearningReviewArtifact,
+  key: string
+): string[] {
+  const evidence = review.evidence;
+
+  if (typeof evidence !== "object" || evidence === null) {
+    return [];
+  }
+
+  const value = (evidence as Record<string, unknown>)[key];
+
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0
+      )
+    : [];
+}
+
+function readObjectString(item: object, key: string): string | undefined {
+  const value = (item as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function readObjectStringArray(item: object, key: string): string[] {
+  const value = (item as Record<string, unknown>)[key];
+
+  return Array.isArray(value)
+    ? value.filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.trim().length > 0
+      )
+    : [];
+}
+
+function formatBoundedReviewValues(
+  values: readonly string[],
+  limit = 3
+): string {
+  if (values.length === 0) {
+    return "none";
+  }
+
+  const visibleValues = values.slice(0, limit);
+  const hidden = values.length - visibleValues.length;
+
+  return `${visibleValues.join(" | ")}${hidden === 0 ? "" : ` | +${hidden} more`}`;
 }
 
 function readActiveSessionId(runtime: AgentRuntime): string | undefined {
@@ -1647,11 +2026,19 @@ function formatLiveTuiDispatchError(error: Error): string {
     : error.message;
 }
 
+const PRIVATE_PATH_PATTERN =
+  /(?:~\/[^\s,;:)]+|\/(?:Applications|Users|Volumes|home|opt|private|tmp|var)\/[^\s,;:)]+|[A-Za-z]:\\Users\\[^\s,;:)]+)/gu;
+const PRIVATE_PATH_REDACTION_MARKER = "[REDACTED_PATH]";
+
 function createLiveTuiSafeString(value: string): TuiSafeString {
-  const preview = createRedactedPreview(value, 96);
+  const pathRedacted = value.replace(
+    PRIVATE_PATH_PATTERN,
+    PRIVATE_PATH_REDACTION_MARKER
+  );
+  const preview = createRedactedPreview(pathRedacted, 96);
 
   return {
-    redacted: containsSecretLikeValue(value),
+    redacted: containsSecretLikeValue(value) || pathRedacted !== value,
     value: preview.length === 0 ? "unknown" : preview
   };
 }

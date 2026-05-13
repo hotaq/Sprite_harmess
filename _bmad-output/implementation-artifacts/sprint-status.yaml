@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-05-13T01:05:05+0700
+# last_updated: 2026-05-13T23:44:25+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-05-13T01:05:05+0700
+last_updated: 2026-05-13T23:44:25+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -97,7 +97,7 @@ development_status:
   6-3-support-multiline-input-steering-cancellation-and-approval-responses: done
   6-4-launch-live-ink-tui-workbench-shell: done
   6-5-implement-slash-commands-as-runtime-intents: done
-  6-6-show-final-summary-and-learning-review-outputs-in-tui: backlog
+  6-6-show-final-summary-and-learning-review-outputs-in-tui: done
   epic-6-retrospective: optional
   epic-7: backlog
   7-1-start-json-rpc-mode-over-stdin-stdout: backlog

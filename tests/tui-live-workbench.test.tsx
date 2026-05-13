@@ -16,6 +16,7 @@ import {
 import {
   createRuntimeEventRecord,
   type BootstrapState,
+  type FinalTaskSummary,
   type PlannedExecutionFlow,
   type RuntimeApprovalResponse,
   type RuntimeEventPayload,
@@ -199,6 +200,147 @@ describe("live Ink TUI workbench", () => {
 
     expect(frame).toContain("task.waiting");
     expect(frame).toContain("Waiting for steering.");
+  });
+
+  it("renders final summary and learning review cards without pushing the prompt away", () => {
+    const runtimeState = createTuiStartupState({
+      bootstrapState: bootstrapState({})
+    });
+    const liveState = createTuiLiveWorkbenchState({
+      events: [
+        runtimeEvent("tool.call.completed", {
+          command: "npm test -- --run tests/tui-live-workbench.test.tsx",
+          cwd: "/tmp/sprite-live-tui",
+          durationMs: 100,
+          exitCode: 0,
+          status: "completed",
+          summary: "Tool completed.",
+          toolCallId: "tool-live",
+          toolName: "run_command"
+        }),
+        runtimeEvent("validation.completed", {
+          command: "npm test",
+          durationMs: 100,
+          exitCode: 0,
+          status: "passed",
+          summary: "Validation passed.",
+          toolCallId: "tool-live",
+          validationId: "validation-live"
+        }),
+        runtimeEvent("learning.review.created", {
+          artifactPath:
+            "/Users/chinnaphat/private/project/.sprite/sessions/ses_live/learning-reviews/task_live.json",
+          evidenceEventIds: ["evt-tool", "evt-validation"],
+          factCount: 1,
+          lessonCount: 1,
+          memoryCandidateIds: ["mem_live"],
+          missedAssumptionCount: 1,
+          mistakeCount: 1,
+          mode: "compact",
+          proceduralOutputIds: ["procout_live"],
+          skillSignalIds: ["skillsig_live"],
+          status: "recorded",
+          summary: "Learning review created with OPENAI_API_KEY=sk-secret.",
+          testGapCount: 1
+        })
+      ],
+      finalSummary: liveFinalSummary(),
+      learningReviewDetails: [
+        {
+          evidence: {
+            commandsRun: [
+              {
+                command: "npm test -- --run tests/tui-live-workbench.test.tsx",
+                eventId: "evt-tool",
+                status: "passed"
+              }
+            ],
+            eventIds: ["evt-tool", "evt-validation"],
+            validationResults: [
+              {
+                command: "npm test",
+                eventId: "evt-validation",
+                status: "passed"
+              }
+            ]
+          },
+          facts: [
+            {
+              evidenceEventIds: ["evt-tool"],
+              summary: "Renderer cards use typed events."
+            }
+          ],
+          lessons: [
+            {
+              evidenceEventIds: ["evt-validation"],
+              summary: "Keep renderer file reads out of React."
+            }
+          ],
+          memoryCandidates: [
+            {
+              candidateId: "mem_live",
+              eventId: "evt-memory",
+              status: "recorded"
+            }
+          ],
+          missedAssumptions: [
+            {
+              evidenceEventIds: ["evt-assumption"],
+              summary: "Lesson counts alone are too thin."
+            }
+          ],
+          mistakes: [
+            {
+              evidenceEventIds: ["evt-mistake"],
+              summary: "Do not parse assistant prose."
+            }
+          ],
+          proceduralOutputs: [
+            {
+              id: "procout_live",
+              workflowSummary: "Reuse outcome view helpers."
+            }
+          ],
+          skillSignals: [
+            {
+              evidenceEventIds: ["evt-skill"],
+              id: "skillsig_live",
+              triggerReason: "Repeated TUI outcome work.",
+              workflowSummary: "Outcome panel workflow."
+            }
+          ],
+          testGaps: [
+            {
+              evidenceEventIds: ["evt-test-gap"],
+              summary: "Add Ink regression coverage."
+            }
+          ]
+        }
+      ],
+      runtimeState,
+      workbench: createTuiWorkbenchView()
+    });
+    const view = render(<TuiWorkbenchApp state={liveState} />);
+    const frame = view.lastFrame() ?? "";
+
+    expect(frame).toContain("Final summary · completed");
+    expect(frame).toContain("files changed");
+    expect(frame).toContain("commands run");
+    expect(frame).toContain("validation results");
+    expect(frame).toContain("Learning review · recorded");
+    expect(frame).toContain("facts: 1");
+    expect(frame).toContain("Renderer cards use typed events.");
+    expect(frame).toContain("lessons: 1");
+    expect(frame).toContain("Keep renderer file reads out of React.");
+    expect(frame).toContain("memory candidates");
+    expect(frame).toContain("skill signals");
+    expect(frame).toContain("[REDACTED]");
+    expect(frame).toContain("[REDACTED_PATH]");
+    expect(frame).not.toContain("sk-secret");
+    expect(frame).not.toContain("/Users/chinnaphat");
+    expect(frame.indexOf("Type a prompt…")).toBeGreaterThan(
+      frame.indexOf("Final summary · completed")
+    );
   });
 
   it("renders cancel interruption below the submitted prompt instead of inside the input box", async () => {
@@ -810,6 +952,50 @@ function runtimeEvent<Type extends RuntimeEventType>(
     type,
     payload
   );
+}
+
+function liveFinalSummary(): FinalTaskSummary {
+  return {
+    correlationId: "corr-live",
+    filesChanged: ["packages/tui/src/live-workbench.tsx"],
+    filesProposedForChange: ["packages/cli/src/index.ts"],
+    filesRead: ["tests/tui-live-workbench.test.tsx"],
+    importantEvents: [],
+    memoryInfluences: [
+      {
+        eventId: "evt-memory",
+        sourceId: "mem_live",
+        sourceType: "learning_review_lesson",
+        status: "used",
+        summary: "Used prior TUI lesson."
+      }
+    ],
+    model: "gpt-test",
+    notAttempted: ["Manual TTY smoke test not attempted in unit tests."],
+    provider: {
+      model: "gpt-test",
+      providerName: "openai-compatible"
+    },
+    result: "Live TUI surfaced outcomes.",
+    sessionId: "ses_live",
+    skillInfluences: [
+      {
+        eventId: "evt-skill",
+        evidenceEventIds: ["evt-skill"],
+        invocationMode: "manual",
+        name: "bmad-dev-story",
+        skillId: "skill_live",
+        source: "project",
+        sourceEventIds: ["evt-skill"],
+        status: "used",
+        summary: "Used BMad dev story flow.",
+        trigger: "invoked"
+      }
+    ],
+    status: "completed",
+    taskId: "task_live",
+    unresolvedRisks: ["Manual terminal sizing still needs smoke coverage."]
+  };
 }
 
 function flow(status: "cancelled" | "waiting-for-input"): PlannedExecutionFlow {

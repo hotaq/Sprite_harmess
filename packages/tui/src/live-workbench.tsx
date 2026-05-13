@@ -11,6 +11,8 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { containsSecretLikeValue, createRedactedPreview } from "@sprite/shared";
 import type {
+  TuiFinalSummaryView,
+  TuiLearningReviewView,
   TuiLiveWorkbenchState,
   TuiMessageStreamItem,
   TuiWorkbenchApprovalView,
@@ -425,6 +427,7 @@ export function TuiWorkbenchApp({
         <SubmittedPromptsSection prompts={submittedPrompts} />
         <CommandResultsSection results={commandResults} />
         <ActionPromptSection prompt={conversationActionPrompt} />
+        <OutcomeSections state={state} />
         <DispatchStatusSection state={state} />
         <ActivitySection state={state} />
         <ApprovalsSection state={state} />
@@ -777,6 +780,112 @@ function CommandResultCard({
       ) : null}
     </Box>
   );
+}
+
+function OutcomeSections({
+  state
+}: {
+  state: TuiLiveWorkbenchState;
+}): React.JSX.Element | null {
+  const cards = [
+    ...(state.finalSummaryView === undefined
+      ? []
+      : [
+          {
+            color: "green",
+            id: state.finalSummaryView.id,
+            lines: formatFinalSummaryCardLines(state.finalSummaryView)
+          }
+        ]),
+    ...state.learningReviewViews.map((view) => ({
+      color: "magenta",
+      id: view.id,
+      lines: formatLearningReviewCardLines(view)
+    }))
+  ];
+
+  if (cards.length === 0) {
+    return null;
+  }
+
+  return (
+    <Box flexDirection="column">
+      {cards.map((card) => (
+        <OutcomeCard
+          color={card.color}
+          key={card.id}
+          lines={card.lines}
+        />
+      ))}
+    </Box>
+  );
+}
+
+function OutcomeCard({
+  color,
+  lines
+}: {
+  color: string;
+  lines: string;
+}): React.JSX.Element {
+  const [title = "Outcome", ...detailLines] = lines.split(/\r\n|\r|\n/u);
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text color={color}>│ </Text>
+        <Text bold color={color}>
+          {title}
+        </Text>
+      </Text>
+      {detailLines.slice(0, 24).map((line, index) => (
+        <Text dimColor key={`outcome-${title}-${index}`}>
+          <Text color={color}>│ </Text>
+          {line}
+        </Text>
+      ))}
+      {detailLines.length > 24 ? (
+        <Text dimColor>
+          <Text color={color}>│ </Text>
+          {`... ${detailLines.length - 24} more`}
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
+function formatFinalSummaryCardLines(view: TuiFinalSummaryView): string {
+  return [
+    `Final summary · ${view.status}`,
+    `result: ${view.result.value}`,
+    ...view.sections.flatMap(formatOutcomeSectionLines)
+  ].join("\n");
+}
+
+function formatLearningReviewCardLines(view: TuiLearningReviewView): string {
+  return [
+    `Learning review · ${view.status}`,
+    `summary: ${view.summary.value}`,
+    ...view.sections.flatMap(formatOutcomeSectionLines)
+  ].join("\n");
+}
+
+function formatOutcomeSectionLines(
+  section: TuiFinalSummaryView["sections"][number]
+): string[] {
+  return [
+    `${section.title}:`,
+    ...section.lines.map((line) => {
+      const label = line.label === undefined ? "" : `${line.label}: `;
+      return `- ${label}${line.value.value}`;
+    }),
+    ...(section.hiddenCount === 0
+      ? []
+      : [`- ... ${section.hiddenCount} more`]),
+    ...(section.redactedCount === 0
+      ? []
+      : [`- ${section.redactedCount} redacted`])
+  ];
 }
 
 function SubmittedPromptCard({

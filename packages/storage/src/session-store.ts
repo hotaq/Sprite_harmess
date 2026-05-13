@@ -151,6 +151,13 @@ export interface ReadLearningReviewLessonCandidateOptions {
   sessionLimit?: number;
 }
 
+export interface ReadLearningReviewArtifactOptions {
+  artifactLimit?: number;
+  sessionId?: string;
+  sessionLimit?: number;
+  taskId?: string;
+}
+
 export interface ReadSessionForResumeResult {
   paths: SessionArtifactPaths;
   persistedEventCount: number;
@@ -195,6 +202,11 @@ export interface StoredLearningReviewLessonCandidate {
   sourceId: string;
   sourceSessionId: string;
   sourceTaskId: string;
+}
+
+export interface StoredLearningReviewArtifactResult {
+  artifactPath: string;
+  review: StoredLearningReviewArtifact;
 }
 
 export interface StoredRetrospectiveReviewArtifact {
@@ -945,6 +957,116 @@ export function readLearningReviewLessonCandidates(
   } catch (error: unknown) {
     return err(
       toSessionStorageError("SESSION_LEARNING_REVIEW_LESSONS_READ_FAILED", error)
+    );
+  }
+}
+
+export function readLearningReviewArtifacts(
+  cwd: string,
+  options: ReadLearningReviewArtifactOptions = {}
+): Result<StoredLearningReviewArtifactResult[], SpriteError> {
+  const sessionsDir = path.join(cwd, ".sprite", "sessions");
+  const sessionLimit =
+    options.sessionLimit ?? DEFAULT_LEARNING_REVIEW_SESSION_SCAN_LIMIT;
+  const artifactLimit =
+    options.artifactLimit ?? DEFAULT_LEARNING_REVIEW_ARTIFACT_SCAN_LIMIT;
+
+  for (const [limitName, limitValue] of [
+    ["sessionLimit", sessionLimit],
+    ["artifactLimit", artifactLimit]
+  ] as const) {
+    if (!Number.isInteger(limitValue) || limitValue <= 0) {
+      return err(
+        new SpriteError(
+          "SESSION_LEARNING_REVIEW_INVALID_READ_LIMIT",
+          `Learning review ${limitName} must be a positive integer.`
+        )
+      );
+    }
+  }
+
+  if (options.sessionId !== undefined && !isValidSessionId(options.sessionId)) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_SESSION_ID",
+        "Learning review sessionId must use the ses_ prefix."
+      )
+    );
+  }
+
+  if (
+    options.taskId !== undefined &&
+    !SESSION_TASK_ID_PATTERN.test(options.taskId)
+  ) {
+    return err(
+      new SpriteError(
+        "SESSION_LEARNING_REVIEW_INVALID_TASK_ID",
+        "Learning review taskId must use the task_ prefix."
+      )
+    );
+  }
+
+  if (!existsSync(sessionsDir)) {
+    return okSession([]);
+  }
+
+  try {
+    const reviews: StoredLearningReviewArtifactResult[] = [];
+    const sessionEntries = sortDirectoryEntriesByRecency(
+      sessionsDir,
+      readdirSync(sessionsDir, {
+        withFileTypes: true
+      }).filter(
+        (entry) =>
+          entry.isDirectory() &&
+          (options.sessionId === undefined || entry.name === options.sessionId)
+      )
+    ).slice(0, sessionLimit);
+
+    readLoop: for (const sessionEntry of sessionEntries) {
+      const learningReviewsDir = path.join(
+        sessionsDir,
+        sessionEntry.name,
+        "learning-reviews"
+      );
+
+      if (!existsSync(learningReviewsDir)) {
+        continue;
+      }
+
+      const reviewEntries = sortDirectoryEntriesByRecency(
+        learningReviewsDir,
+        readdirSync(learningReviewsDir, {
+          withFileTypes: true
+        }).filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      );
+
+      for (const reviewEntry of reviewEntries) {
+        if (reviews.length >= artifactLimit) {
+          break readLoop;
+        }
+
+        const artifactPath = path.join(learningReviewsDir, reviewEntry.name);
+        const parsed = parseLearningReviewArtifactSafely(artifactPath);
+
+        if (
+          parsed === null ||
+          (options.taskId !== undefined && parsed.taskId !== options.taskId)
+        ) {
+          continue;
+        }
+
+        reviews.push({
+          artifactPath: path.relative(cwd, artifactPath),
+          review: parsed
+        });
+      }
+    }
+
+    return okSession(reviews);
+  } catch (error: unknown) {
+    return err(
+      toSessionStorageError("SESSION_LEARNING_REVIEW_READ_FAILED", error)
     );
   }
 }
