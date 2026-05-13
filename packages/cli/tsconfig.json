@@ -8,6 +8,7 @@
   "references": [
     { "path": "../shared" },
     { "path": "../core" },
+    { "path": "../rpc" },
     { "path": "../tui" }
   ],
   "include": ["src/**/*.ts"]

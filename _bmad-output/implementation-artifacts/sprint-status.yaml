@@ -1,5 +1,5 @@
 # generated: 2026-04-21T23:28:12+0700
-# last_updated: 2026-05-13T23:44:25+0700
+# last_updated: 2026-05-14T00:14:43+0700
 # project: Sprite_harmess
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Stories should pass through review before done
 
 generated: 2026-04-21T23:28:12+0700
-last_updated: 2026-05-13T23:44:25+0700
+last_updated: 2026-05-14T00:14:43+0700
 project: Sprite_harmess
 project_key: NOKEY
 tracking_system: file-system
@@ -91,16 +91,16 @@ development_status:
   5-6-review-edit-reject-draft-or-promote-skill-candidates: done
   5-7-keep-skill-candidates-separate-from-promoted-skills: done
   epic-5-retrospective: done
-  epic-6: in-progress
+  epic-6: done
   6-1-render-minimal-tui-startup-and-runtime-state: done
   6-2-display-message-stream-tool-activity-and-validation-results: done
   6-3-support-multiline-input-steering-cancellation-and-approval-responses: done
   6-4-launch-live-ink-tui-workbench-shell: done
   6-5-implement-slash-commands-as-runtime-intents: done
   6-6-show-final-summary-and-learning-review-outputs-in-tui: done
-  epic-6-retrospective: optional
-  epic-7: backlog
-  7-1-start-json-rpc-mode-over-stdin-stdout: backlog
+  epic-6-retrospective: done
+  epic-7: in-progress
+  7-1-start-json-rpc-mode-over-stdin-stdout: done
   7-2-create-or-resume-sessions-through-json-rpc: backlog
   7-3-submit-tasks-through-json-rpc: backlog
   7-4-stream-runtime-lifecycle-events-to-rpc-clients: backlog

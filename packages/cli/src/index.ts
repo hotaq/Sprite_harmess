@@ -30,6 +30,7 @@ import {
   type StoredLearningReviewArtifactResult,
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
+import { runJsonRpcStdioServer } from "@sprite/rpc";
 import {
   createTuiApprovalResponseIntent,
   createTuiCancelIntent,
@@ -67,6 +68,7 @@ import {
 } from "@sprite/shared";
 import { Command, CommanderError } from "commander";
 import { realpathSync } from "node:fs";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -81,6 +83,23 @@ export interface CliIO {
 
 function writeMessage(io: CliIO, message: string): void {
   io.stdout.write(message.endsWith("\n") ? message : `${message}\n`);
+}
+
+export function createCliOutputWritable(output: CliIO["stdout"]): Writable {
+  if (output instanceof Writable) {
+    return output;
+  }
+
+  return new Writable({
+    write(chunk, _encoding, callback) {
+      try {
+        output.write(chunk.toString());
+        callback();
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  });
 }
 
 const OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
@@ -2275,6 +2294,21 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
       }
 
       await runLiveTuiCommand(runtime, tuiOptions);
+    });
+
+  program
+    .command("rpc")
+    .description("start JSON-RPC mode over stdin/stdout")
+    .action(async () => {
+      const runtime = new AgentRuntime({
+        homeDir: process.env.HOME ?? process.env.USERPROFILE
+      });
+
+      await runJsonRpcStdioServer({
+        input: process.stdin,
+        output: createCliOutputWritable(io.stdout),
+        runtime
+      });
     });
 
   const sessionCommand = program

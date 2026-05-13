@@ -30,6 +30,11 @@
     "packages/providers/dist/**/*.js.map",
     "packages/providers/dist/**/*.d.ts",
     "packages/providers/dist/**/*.d.ts.map",
+    "packages/rpc/package.json",
+    "packages/rpc/dist/**/*.js",
+    "packages/rpc/dist/**/*.js.map",
+    "packages/rpc/dist/**/*.d.ts",
+    "packages/rpc/dist/**/*.d.ts.map",
     "packages/sandbox/package.json",
     "packages/sandbox/dist/**/*.js",
     "packages/sandbox/dist/**/*.js.map",
@@ -76,7 +81,7 @@
     "prepare": "npm run build --silent",
     "dev": "npm run dev:cli",
     "dev:cli": "npm run build --silent && node packages/cli/dist/index.js",
-    "dev:rpc": "node scripts/dev-rpc-placeholder.mjs"
+    "dev:rpc": "npm run build --silent && node packages/cli/dist/index.js rpc"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
