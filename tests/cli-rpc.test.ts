@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { AgentRuntime } from "@sprite/core";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createCliOutputWritable } from "../packages/cli/src/index.js";
@@ -28,6 +35,10 @@ function parseJsonLines(stdout: string): Record<string, unknown>[] {
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function readJson(path: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
 
 describe("sprite rpc CLI", () => {
@@ -100,6 +111,118 @@ describe("sprite rpc CLI", () => {
       expect(result.stdout).not.toContain("sk-test-secret");
       expect(result.stdout).not.toContain(homeDir);
       expect(result.stdout).not.toContain(projectDir);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("creates a durable session over JSON-RPC stdout only", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const canonicalProjectDir = realpathSync.native(projectDir);
+      const result = spawnSync("node", [cliPath, "rpc"], {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          SPRITE_TEST_SECRET: "sk-test-secret"
+        },
+        input: `${JSON.stringify({
+          id: "cli-create-session",
+          jsonrpc: "2.0",
+          method: "session.create",
+          params: {
+            cwd: projectDir,
+            token: "OPENAI_API_KEY=sk-test-secret"
+          }
+        })}\n`
+      });
+      const messages = parseJsonLines(result.stdout);
+      const created = messages[1].result as {
+        session: { sessionId: string };
+      };
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ method: "rpc.ready" });
+      expect(messages[1]).toMatchObject({
+        id: "cli-create-session",
+        result: {
+          runtime: { activeTask: null, eventCount: 0 },
+          session: {
+            cwd: canonicalProjectDir,
+            sessionId: expect.stringMatching(/^ses_/),
+            status: "created",
+            taskId: null
+          }
+        }
+      });
+      expect(
+        readJson(
+          join(
+            projectDir,
+            ".sprite",
+            "sessions",
+            created.session.sessionId,
+            "state.json"
+          )
+        )
+      ).toMatchObject({
+        eventCount: 0,
+        sessionId: created.session.sessionId
+      });
+      expect(result.stdout).not.toContain("sk-test-secret");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("resumes a persisted session over JSON-RPC stdout only", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const seedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const submitted = seedRuntime.submitInteractiveTask("resume from CLI RPC");
+
+      expect(submitted.ok).toBe(true);
+      if (!submitted.ok) {
+        return;
+      }
+
+      const result = spawnSync("node", [cliPath, "rpc"], {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: { ...process.env, HOME: homeDir },
+        input: `${JSON.stringify({
+          id: "cli-resume-session",
+          jsonrpc: "2.0",
+          method: "session.resume",
+          params: {
+            cwd: projectDir,
+            sessionId: submitted.value.sessionId
+          }
+        })}\n`
+      });
+      const messages = parseJsonLines(result.stdout);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ method: "rpc.ready" });
+      expect(messages[1]).toMatchObject({
+        id: "cli-resume-session",
+        result: {
+          session: {
+            restoredEventCount: 2,
+            sessionId: submitted.value.sessionId,
+            taskId: submitted.value.taskId
+          }
+        }
+      });
     } finally {
       rmSync(rootDir, { force: true, recursive: true });
     }

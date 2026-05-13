@@ -238,6 +238,16 @@ export interface SessionResumeResult {
   warnings: string[];
 }
 
+export interface SessionCreateResult {
+  activeTask: null;
+  createdAt: string;
+  cwd: string;
+  eventCount: number;
+  provider: ResolvedProviderState | null;
+  sessionId: string;
+  warnings: string[];
+}
+
 export type RuntimeToolCallRequest = {
   [Name in ToolName]: {
     input: ToolInputMap[Name];
@@ -799,6 +809,57 @@ export class AgentRuntime {
 
   getEventHistory(taskId?: string): RuntimeEventRecord[] {
     return this.eventBus.getHistory(taskId);
+  }
+
+  createSession(): Result<SessionCreateResult> {
+    if (this.activeTask !== null) {
+      return err(
+        new SpriteError(
+          "SESSION_ALREADY_ACTIVE",
+          "Runtime already has an active task; create a new runtime process or resume the existing session."
+        )
+      );
+    }
+
+    if (this.sessionCreatedAt !== null) {
+      return err(
+        new SpriteError(
+          "SESSION_ALREADY_CREATED",
+          "Runtime already created a session; resume or continue that session instead of creating another one."
+        )
+      );
+    }
+
+    const bootstrapState = this.getBootstrapState();
+
+    if (!bootstrapState.ok) {
+      return bootstrapState;
+    }
+
+    const createdAt = this.now();
+    const ensured = this.sessionStore.ensureSession(
+      this.sessionId,
+      bootstrapState.value.startup.cwd,
+      createdAt
+    );
+
+    if (!ensured.ok) {
+      return err(ensured.error);
+    }
+
+    this.sessionCreatedAt = createdAt;
+
+    return ok({
+      activeTask: null,
+      createdAt,
+      cwd: bootstrapState.value.startup.cwd,
+      eventCount: this.eventBus
+        .getHistory()
+        .filter((event) => event.sessionId === this.sessionId).length,
+      provider: bootstrapState.value.provider,
+      sessionId: this.sessionId,
+      warnings: bootstrapState.value.warnings
+    });
   }
 
   resumeSession(sessionId: string): Result<SessionResumeResult> {

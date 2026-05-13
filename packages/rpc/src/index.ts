@@ -1,4 +1,6 @@
 import type { AgentRuntime } from "@sprite/core";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 export type JsonRpcId = string | number | null;
@@ -47,8 +49,10 @@ export type JsonRpcMessage =
   | JsonRpcResponse;
 
 export interface JsonRpcRuntimeBridge {
+  createSession: AgentRuntime["createSession"];
   getBootstrapState: AgentRuntime["getBootstrapState"];
   getEventHistory: AgentRuntime["getEventHistory"];
+  resumeSession: AgentRuntime["resumeSession"];
 }
 
 export interface JsonRpcHandlerOptions {
@@ -64,6 +68,7 @@ export interface JsonRpcStdioServerOptions extends JsonRpcHandlerOptions {
 const JSON_RPC_VERSION = "2.0";
 const RPC_SERVER_NAME = "sprite-rpc";
 const RPC_TRANSPORT = "stdio";
+const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -130,11 +135,223 @@ function createProtocolMetadata(runtimeConnected: boolean): {
   transport: "stdio";
 } {
   return {
-    capabilities: ["rpc.ping"],
+    capabilities: ["rpc.ping", "session.create", "session.resume"],
     protocolVersion: JSON_RPC_VERSION,
     runtimeConnected,
     server: RPC_SERVER_NAME,
     transport: RPC_TRANSPORT
+  };
+}
+
+function createInvalidParamsResponse(
+  id: JsonRpcId,
+  nextAction: string
+): JsonRpcErrorResponse {
+  return createJsonRpcErrorResponse({
+    code: -32602,
+    id,
+    message: "Invalid params.",
+    nextAction
+  });
+}
+
+function createRuntimeUnavailableResponse(id: JsonRpcId): JsonRpcErrorResponse {
+  return createJsonRpcErrorResponse({
+    code: -32000,
+    id,
+    message: "Runtime initialization failed.",
+    nextAction: "Check stderr diagnostics and retry after fixing config.",
+    recoverable: true
+  });
+}
+
+function readSafeErrorCode(error: unknown): string | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  return typeof error.code === "string" &&
+    SAFE_ERROR_CODE_PATTERN.test(error.code)
+    ? error.code
+    : undefined;
+}
+
+function createSessionErrorNextAction(code: string | undefined): string {
+  switch (code) {
+    case "SESSION_ALREADY_CREATED":
+      return "Use the existing session ID from the first session.create call, or start a new RPC runtime process for a fresh session.";
+    case "SESSION_ALREADY_ACTIVE":
+      return "Resume or continue the active runtime session instead of creating another session.";
+    case "SESSION_NOT_FOUND":
+      return "Check that the session ID exists under the requested cwd and retry.";
+    case "SESSION_ID_INVALID":
+      return "Use a valid session ID with the ses_ prefix.";
+    case "SESSION_RESUME_UNAVAILABLE":
+      return "Create or resume a session with a persisted task snapshot before requesting resume metadata.";
+    case "SESSION_STATE_MISSING":
+    case "SESSION_EVENTS_MISSING":
+      return "Check that the local session artifacts are complete and retry.";
+    case "SESSION_STATE_READ_FAILED":
+    case "SESSION_EVENTS_READ_FAILED":
+      return "Check local session file permissions and retry.";
+    case "SESSION_STATE_INVALID_JSON":
+    case "SESSION_EVENT_LOG_INVALID_JSON":
+    case "SESSION_EVENT_RUNTIME_INVALID":
+      return "Repair or remove invalid local session artifacts before retrying.";
+    case "SESSION_STATE_SCOPE_MISMATCH":
+      return "Check that the session ID and cwd refer to the same local session.";
+    case "SESSION_STORAGE_ERROR":
+    case "SESSION_STATE_WRITE_FAILED":
+    case "SESSION_EVENT_APPEND_FAILED":
+      return "Check local session storage permissions and retry.";
+    default:
+      return "Check the session ID, cwd scope, and local session artifacts.";
+  }
+}
+
+function createSessionRuntimeErrorResponse(
+  id: JsonRpcId,
+  error: unknown
+): JsonRpcErrorResponse {
+  const code = readSafeErrorCode(error);
+  const safeCodeSuffix = code === undefined ? "" : ` (${code})`;
+
+  return createJsonRpcErrorResponse({
+    code: -32602,
+    id,
+    message: `Session request rejected${safeCodeSuffix}.`,
+    nextAction: createSessionErrorNextAction(code),
+    recoverable: true
+  });
+}
+
+function readParamsRecord(
+  request: JsonRpcRequest
+): { ok: true; params: Record<string, unknown> } | { ok: false; response: JsonRpcErrorResponse } {
+  if (!isRecord(request.params)) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        "Send params as an object with the required session fields."
+      )
+    };
+  }
+
+  return { ok: true, params: request.params };
+}
+
+function normalizeCwd(value: string): string | null {
+  try {
+    return realpathSync.native(path.resolve(value));
+  } catch {
+    return null;
+  }
+}
+
+function validateOptionalObjectParam(
+  params: Record<string, unknown>,
+  key: "config" | "context"
+): JsonRpcErrorResponse | null {
+  if (!hasOwn(params, key) || isRecord(params[key])) {
+    return null;
+  }
+
+  return createInvalidParamsResponse(
+    null,
+    `${key} must be an object when provided.`
+  );
+}
+
+function readScopedCwd(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+):
+  | { cwd: string; ok: true; params: Record<string, unknown> }
+  | { ok: false; response: JsonRpcErrorResponse } {
+  const params = readParamsRecord(request);
+
+  if (!params.ok) {
+    return params;
+  }
+
+  if (typeof params.params.cwd !== "string" || params.params.cwd.length === 0) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        "Provide cwd as a non-empty string."
+      )
+    };
+  }
+
+  const configError = validateOptionalObjectParam(params.params, "config");
+
+  if (configError !== null) {
+    return {
+      ok: false,
+      response: {
+        ...configError,
+        id: request.id ?? null
+      }
+    };
+  }
+
+  const contextError = validateOptionalObjectParam(params.params, "context");
+
+  if (contextError !== null) {
+    return {
+      ok: false,
+      response: {
+        ...contextError,
+        id: request.id ?? null
+      }
+    };
+  }
+
+  const bootstrap = runtime.getBootstrapState();
+
+  if (!bootstrap.ok) {
+    return {
+      ok: false,
+      response: createRuntimeUnavailableResponse(request.id ?? null)
+    };
+  }
+
+  const requestedCwd = normalizeCwd(params.params.cwd);
+  const runtimeCwd = normalizeCwd(bootstrap.value.startup.cwd);
+
+  if (requestedCwd === null) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        "Requested cwd must exist and be readable."
+      )
+    };
+  }
+
+  if (runtimeCwd === null) {
+    return {
+      ok: false,
+      response: createRuntimeUnavailableResponse(request.id ?? null)
+    };
+  }
+
+  if (requestedCwd !== runtimeCwd) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        "Requested cwd is outside the current RPC runtime scope."
+      )
+    };
+  }
+
+  return {
+    cwd: runtimeCwd,
+    ok: true,
+    params: params.params
   };
 }
 
@@ -252,12 +469,111 @@ function handleRpcPing(
       });
 }
 
+function handleSessionCreate(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): JsonRpcResponse | undefined {
+  if (isNotification(request)) {
+    return undefined;
+  }
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  const created = runtime.createSession();
+
+  if (!created.ok) {
+    return createSessionRuntimeErrorResponse(request.id ?? null, created.error);
+  }
+
+  return createJsonRpcSuccessResponse(request.id ?? null, {
+    session: {
+      sessionId: created.value.sessionId,
+      cwd: created.value.cwd,
+      status: "created",
+      taskId: null,
+      createdAt: created.value.createdAt
+    },
+    runtime: {
+      provider: created.value.provider,
+      eventCount: created.value.eventCount,
+      activeTask: created.value.activeTask,
+      capabilities: createProtocolMetadata(true).capabilities
+    },
+    warnings: created.value.warnings
+  });
+}
+
+function handleSessionResume(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): JsonRpcResponse | undefined {
+  if (isNotification(request)) {
+    return undefined;
+  }
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  if (
+    typeof scoped.params.sessionId !== "string" ||
+    scoped.params.sessionId.length === 0
+  ) {
+    return createInvalidParamsResponse(
+      request.id ?? null,
+      "Provide sessionId as a non-empty string."
+    );
+  }
+
+  const resumed = runtime.resumeSession(scoped.params.sessionId);
+
+  if (!resumed.ok) {
+    return createSessionRuntimeErrorResponse(request.id ?? null, resumed.error);
+  }
+
+  return createJsonRpcSuccessResponse(request.id ?? null, {
+    session: {
+      sessionId: resumed.value.sessionId,
+      taskId: resumed.value.taskId,
+      correlationId: resumed.value.correlationId,
+      status: resumed.value.status,
+      currentPhase: resumed.value.currentPhase,
+      goal: resumed.value.goal,
+      latestPlan: resumed.value.latestPlan,
+      restoredEventCount: resumed.value.restoredEventCount,
+      resumeEventId: resumed.value.resumeEventId
+    },
+    inspection: {
+      executionState: resumed.value.inspection.executionState,
+      eventCount: resumed.value.inspection.eventCount,
+      pendingApprovalCount: resumed.value.inspection.pendingApprovalCount,
+      persistedEventCount: resumed.value.inspection.persistedEventCount,
+      recentEvents: resumed.value.inspection.recentEvents
+    },
+    warnings: resumed.value.warnings
+  });
+}
+
 function handleJsonRpcRequest(
   request: JsonRpcRequest,
   runtime: JsonRpcRuntimeBridge
 ): JsonRpcResponse | undefined {
   if (request.method === "rpc.ping") {
     return handleRpcPing(request, runtime);
+  }
+
+  if (request.method === "session.create") {
+    return handleSessionCreate(request, runtime);
+  }
+
+  if (request.method === "session.resume") {
+    return handleSessionResume(request, runtime);
   }
 
   return isNotification(request)

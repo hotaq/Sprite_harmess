@@ -77,9 +77,34 @@ type ResumeSessionResult = {
   };
 };
 
+type CreateSessionResult = {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    activeTask: null;
+    createdAt: string;
+    cwd: string;
+    eventCount: number;
+    provider: unknown;
+    sessionId: string;
+    warnings: string[];
+  };
+};
+
 type ResumableRuntime = AgentRuntime & {
+  createSession?: () => CreateSessionResult;
   resumeSession?: (sessionId: string) => ResumeSessionResult;
 };
+
+function createRuntimeSession(runtime: AgentRuntime): CreateSessionResult {
+  const createSession = (runtime as ResumableRuntime).createSession;
+
+  if (createSession === undefined) {
+    throw new Error("Expected AgentRuntime.createSession() to exist.");
+  }
+
+  return createSession.call(runtime);
+}
 
 function resumeSession(
   runtime: AgentRuntime,
@@ -95,6 +120,59 @@ function resumeSession(
 }
 
 describe("AgentRuntime session persistence", () => {
+  it("creates a durable no-task session without starting a task", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const created = createRuntimeSession(runtime);
+
+      expect(created.ok).toBe(true);
+      if (!created.ok || created.value === undefined) {
+        return;
+      }
+
+      expect(created.value).toMatchObject({
+        activeTask: null,
+        cwd: projectDir,
+        eventCount: 0,
+        sessionId: expect.stringMatching(/^ses_/)
+      });
+      expect(runtime.getActiveTask().ok).toBe(false);
+      expect(runtime.getEventHistory()).toEqual([]);
+
+      const duplicate = createRuntimeSession(runtime);
+
+      expect(duplicate.ok).toBe(false);
+      expect(duplicate.error?.code).toBe("SESSION_ALREADY_CREATED");
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        created.value.sessionId
+      );
+
+      expect(existsSync(join(sessionDir, "events.ndjson"))).toBe(true);
+      expect(readNdjson(join(sessionDir, "events.ndjson"))).toEqual([]);
+      expect(readJson(join(sessionDir, "state.json"))).toMatchObject({
+        schemaVersion: 1,
+        sessionId: created.value.sessionId,
+        cwd: projectDir,
+        eventCount: 0,
+        filesChanged: [],
+        filesProposedForChange: [],
+        filesRead: [],
+        pendingApprovalCount: 0
+      });
+      expect(readJson(join(sessionDir, "state.json"))).not.toHaveProperty(
+        "latestTask"
+      );
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("creates a project-local session and persists started/waiting events in order", () => {
     const { homeDir, projectDir, rootDir } = createTempWorkspace();
 
