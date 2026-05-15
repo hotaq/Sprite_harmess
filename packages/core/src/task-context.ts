@@ -220,6 +220,7 @@ export interface RuntimeSelfModelSnapshot {
     sources: readonly string[];
   };
   tools: {
+    allowedNames: readonly string[];
     available: boolean;
     names: readonly string[];
     providerDrivenExecutionAvailable: boolean;
@@ -228,6 +229,7 @@ export interface RuntimeSelfModelSnapshot {
 }
 
 export interface TaskContextAssemblyInput {
+  allowedTools?: readonly ToolName[];
   memoryEntries?: readonly TaskContextMemoryInput[];
   projectContext: ProjectContextLoadResult;
   compactedContext?: CompactedSessionContext;
@@ -424,6 +426,9 @@ function createRuntimeSelfModelSection({
         `Provider model: ${snapshot.provider.model ?? "not configured"}.`,
         `Provider auth: ${snapshot.provider.auth}.`,
         "Runtime tool registry is available through explicit runtime/package APIs.",
+        snapshot.tools.allowedNames.length === 0
+          ? "Allowed tool scope for this task: none."
+          : `Allowed tool scope for this task: ${snapshot.tools.allowedNames.join(", ")}.`,
         `Provider streaming: ${snapshot.provider.supportsStreaming}.`,
         `Provider tool calls: ${snapshot.provider.supportsToolCalls}.`,
         `Context schema: ${snapshot.context.packetSchemaVersion}.`,
@@ -455,6 +460,7 @@ function createRuntimeSelfModelSection({
       providerDrivenToolExecution: "not-connected",
       providerDrivenToolExecutionAvailable:
         snapshot.tools.providerDrivenExecutionAvailable,
+      allowedToolNames: snapshot.tools.allowedNames,
       providerName: snapshot.provider.providerName,
       providerSupportsStreaming: snapshot.provider.supportsStreaming,
       providerSupportsToolCalls: snapshot.provider.supportsToolCalls,
@@ -549,6 +555,7 @@ export function createRuntimeSelfModelSnapshot(
       )
     },
     tools: {
+      allowedNames: [...(input.allowedTools ?? RUNTIME_TOOL_NAMES)],
       available: true,
       names: [...RUNTIME_TOOL_NAMES],
       providerDrivenExecutionAvailable: false,
@@ -604,10 +611,7 @@ function createWorkingMemorySectionFromSnapshot(
   );
 
   return {
-    content: createSafePreviewSection(
-      rawContent,
-      sectionContentMaxLength
-    ),
+    content: createSafePreviewSection(rawContent, sectionContentMaxLength),
     metadata: createSafeMetadata({
       available: true,
       blockerCount: snapshot.blockers.length,
@@ -1038,7 +1042,9 @@ function createMemorySection({
           new Set(
             entries
               .map((entry) => entry.sourceType)
-              .filter((sourceType): sourceType is string => sourceType !== undefined)
+              .filter(
+                (sourceType): sourceType is string => sourceType !== undefined
+              )
           )
         ),
         types: Array.from(new Set(entries.map((entry) => entry.type)))
@@ -1077,7 +1083,9 @@ function createMemorySection({
         .map((entry) => entry.entry.retrievalReason)
         .filter((reason): reason is string => reason !== undefined),
       sourceEventIds: Array.from(
-        new Set(allowedEntries.flatMap((entry) => entry.entry.sourceEventIds ?? []))
+        new Set(
+          allowedEntries.flatMap((entry) => entry.entry.sourceEventIds ?? [])
+        )
       ),
       sourceIds: allowedEntries
         .map((entry) => entry.entry.id)
@@ -1086,7 +1094,9 @@ function createMemorySection({
         new Set(
           entries
             .map((entry) => entry.sourceType)
-            .filter((sourceType): sourceType is string => sourceType !== undefined)
+            .filter(
+              (sourceType): sourceType is string => sourceType !== undefined
+            )
         )
       ),
       types: Array.from(new Set(entries.map((entry) => entry.type)))
@@ -1110,9 +1120,7 @@ function formatMemoryContextEntry(
       ? entry.type
       : `${entry.sourceType ?? "memory"}:${entry.id}`;
   const reason =
-    entry.retrievalReason === undefined
-      ? ""
-      : ` — ${entry.retrievalReason}`;
+    entry.retrievalReason === undefined ? "" : ` — ${entry.retrievalReason}`;
 
   return `${source}: ${redactedPreview}${reason}`;
 }
@@ -1142,9 +1150,7 @@ function createSkillsSection({
 
   return {
     content: createSafePreviewSection(
-      entries
-        .map(formatSkillContextEntry)
-        .join("\n"),
+      entries.map(formatSkillContextEntry).join("\n"),
       options.sectionContentMaxLength
     ),
     metadata: {
@@ -1164,15 +1170,23 @@ function createSkillsSection({
     },
     priority,
     redacted: entries.some((entry) =>
-      [entry.name, entry.description, entry.source, entry.content, entry.id].some(
-        (value) => value !== undefined && containsSecretLikeValue(value)
-      )
+      [
+        entry.name,
+        entry.description,
+        entry.source,
+        entry.content,
+        entry.id
+      ].some((value) => value !== undefined && containsSecretLikeValue(value))
     ),
     source: "skills",
     status: entries.some((entry) =>
-      [entry.name, entry.description, entry.source, entry.content, entry.id].some(
-        (value) => value !== undefined && containsSecretLikeValue(value)
-      )
+      [
+        entry.name,
+        entry.description,
+        entry.source,
+        entry.content,
+        entry.id
+      ].some((value) => value !== undefined && containsSecretLikeValue(value))
     )
       ? "redacted"
       : "included",
@@ -1185,7 +1199,9 @@ function createSkillsSection({
 function formatSkillContextEntry(entry: TaskContextSkillInput): string {
   const source = entry.source === undefined ? "unknown" : entry.source;
   const description =
-    entry.description === undefined ? "" : `\nDescription: ${entry.description}`;
+    entry.description === undefined
+      ? ""
+      : `\nDescription: ${entry.description}`;
   const content =
     entry.content === undefined || entry.content.trim().length === 0
       ? "\nContent: No bounded skill body was provided."
@@ -1328,7 +1344,9 @@ function formatBoundedContextList(
 ): string {
   const visibleValues = values
     .slice(-WORKING_MEMORY_LIST_ITEM_LIMIT)
-    .map((value) => createRedactedPreview(value, WORKING_MEMORY_PREVIEW_MAX_LENGTH));
+    .map((value) =>
+      createRedactedPreview(value, WORKING_MEMORY_PREVIEW_MAX_LENGTH)
+    );
   const omittedCount = Math.max(0, values.length - visibleValues.length);
   const omittedSuffix =
     omittedCount === 0 ? "" : ` (${omittedCount} older omitted)`;
@@ -1394,7 +1412,9 @@ function createSafePathLabel(pathValue: string): string {
     return createRedactedPreview(pathValue, 80);
   }
 
-  const segments = pathValue.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  const segments = pathValue
+    .split(/[\\/]+/)
+    .filter((segment) => segment.length > 0);
 
   return segments.at(-1) ?? ".";
 }

@@ -68,6 +68,16 @@ function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
 
+function readNdjson(path: string): Record<string, unknown>[] {
+  const content = readFileSync(path, "utf8").trim();
+
+  return content.length === 0
+    ? []
+    : content
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 function expectSingleResponse(
   response: ReturnType<typeof handleJsonRpcMessage>
 ): Record<string, unknown> {
@@ -127,7 +137,8 @@ describe("JSON-RPC protocol adapter", () => {
         capabilities: expect.arrayContaining([
           "rpc.ping",
           "session.create",
-          "session.resume"
+          "session.resume",
+          "task.start"
         ]),
         protocolVersion: "2.0",
         runtimeConnected: true,
@@ -173,7 +184,8 @@ describe("JSON-RPC protocol adapter", () => {
           capabilities: expect.arrayContaining([
             "rpc.ping",
             "session.create",
-            "session.resume"
+            "session.resume",
+            "task.start"
           ]),
           eventCount: 0
         },
@@ -188,7 +200,13 @@ describe("JSON-RPC protocol adapter", () => {
     expect(existsSync(join(projectDir, ".sprite", "sessions"))).toBe(true);
     expect(
       readJson(
-        join(projectDir, ".sprite", "sessions", result.session.sessionId, "state.json")
+        join(
+          projectDir,
+          ".sprite",
+          "sessions",
+          result.session.sessionId,
+          "state.json"
+        )
       )
     ).toMatchObject({
       cwd: projectDir,
@@ -297,6 +315,264 @@ describe("JSON-RPC protocol adapter", () => {
     );
   });
 
+  it("starts tasks over RPC inside a previously created session", () => {
+    const { homeDir, projectDir, runtime } = createTempRuntime();
+    const created = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "create-for-task",
+          jsonrpc: "2.0",
+          method: "session.create",
+          params: { cwd: projectDir }
+        },
+        { runtime }
+      )
+    );
+    const createdResult = created.result as {
+      session: { sessionId: string };
+    };
+    const response = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "start-task",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: {
+            allowedTools: ["read_file"],
+            context: {
+              client: "rpc-test"
+            },
+            cwd: projectDir,
+            memoryScope: {
+              manual: false,
+              procedural: false,
+              working: true
+            },
+            output: {
+              format: "json"
+            },
+            provider: {
+              baseUrl: "https://example.invalid/v1",
+              model: "gpt-rpc-test",
+              providerName: "openai-compatible"
+            },
+            sessionId: createdResult.session.sessionId,
+            task: "start this task without leaking sk-test-secret"
+          }
+        },
+        { runtime }
+      )
+    );
+    const result = response.result as {
+      lifecycle: {
+        initialEvents: Array<{ type: string }>;
+        waitingReason: string;
+      };
+      session: { sessionId: string };
+      task: { correlationId: string; taskId: string };
+    };
+
+    expect(response).toMatchObject({
+      id: "start-task",
+      jsonrpc: "2.0",
+      result: {
+        acceptedScopes: {
+          allowedTools: ["read_file"],
+          cwd: projectDir,
+          memoryScope: {
+            manual: false,
+            procedural: false,
+            working: true
+          },
+          outputFormat: "json",
+          provider: {
+            model: "gpt-rpc-test",
+            providerName: "openai-compatible"
+          },
+          toolExecutionEnabled: false
+        },
+        lifecycle: {
+          initialEvents: [{ type: "task.started" }, { type: "task.waiting" }],
+          waitingReason: "steering-required"
+        },
+        session: {
+          resumed: false,
+          sessionId: createdResult.session.sessionId
+        },
+        task: {
+          currentPhase: "act",
+          status: "waiting-for-input"
+        }
+      }
+    });
+    expect(result.session.sessionId).toBe(createdResult.session.sessionId);
+    expect(result.task.taskId).toMatch(/^task_/);
+    expect(result.task.correlationId).toMatch(/^corr_/);
+    expect(runtime.getActiveTask().ok).toBe(true);
+
+    const sessionDir = join(
+      projectDir,
+      ".sprite",
+      "sessions",
+      createdResult.session.sessionId
+    );
+    const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+    const state = readJson(join(sessionDir, "state.json"));
+
+    expect(persistedEvents.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.waiting"
+    ]);
+    expect(state).toMatchObject({
+      eventCount: 2,
+      latestTask: {
+        status: "waiting-for-input",
+        taskId: result.task.taskId
+      },
+      sessionId: createdResult.session.sessionId
+    });
+    expect(JSON.stringify(response)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(response)).not.toContain(homeDir);
+  });
+
+  it("starts tasks over RPC without an explicit session id using the runtime default session", () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const response = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "start-default-session",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: {
+            cwd: projectDir,
+            task: "start with default runtime session"
+          }
+        },
+        { runtime }
+      )
+    );
+    const result = response.result as {
+      session: { sessionId: string };
+      task: { taskId: string };
+    };
+
+    expect(response).toMatchObject({
+      id: "start-default-session",
+      result: {
+        acceptedScopes: {
+          allowedTools: [],
+          outputFormat: "text",
+          toolExecutionEnabled: false
+        },
+        session: {
+          resumed: false,
+          sessionId: expect.stringMatching(/^ses_/)
+        },
+        task: {
+          currentPhase: "act",
+          status: "waiting-for-input"
+        }
+      }
+    });
+    expect(
+      readJson(
+        join(
+          projectDir,
+          ".sprite",
+          "sessions",
+          result.session.sessionId,
+          "state.json"
+        )
+      )
+    ).toMatchObject({
+      latestTask: {
+        taskId: result.task.taskId
+      },
+      sessionId: result.session.sessionId
+    });
+  });
+
+  it("starts tasks over RPC against an existing persisted session id", () => {
+    const { homeDir, projectDir, runtime: seedRuntime } = createTempRuntime();
+    const first = seedRuntime.submitInteractiveTask("seed persisted RPC task");
+
+    expect(first.ok).toBe(true);
+    if (!first.ok) {
+      return;
+    }
+
+    const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+    const response = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "start-existing-session",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: {
+            cwd: projectDir,
+            sessionId: first.value.sessionId,
+            task: "append task through RPC"
+          }
+        },
+        { runtime }
+      )
+    );
+    const result = response.result as {
+      session: { sessionId: string };
+      task: { taskId: string };
+    };
+    const sessionDir = join(
+      projectDir,
+      ".sprite",
+      "sessions",
+      first.value.sessionId
+    );
+
+    expect(response).toMatchObject({
+      id: "start-existing-session",
+      result: {
+        session: {
+          restoredEventCount: 2,
+          resumed: true,
+          sessionId: first.value.sessionId
+        },
+        task: {
+          status: "waiting-for-input"
+        }
+      }
+    });
+    expect(result.session.sessionId).toBe(first.value.sessionId);
+    expect(result.task.taskId).not.toBe(first.value.taskId);
+    expect(readNdjson(join(sessionDir, "events.ndjson"))).toHaveLength(4);
+    expect(readJson(join(sessionDir, "state.json"))).toMatchObject({
+      eventCount: 4,
+      latestTask: {
+        taskId: result.task.taskId
+      },
+      sessionId: first.value.sessionId
+    });
+  });
+
+  it("does not respond to task.start notifications and does not create task side effects", () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const response = handleJsonRpcMessage(
+      {
+        jsonrpc: "2.0",
+        method: "task.start",
+        params: {
+          cwd: projectDir,
+          task: "notification must not start"
+        }
+      },
+      { runtime }
+    );
+
+    expect(response).toBeUndefined();
+    expect(runtime.getActiveTask().ok).toBe(false);
+    expect(runtime.getEventHistory()).toEqual([]);
+    expect(existsSync(join(projectDir, ".sprite", "sessions"))).toBe(false);
+  });
+
   it("returns invalid params for malformed or out-of-scope session requests", () => {
     const { projectDir, rootDir, runtime } = createTempRuntime();
     const missingCwd = expectSingleResponse(
@@ -351,6 +627,158 @@ describe("JSON-RPC protocol adapter", () => {
     expect(outOfScope).toMatchObject({
       error: { code: -32602 },
       id: "out-of-scope",
+      jsonrpc: "2.0"
+    });
+  });
+
+  it("returns invalid params for unsafe or unsupported task.start scopes", () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const requests = [
+      {
+        expectedDataCode: "INVALID_CWD",
+        id: "missing-cwd",
+        params: { task: "x" }
+      },
+      {
+        expectedDataCode: "TASK_TEXT_INVALID",
+        id: "missing-task",
+        params: { cwd: projectDir }
+      },
+      {
+        expectedDataCode: "TASK_TEXT_INVALID",
+        id: "empty-task",
+        params: { cwd: projectDir, task: "   " }
+      },
+      {
+        expectedDataCode: "SESSION_ID_INVALID",
+        id: "bad-session",
+        params: { cwd: projectDir, sessionId: "not-safe", task: "x" }
+      },
+      {
+        expectedDataCode: "TASK_TOOL_SCOPE_INVALID",
+        id: "bad-tool",
+        params: {
+          allowedTools: ["read_file", "unknown_tool"],
+          cwd: projectDir,
+          task: "x"
+        }
+      },
+      {
+        expectedDataCode: "TASK_MEMORY_SCOPE_UNSUPPORTED",
+        id: "bad-memory",
+        params: {
+          cwd: projectDir,
+          memoryScope: { manual: true, procedural: true, working: false },
+          task: "x"
+        }
+      },
+      {
+        expectedDataCode: "TASK_MEMORY_SCOPE_UNSUPPORTED",
+        id: "unknown-memory-key",
+        params: {
+          cwd: projectDir,
+          memoryScope: {
+            longTerm: true,
+            manual: true,
+            procedural: true,
+            working: true
+          },
+          task: "x"
+        }
+      },
+      {
+        expectedDataCode: "TASK_OUTPUT_FORMAT_INVALID",
+        id: "bad-output",
+        params: { cwd: projectDir, output: { format: "xml" }, task: "x" }
+      },
+      {
+        expectedDataCode: "TASK_PROVIDER_SECRET_REJECTED",
+        id: "secret-provider",
+        params: {
+          cwd: projectDir,
+          provider: {
+            apiKey: "sk-test-secret",
+            model: "gpt-rpc-test",
+            providerName: "openai-compatible"
+          },
+          task: "x"
+        }
+      }
+    ];
+
+    for (const request of requests) {
+      const response = expectSingleResponse(
+        handleJsonRpcMessage(
+          {
+            id: request.id,
+            jsonrpc: "2.0",
+            method: "task.start",
+            params: request.params
+          },
+          { runtime }
+        )
+      );
+      const serialized = JSON.stringify(response);
+
+      expect(response).toMatchObject({
+        error: {
+          code: -32602,
+          data: {
+            code: request.expectedDataCode,
+            recoverable: true,
+            subsystem: "rpc"
+          }
+        },
+        id: request.id,
+        jsonrpc: "2.0"
+      });
+      expect(serialized).not.toContain("sk-test-secret");
+      expect(serialized).not.toContain(projectDir);
+    }
+  });
+
+  it("returns a safe task.start conflict error instead of replacing an active task", () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const first = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "first-task",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: { cwd: projectDir, task: "first task" }
+        },
+        { runtime }
+      )
+    );
+    const duplicate = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "duplicate-task",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: { cwd: projectDir, task: "second task" }
+        },
+        { runtime }
+      )
+    );
+
+    expect(first).toMatchObject({
+      result: {
+        task: {
+          status: "waiting-for-input"
+        }
+      }
+    });
+    expect(duplicate).toMatchObject({
+      error: {
+        code: -32602,
+        data: {
+          nextAction: expect.stringContaining("Resolve or cancel"),
+          subsystem: "rpc"
+        },
+        message: "Task request rejected (TASK_ALREADY_ACTIVE)."
+      },
+      id: "duplicate-task",
       jsonrpc: "2.0"
     });
   });
@@ -458,9 +886,9 @@ describe("JSON-RPC protocol adapter", () => {
 
     await runJsonRpcStdioServer({
       input: Readable.from([
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rpc.ping\"}\n",
+        '{"jsonrpc":"2.0","id":1,"method":"rpc.ping"}\n',
         "{not-json}\n",
-        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}\n"
+        '{"jsonrpc":"2.0","id":2,"method":"missing"}\n'
       ]),
       output,
       runtime
@@ -471,7 +899,10 @@ describe("JSON-RPC protocol adapter", () => {
     expect(messages).toHaveLength(4);
     expect(messages.every((message) => message.jsonrpc === "2.0")).toBe(true);
     expect(messages[0]).toMatchObject({ method: "rpc.ready" });
-    expect(messages[1]).toMatchObject({ id: 1, result: { server: "sprite-rpc" } });
+    expect(messages[1]).toMatchObject({
+      id: 1,
+      result: { server: "sprite-rpc" }
+    });
     expect(messages[2]).toMatchObject({ error: { code: -32700 }, id: null });
     expect(messages[3]).toMatchObject({ error: { code: -32601 }, id: 2 });
   });
@@ -490,7 +921,7 @@ describe("JSON-RPC protocol adapter", () => {
 
     await runJsonRpcStdioServer({
       input: Readable.from([
-        "{\"jsonrpc\":\"2.0\",\"id\":\"crlf\",\"method\":\"rpc.ping\"}\r\n",
+        '{"jsonrpc":"2.0","id":"crlf","method":"rpc.ping"}\r\n',
         unicodeSeparatorLine
       ]),
       output,

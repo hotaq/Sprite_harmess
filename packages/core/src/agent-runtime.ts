@@ -92,6 +92,7 @@ import {
   createLocalSkillCandidateStore,
   createLocalSessionStore,
   createSessionId,
+  readSessionArtifacts,
   readLearningReviewLessonCandidates,
   readMemoryEntries,
   readSessionForResume,
@@ -105,6 +106,7 @@ import {
 import {
   createToolRegistry,
   getRunCommandErrorMetadata,
+  listToolNames,
   type RunCommandFailureMetadata,
   type ToolExecutionResult,
   type ToolInputMap,
@@ -248,6 +250,47 @@ export interface SessionCreateResult {
   warnings: string[];
 }
 
+export interface RuntimeTaskStartMemoryScope {
+  manual: boolean;
+  procedural: boolean;
+  working: boolean;
+}
+
+export interface RuntimeTaskStartProviderPreferences {
+  baseUrl?: string;
+  model?: string;
+  providerName?: string;
+}
+
+export interface RuntimeTaskStartOptions {
+  allowedTools?: readonly string[];
+  memoryScope?: RuntimeTaskStartMemoryScope;
+  outputFormat?: string;
+  provider?: RuntimeTaskStartProviderPreferences;
+  sessionId?: string;
+}
+
+export interface RuntimeTaskStartAcceptedScopes {
+  allowedTools: ToolName[];
+  cwd: string;
+  memoryScope: RuntimeTaskStartMemoryScope;
+  outputFormat: SpriteOutputFormat;
+  provider: ResolvedProviderState | null;
+  toolExecutionEnabled: boolean;
+}
+
+export interface RuntimeTaskStartResult {
+  acceptedScopes: RuntimeTaskStartAcceptedScopes;
+  flow: PlannedExecutionFlow;
+  session: {
+    createdAt: string;
+    restoredEventCount: number;
+    resumed: boolean;
+    sessionId: string;
+  };
+  warnings: string[];
+}
+
 export type RuntimeToolCallRequest = {
   [Name in ToolName]: {
     input: ToolInputMap[Name];
@@ -282,10 +325,9 @@ export interface RuntimeMemoryCandidateReviewResult {
   view: MemoryCandidateReviewView;
 }
 
-export type RuntimeSkillCandidateReviewRequest =
-  SkillCandidateReviewRequest & {
-    candidateId: string;
-  };
+export type RuntimeSkillCandidateReviewRequest = SkillCandidateReviewRequest & {
+  candidateId: string;
+};
 
 export interface RuntimeSkillCandidateReviewResult {
   candidate: SkillCandidate;
@@ -466,6 +508,44 @@ const MEMORY_INFLUENCE_MEMORY_ENTRY_READ_LIMIT = 50;
 const MEMORY_INFLUENCE_LEARNING_REVIEW_SESSION_LIMIT = 20;
 const MEMORY_INFLUENCE_LEARNING_REVIEW_ARTIFACT_LIMIT = 50;
 const MEMORY_INFLUENCE_LEARNING_REVIEW_CANDIDATE_LIMIT = 100;
+const TASK_START_TEXT_MAX_LENGTH = 16_000;
+const TASK_START_PROVIDER_NAMES = ["openai", "openai-compatible"] as const;
+const TASK_START_OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
+const TASK_START_PROVIDER_KEYS = ["baseUrl", "model", "providerName"] as const;
+const TASK_START_MEMORY_SCOPE_KEYS = [
+  "manual",
+  "procedural",
+  "working"
+] as const;
+const TASK_START_SECRET_PROVIDER_FIELD_PATTERN =
+  /(api[_-]?key|token|password|passwd|secret|credential|private[_-]?key)/iu;
+const DEFAULT_TASK_START_MEMORY_SCOPE: RuntimeTaskStartMemoryScope = {
+  manual: true,
+  procedural: true,
+  working: true
+};
+
+interface NormalizedRuntimeTaskStartOptions {
+  allowedTools: ToolName[];
+  memoryScope: RuntimeTaskStartMemoryScope;
+  outputFormat?: SpriteOutputFormat;
+  provider?: RuntimeTaskStartProviderPreferences;
+  sessionId?: string;
+}
+
+interface PreparedTaskSession {
+  createdAt: string | null;
+  restoredEventCount: number;
+  resumed: boolean;
+  sessionId: string;
+}
+
+interface TaskSubmissionOptions {
+  allowedTools: ToolName[];
+  bootstrapState?: BootstrapState;
+  memoryScope: RuntimeTaskStartMemoryScope;
+  sessionId: string;
+}
 
 function createCompactedContextWarnings(
   notes: readonly ContextAssemblyNote[]
@@ -524,7 +604,113 @@ export class AgentRuntime {
     task: string,
     bootstrapState?: BootstrapState
   ): Result<PlannedExecutionFlow> {
-    let resolvedBootstrapState = bootstrapState;
+    const submitted = this.submitTaskToRuntime(task, {
+      allowedTools: [],
+      bootstrapState,
+      memoryScope: DEFAULT_TASK_START_MEMORY_SCOPE,
+      sessionId: this.sessionId
+    });
+
+    if (!submitted.ok) {
+      return err(submitted.error);
+    }
+
+    return ok(submitted.value.flow);
+  }
+
+  startTask(
+    task: string,
+    options: RuntimeTaskStartOptions = {}
+  ): Result<RuntimeTaskStartResult> {
+    if (this.activeTask !== null && !this.isTerminalState(this.activeTask)) {
+      return err(
+        new SpriteError(
+          "TASK_ALREADY_ACTIVE",
+          "Runtime already has an active task; resolve or cancel it before starting another task."
+        )
+      );
+    }
+
+    const normalizedTask = normalizeTaskStartText(task);
+
+    if (!normalizedTask.ok) {
+      return err(normalizedTask.error);
+    }
+
+    const normalizedOptions = normalizeTaskStartOptions(options);
+
+    if (!normalizedOptions.ok) {
+      return err(normalizedOptions.error);
+    }
+
+    const bootstrapState = this.getBootstrapStateForTask(
+      normalizedOptions.value
+    );
+
+    if (!bootstrapState.ok) {
+      return err(bootstrapState.error);
+    }
+
+    if (
+      normalizedOptions.value.provider?.providerName !== undefined &&
+      bootstrapState.value.provider === null
+    ) {
+      return err(
+        new SpriteError(
+          "TASK_PROVIDER_UNSUPPORTED",
+          "Requested provider is not supported by this runtime."
+        )
+      );
+    }
+
+    const session = this.prepareSessionForTaskStart(
+      normalizedOptions.value.sessionId ?? this.sessionId,
+      bootstrapState.value.startup.cwd
+    );
+
+    if (!session.ok) {
+      return err(session.error);
+    }
+
+    const submitted = this.submitTaskToRuntime(normalizedTask.value, {
+      allowedTools: normalizedOptions.value.allowedTools,
+      bootstrapState: bootstrapState.value,
+      memoryScope: normalizedOptions.value.memoryScope,
+      sessionId: session.value.sessionId
+    });
+
+    if (!submitted.ok) {
+      return err(submitted.error);
+    }
+
+    const flow = submitted.value.flow;
+
+    return ok({
+      acceptedScopes: {
+        allowedTools: flow.request.allowedDefaults.allowedTools,
+        cwd: flow.request.cwd,
+        memoryScope: normalizedOptions.value.memoryScope,
+        outputFormat: flow.request.allowedDefaults.outputFormat,
+        provider: flow.request.provider,
+        toolExecutionEnabled: flow.request.allowedDefaults.toolExecutionEnabled
+      },
+      flow,
+      session: {
+        createdAt:
+          session.value.createdAt ?? flow.events[0]?.createdAt ?? this.now(),
+        restoredEventCount: session.value.restoredEventCount,
+        resumed: session.value.resumed,
+        sessionId: flow.sessionId
+      },
+      warnings: flow.warnings
+    });
+  }
+
+  private submitTaskToRuntime(
+    task: string,
+    options: TaskSubmissionOptions
+  ): Result<RuntimeTaskStartResult> {
+    let resolvedBootstrapState = options.bootstrapState;
 
     if (resolvedBootstrapState === undefined) {
       const loadedBootstrapState = this.getBootstrapState();
@@ -542,23 +728,33 @@ export class AgentRuntime {
     const correlationId = this.nextId("corr");
     const createdAt = this.now();
     const startedEventId = this.nextEventId();
-    const memoryEntries = this.loadMemoryInfluenceContextEntries(
-      task,
-      resolvedBootstrapState.startup.cwd
-    );
+    const memoryEntries = options.memoryScope.manual
+      ? this.loadMemoryInfluenceContextEntries(
+          task,
+          resolvedBootstrapState.startup.cwd
+        )
+      : ok([]);
 
     if (!memoryEntries.ok) {
       return err(memoryEntries.error);
     }
 
-    const manualSkills = this.loadManualSkillContextEntries({
-      correlationId,
-      createdAt,
-      cwd: resolvedBootstrapState.startup.cwd,
-      taskId
-    });
+    const manualSkills = options.memoryScope.procedural
+      ? this.loadManualSkillContextEntries({
+          correlationId,
+          createdAt,
+          cwd: resolvedBootstrapState.startup.cwd,
+          sessionId: options.sessionId,
+          taskId
+        })
+      : {
+          entries: [],
+          events: [],
+          warnings: []
+        };
     const waitingEventId = this.nextEventId();
     const request = createTaskRequest(task, resolvedBootstrapState, {
+      allowedTools: options.allowedTools,
       memoryEntries: memoryEntries.value,
       sessionState: {
         correlationId,
@@ -566,13 +762,14 @@ export class AgentRuntime {
         pendingApprovalCount: 0,
         restoredEventCount: 0,
         resumed: false,
-        sessionId: this.sessionId,
+        sessionId: options.sessionId,
         status: "planned",
         taskId
       },
       skillEntries: manualSkills.entries,
       workingMemory: this.createInitialWorkingMemorySnapshot({
         createdAt,
+        sessionId: options.sessionId,
         startedEventId,
         task,
         taskId,
@@ -582,7 +779,7 @@ export class AgentRuntime {
     const taskState = runInitialPlanActObserveLoop(
       request,
       {
-        sessionId: this.sessionId,
+        sessionId: options.sessionId,
         taskId,
         correlationId
       },
@@ -604,9 +801,36 @@ export class AgentRuntime {
             ...taskState.events.slice(1)
           ];
 
-    return this.setActiveTask({
+    const activeTask = this.setActiveTask({
       ...taskState,
       events: taskEvents
+    });
+
+    if (!activeTask.ok) {
+      return err(activeTask.error);
+    }
+
+    return ok({
+      acceptedScopes: {
+        allowedTools: activeTask.value.request.allowedDefaults.allowedTools,
+        cwd: activeTask.value.request.cwd,
+        memoryScope: options.memoryScope,
+        outputFormat: activeTask.value.request.allowedDefaults.outputFormat,
+        provider: activeTask.value.request.provider,
+        toolExecutionEnabled:
+          activeTask.value.request.allowedDefaults.toolExecutionEnabled
+      },
+      flow: activeTask.value,
+      session: {
+        createdAt:
+          this.sessionCreatedAt ??
+          activeTask.value.events[0]?.createdAt ??
+          createdAt,
+        restoredEventCount: 0,
+        resumed: false,
+        sessionId: activeTask.value.sessionId
+      },
+      warnings: activeTask.value.warnings
     });
   }
 
@@ -632,10 +856,130 @@ export class AgentRuntime {
     return ok(bootstrapState.value.startup.cwd);
   }
 
+  private getBootstrapStateForTask(
+    options: NormalizedRuntimeTaskStartOptions
+  ): Result<BootstrapState> {
+    const runtimeConfig = resolveSpriteRuntimeConfig(this.options);
+    const startupConfig = toStartupConfig(runtimeConfig);
+    const startup =
+      options.outputFormat === undefined
+        ? startupConfig
+        : {
+            ...startupConfig,
+            outputFormat: options.outputFormat
+          };
+    const projectContext = loadProjectContextFiles(startup.cwd);
+
+    if (!projectContext.ok) {
+      return projectContext;
+    }
+
+    const providerOverride = mergeProviderRuntimeOverride(
+      this.options.providerOverride,
+      options.provider
+    );
+    const provider = initializeProviderAdapter(runtimeConfig, {
+      env: this.options.env,
+      homeDir: this.options.homeDir,
+      ...(providerOverride === undefined ? {} : { override: providerOverride })
+    });
+    const warnings = [...startup.warnings, ...provider.warnings];
+
+    return ok({
+      implemented: false,
+      message:
+        "Sprite Harness bootstrap workspace is ready. Interactive task planning is available through the shared runtime.",
+      interfaces: ["cli"],
+      startup,
+      projectContext: projectContext.value,
+      provider: provider.adapter?.getState() ?? null,
+      warnings
+    });
+  }
+
+  private prepareSessionForTaskStart(
+    sessionId: string,
+    cwd: string
+  ): Result<PreparedTaskSession> {
+    const shouldReadExistingSession =
+      sessionId !== this.sessionId || this.sessionCreatedAt !== null;
+
+    if (!shouldReadExistingSession) {
+      return ok({
+        createdAt: null,
+        restoredEventCount: 0,
+        resumed: false,
+        sessionId
+      });
+    }
+
+    const artifacts = readSessionArtifacts(cwd, sessionId, {
+      recentEventLimit: 0
+    });
+
+    if (!artifacts.ok) {
+      return err(artifacts.error);
+    }
+
+    const scopedCwd = normalizeRuntimeCwd(cwd);
+    const stateCwd = normalizeRuntimeCwd(artifacts.value.state.cwd);
+
+    if (scopedCwd === null || stateCwd === null || scopedCwd !== stateCwd) {
+      return err(
+        new SpriteError(
+          "SESSION_STATE_SCOPE_MISMATCH",
+          "Session state cwd must match the current runtime cwd."
+        )
+      );
+    }
+
+    const ensured = this.sessionStore.ensureSession(
+      sessionId,
+      cwd,
+      artifacts.value.state.createdAt
+    );
+
+    if (!ensured.ok) {
+      return err(ensured.error);
+    }
+
+    for (const event of artifacts.value.events) {
+      if (this.emittedEventIds.has(event.eventId)) {
+        continue;
+      }
+
+      const validation = validateRuntimeEvent(event);
+
+      if (!validation.ok) {
+        return err(validation.error);
+      }
+
+      const emitted = this.eventBus.emit(validation.value);
+
+      if (!emitted.ok) {
+        return err(emitted.error);
+      }
+
+      this.emittedEventIds.add(validation.value.eventId);
+    }
+
+    this.sessionCreatedAt = artifacts.value.state.createdAt;
+
+    return ok({
+      createdAt: artifacts.value.state.createdAt,
+      restoredEventCount: artifacts.value.persistedEventCount,
+      resumed:
+        artifacts.value.persistedEventCount > 0 ||
+        artifacts.value.state.latestTask !== undefined,
+      sessionId
+    });
+  }
+
   private loadManualSkillContextEntries(input: {
     correlationId: string;
     createdAt: string;
     cwd: string;
+    sessionId: string;
     taskId: string;
   }): LoadedManualSkillContext {
     const references = this.options.skillReferences ?? [];
@@ -659,7 +1003,7 @@ export class AgentRuntime {
             correlationId: input.correlationId,
             createdAt: input.createdAt,
             eventId: this.nextEventId(),
-            sessionId: this.sessionId,
+            sessionId: input.sessionId,
             taskId: input.taskId
           },
           "skill.invoked",
@@ -684,7 +1028,7 @@ export class AgentRuntime {
               correlationId: input.correlationId,
               createdAt: input.createdAt,
               eventId: this.nextEventId(),
-              sessionId: this.sessionId,
+              sessionId: input.sessionId,
               taskId: input.taskId
             },
             "skill.usage.recorded",
@@ -713,7 +1057,7 @@ export class AgentRuntime {
             correlationId: input.correlationId,
             createdAt: input.createdAt,
             eventId: this.nextEventId(),
-            sessionId: this.sessionId,
+            sessionId: input.sessionId,
             taskId: input.taskId
           },
           "skill.invocation.failed",
@@ -2355,7 +2699,9 @@ export class AgentRuntime {
       return err(candidate.error);
     }
 
-    return ok(summarizeSkillCandidateForReview(toSkillCandidate(candidate.value)));
+    return ok(
+      summarizeSkillCandidateForReview(toSkillCandidate(candidate.value))
+    );
   }
 
   reviewSkillCandidate(
@@ -2585,28 +2931,32 @@ export class AgentRuntime {
     const storedCandidates = candidateList.ok ? candidateList.value : [];
     const storedCandidatesById = new Map(
       storedCandidates.flatMap((candidate) =>
-        uniqueStrings([candidate.id, candidate.candidateId]).map((candidateId) => [
-          candidateId,
-          candidate
-        ])
+        uniqueStrings([candidate.id, candidate.candidateId]).map(
+          (candidateId) => [candidateId, candidate]
+        )
       )
     );
     const referencesCandidateId = (candidateId: string): boolean =>
       skillUsageIdReferencesCandidateId(request.skillId, candidateId);
-    const referencesCandidateName = (
-      candidate: { lifecycleStatus: string; name: string }
-    ): boolean =>
-      candidate.lifecycleStatus !== "promoted" && candidate.name === request.name;
+    const referencesCandidateName = (candidate: {
+      lifecycleStatus: string;
+      name: string;
+    }): boolean =>
+      candidate.lifecycleStatus !== "promoted" &&
+      candidate.name === request.name;
     const referencedCandidateEvent = task.events.some((event) => {
       if (event.type === "skill.candidate.created") {
-        const storedCandidate = storedCandidatesById.get(event.payload.candidateId);
+        const storedCandidate = storedCandidatesById.get(
+          event.payload.candidateId
+        );
         const lifecycleStatus =
           storedCandidate?.lifecycleStatus ?? event.payload.lifecycleStatus;
 
         return (
           sourceEventIds.includes(event.eventId) ||
           referencesCandidateId(event.payload.candidateId) ||
-          (lifecycleStatus !== "promoted" && event.payload.name === request.name)
+          (lifecycleStatus !== "promoted" &&
+            event.payload.name === request.name)
         );
       }
 
@@ -3941,12 +4291,14 @@ export class AgentRuntime {
 
   private createInitialWorkingMemorySnapshot({
     createdAt,
+    sessionId,
     startedEventId,
     task,
     taskId,
     waitingEventId
   }: {
     createdAt: string;
+    sessionId: string;
     startedEventId: string;
     task: string;
     taskId: string;
@@ -3987,7 +4339,7 @@ export class AgentRuntime {
       ],
       schemaVersion: 1,
       scope: "task",
-      sessionId: this.sessionId,
+      sessionId,
       sourceEventIds: [startedEventId, waitingEventId],
       taskId,
       updatedAt: createdAt
@@ -5107,6 +5459,293 @@ export class AgentRuntime {
   }
 }
 
+function normalizeTaskStartText(task: string): Result<string> {
+  const trimmed = task.trim();
+
+  if (trimmed.length === 0) {
+    return err(
+      new SpriteError(
+        "TASK_TEXT_INVALID",
+        "Task text must be a non-empty string."
+      )
+    );
+  }
+
+  if (trimmed.length > TASK_START_TEXT_MAX_LENGTH) {
+    return err(
+      new SpriteError(
+        "TASK_TEXT_TOO_LARGE",
+        `Task text must be ${TASK_START_TEXT_MAX_LENGTH} characters or fewer.`
+      )
+    );
+  }
+
+  return ok(trimmed);
+}
+
+function normalizeTaskStartOptions(
+  options: RuntimeTaskStartOptions
+): Result<NormalizedRuntimeTaskStartOptions> {
+  const allowedTools = normalizeTaskStartAllowedTools(options.allowedTools);
+
+  if (!allowedTools.ok) {
+    return err(allowedTools.error);
+  }
+
+  const memoryScope = normalizeTaskStartMemoryScope(options.memoryScope);
+
+  if (!memoryScope.ok) {
+    return err(memoryScope.error);
+  }
+
+  const outputFormat = normalizeTaskStartOutputFormat(options.outputFormat);
+
+  if (!outputFormat.ok) {
+    return err(outputFormat.error);
+  }
+
+  const provider = normalizeTaskStartProvider(options.provider);
+
+  if (!provider.ok) {
+    return err(provider.error);
+  }
+
+  return ok({
+    allowedTools: allowedTools.value,
+    memoryScope: memoryScope.value,
+    ...(outputFormat.value === undefined
+      ? {}
+      : { outputFormat: outputFormat.value }),
+    ...(provider.value === undefined ? {} : { provider: provider.value }),
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId })
+  });
+}
+
+function normalizeTaskStartAllowedTools(
+  allowedTools: readonly string[] | undefined
+): Result<ToolName[]> {
+  if (allowedTools === undefined) {
+    return ok([]);
+  }
+
+  if (
+    !Array.isArray(allowedTools) ||
+    !allowedTools.every((toolName) => typeof toolName === "string")
+  ) {
+    return err(
+      new SpriteError(
+        "TASK_TOOL_SCOPE_INVALID",
+        "Allowed tools must be known runtime tool names."
+      )
+    );
+  }
+
+  const availableTools = new Set(listToolNames());
+  const normalized: ToolName[] = [];
+
+  for (const toolName of allowedTools) {
+    if (!availableTools.has(toolName as ToolName)) {
+      return err(
+        new SpriteError(
+          "TASK_TOOL_SCOPE_INVALID",
+          "Allowed tools must be known runtime tool names."
+        )
+      );
+    }
+
+    if (!normalized.includes(toolName as ToolName)) {
+      normalized.push(toolName as ToolName);
+    }
+  }
+
+  return ok(normalized);
+}
+
+function normalizeTaskStartMemoryScope(
+  memoryScope: RuntimeTaskStartMemoryScope | undefined
+): Result<RuntimeTaskStartMemoryScope> {
+  if (memoryScope === undefined) {
+    return ok({ ...DEFAULT_TASK_START_MEMORY_SCOPE });
+  }
+
+  const memoryScopeRecord = memoryScope as unknown as Record<string, unknown>;
+
+  for (const key of Object.keys(memoryScopeRecord)) {
+    if (
+      !TASK_START_MEMORY_SCOPE_KEYS.includes(
+        key as (typeof TASK_START_MEMORY_SCOPE_KEYS)[number]
+      )
+    ) {
+      return err(
+        new SpriteError(
+          "TASK_MEMORY_SCOPE_UNSUPPORTED",
+          "Memory scope supports only working, manual, and procedural fields."
+        )
+      );
+    }
+  }
+
+  if (
+    typeof memoryScope.working !== "boolean" ||
+    typeof memoryScope.manual !== "boolean" ||
+    typeof memoryScope.procedural !== "boolean"
+  ) {
+    return err(
+      new SpriteError(
+        "TASK_MEMORY_SCOPE_UNSUPPORTED",
+        "Memory scope fields must be booleans."
+      )
+    );
+  }
+
+  if (!memoryScope.working) {
+    return err(
+      new SpriteError(
+        "TASK_MEMORY_SCOPE_UNSUPPORTED",
+        "Working memory scope is required for task execution."
+      )
+    );
+  }
+
+  return ok({
+    manual: memoryScope.manual,
+    procedural: memoryScope.procedural,
+    working: memoryScope.working
+  });
+}
+
+function normalizeTaskStartOutputFormat(
+  outputFormat: string | undefined
+): Result<SpriteOutputFormat | undefined> {
+  if (outputFormat === undefined) {
+    return ok(undefined);
+  }
+
+  if (
+    !TASK_START_OUTPUT_FORMATS.includes(
+      outputFormat as (typeof TASK_START_OUTPUT_FORMATS)[number]
+    )
+  ) {
+    return err(
+      new SpriteError(
+        "TASK_OUTPUT_FORMAT_INVALID",
+        "Output format must be text, json, or ndjson."
+      )
+    );
+  }
+
+  return ok(outputFormat as SpriteOutputFormat);
+}
+
+function normalizeTaskStartProvider(
+  provider: RuntimeTaskStartProviderPreferences | undefined
+): Result<RuntimeTaskStartProviderPreferences | undefined> {
+  if (provider === undefined) {
+    return ok(undefined);
+  }
+
+  const providerRecord = provider as Record<string, unknown>;
+  const allowedProviderKeys = new Set(TASK_START_PROVIDER_KEYS);
+
+  for (const key of Object.keys(providerRecord)) {
+    if (TASK_START_SECRET_PROVIDER_FIELD_PATTERN.test(key)) {
+      return err(
+        new SpriteError(
+          "TASK_PROVIDER_SECRET_REJECTED",
+          "Provider preferences must not contain credential fields."
+        )
+      );
+    }
+
+    if (
+      !allowedProviderKeys.has(key as (typeof TASK_START_PROVIDER_KEYS)[number])
+    ) {
+      return err(
+        new SpriteError(
+          "TASK_PROVIDER_UNSUPPORTED",
+          "Provider preferences support only providerName, model, and baseUrl."
+        )
+      );
+    }
+  }
+
+  const providerName = provider.providerName;
+
+  for (const value of [
+    provider.providerName,
+    provider.model,
+    provider.baseUrl
+  ]) {
+    if (value !== undefined && typeof value !== "string") {
+      return err(
+        new SpriteError(
+          "TASK_PROVIDER_UNSUPPORTED",
+          "Provider preferences must be strings."
+        )
+      );
+    }
+  }
+
+  if (
+    providerName !== undefined &&
+    !TASK_START_PROVIDER_NAMES.includes(
+      providerName as (typeof TASK_START_PROVIDER_NAMES)[number]
+    )
+  ) {
+    return err(
+      new SpriteError(
+        "TASK_PROVIDER_UNSUPPORTED",
+        "Provider override must use a supported provider name."
+      )
+    );
+  }
+
+  for (const value of [
+    provider.providerName,
+    provider.model,
+    provider.baseUrl
+  ]) {
+    if (value !== undefined && containsSecretLikeValue(value)) {
+      return err(
+        new SpriteError(
+          "TASK_PROVIDER_SECRET_REJECTED",
+          "Provider preferences must not contain secret-looking values."
+        )
+      );
+    }
+  }
+
+  return ok({
+    ...(provider.baseUrl === undefined ? {} : { baseUrl: provider.baseUrl }),
+    ...(provider.model === undefined ? {} : { model: provider.model }),
+    ...(provider.providerName === undefined
+      ? {}
+      : { providerName: provider.providerName })
+  });
+}
+
+function mergeProviderRuntimeOverride(
+  base: ProviderRuntimeOverride | undefined,
+  taskProvider: RuntimeTaskStartProviderPreferences | undefined
+): ProviderRuntimeOverride | undefined {
+  if (base === undefined && taskProvider === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(base ?? {}),
+    ...(taskProvider ?? {})
+  };
+}
+
+function normalizeRuntimeCwd(cwd: string): string | null {
+  try {
+    return realpathSync.native(path.resolve(cwd));
+  } catch {
+    return null;
+  }
+}
+
 function invalidRecoveryAction(message: string): Result<never> {
   return err(new SpriteError("INVALID_RECOVERY_ACTION", message));
 }
@@ -5867,7 +6506,10 @@ function writePromotedSkillManifest(
   cwd: string,
   manifest: PromotedSkillManifest
 ): Result<{ path: string }> {
-  if (manifest.source !== "project" || !manifest.relativePath.endsWith("SKILL.md")) {
+  if (
+    manifest.source !== "project" ||
+    !manifest.relativePath.endsWith("SKILL.md")
+  ) {
     return err(
       new SpriteError(
         "SKILL_CANDIDATE_PROMOTION_INVALID",
@@ -5986,7 +6628,9 @@ function ensureDirectoryInsideRoot(
 
   const relativePath = path.relative(rootPath, directoryPath);
   const segments =
-    relativePath.length === 0 ? [] : relativePath.split(path.sep).filter(Boolean);
+    relativePath.length === 0
+      ? []
+      : relativePath.split(path.sep).filter(Boolean);
   let currentPath = rootPath;
 
   try {

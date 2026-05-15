@@ -1,6 +1,6 @@
 # Story 7.2: Create or Resume Sessions Through JSON-RPC
 
-Status: review
+Status: done
 
 <!-- Note: Created after Story 7.1 was completed and committed because Chinnaphat asked to move to Story 7.2. -->
 
@@ -260,3 +260,4 @@ GPT-5.5
 - 2026-05-14: Started Story 7.2 implementation.
 - 2026-05-14: Implemented and validated JSON-RPC session create/resume lifecycle; moved Story 7.2 to review.
 - 2026-05-14: Addressed code review findings - 2 items resolved.
+- 2026-05-15: Closed Story 7.2 after review fixes, commit, and push; sprint status moved to done.

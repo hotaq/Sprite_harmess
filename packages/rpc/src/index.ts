@@ -19,6 +19,8 @@ export interface JsonRpcNotification {
 }
 
 export interface JsonRpcErrorData {
+  code?: string;
+  correlationId?: string;
   nextAction: string;
   recoverable: boolean;
   subsystem: "rpc";
@@ -53,6 +55,7 @@ export interface JsonRpcRuntimeBridge {
   getBootstrapState: AgentRuntime["getBootstrapState"];
   getEventHistory: AgentRuntime["getEventHistory"];
   resumeSession: AgentRuntime["resumeSession"];
+  startTask: AgentRuntime["startTask"];
 }
 
 export interface JsonRpcHandlerOptions {
@@ -69,6 +72,16 @@ const JSON_RPC_VERSION = "2.0";
 const RPC_SERVER_NAME = "sprite-rpc";
 const RPC_TRANSPORT = "stdio";
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
+const TASK_START_OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
+const TASK_START_TEXT_MAX_LENGTH = 16_000;
+const TASK_START_PROVIDER_KEYS = ["baseUrl", "model", "providerName"] as const;
+const TASK_START_MEMORY_SCOPE_KEYS = [
+  "manual",
+  "procedural",
+  "working"
+] as const;
+const SECRET_LIKE_PROVIDER_FIELD_PATTERN =
+  /(api[_-]?key|token|password|passwd|secret|credential|private[_-]?key)/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,6 +109,8 @@ function readRequestId(value: unknown): JsonRpcId {
 
 function createJsonRpcErrorResponse(options: {
   code: number;
+  correlationId?: string;
+  dataCode?: string;
   id?: JsonRpcId;
   message: string;
   nextAction: string;
@@ -105,6 +120,10 @@ function createJsonRpcErrorResponse(options: {
     error: {
       code: options.code,
       data: {
+        ...(options.dataCode === undefined ? {} : { code: options.dataCode }),
+        ...(options.correlationId === undefined
+          ? {}
+          : { correlationId: options.correlationId }),
         nextAction: options.nextAction,
         recoverable: options.recoverable ?? true,
         subsystem: "rpc"
@@ -135,7 +154,12 @@ function createProtocolMetadata(runtimeConnected: boolean): {
   transport: "stdio";
 } {
   return {
-    capabilities: ["rpc.ping", "session.create", "session.resume"],
+    capabilities: [
+      "rpc.ping",
+      "session.create",
+      "session.resume",
+      "task.start"
+    ],
     protocolVersion: JSON_RPC_VERSION,
     runtimeConnected,
     server: RPC_SERVER_NAME,
@@ -145,10 +169,12 @@ function createProtocolMetadata(runtimeConnected: boolean): {
 
 function createInvalidParamsResponse(
   id: JsonRpcId,
-  nextAction: string
+  nextAction: string,
+  dataCode?: string
 ): JsonRpcErrorResponse {
   return createJsonRpcErrorResponse({
     code: -32602,
+    ...(dataCode === undefined ? {} : { dataCode }),
     id,
     message: "Invalid params.",
     nextAction
@@ -225,15 +251,71 @@ function createSessionRuntimeErrorResponse(
   });
 }
 
+function createTaskStartErrorNextAction(code: string | undefined): string {
+  switch (code) {
+    case "TASK_ALREADY_ACTIVE":
+      return "Resolve or cancel the active task before starting another task in this RPC runtime.";
+    case "TASK_TEXT_INVALID":
+    case "TASK_TEXT_TOO_LARGE":
+      return "Retry with a non-empty task string within the supported size limit.";
+    case "TASK_TOOL_SCOPE_INVALID":
+      return "Retry with allowedTools containing only known runtime tool names.";
+    case "TASK_MEMORY_SCOPE_UNSUPPORTED":
+      return "Retry with working memory enabled and supported memory scope fields.";
+    case "TASK_OUTPUT_FORMAT_INVALID":
+      return "Retry with output.format set to text, json, or ndjson.";
+    case "TASK_PROVIDER_SECRET_REJECTED":
+      return "Remove provider credentials from JSON-RPC params and use environment, config, or auth storage.";
+    case "TASK_PROVIDER_UNSUPPORTED":
+      return "Retry with a supported providerName or omit provider preferences.";
+    case "SESSION_NOT_FOUND":
+      return "Create the session first or retry with a sessionId under the current runtime cwd.";
+    case "SESSION_ID_INVALID":
+      return "Retry with a valid sessionId using the ses_ prefix.";
+    case "SESSION_STATE_SCOPE_MISMATCH":
+      return "Retry with a sessionId that belongs to the requested cwd.";
+    case "SESSION_STATE_MISSING":
+    case "SESSION_EVENTS_MISSING":
+    case "SESSION_STATE_READ_FAILED":
+    case "SESSION_EVENTS_READ_FAILED":
+    case "SESSION_STATE_INVALID_JSON":
+    case "SESSION_EVENT_LOG_INVALID_JSON":
+    case "SESSION_EVENT_RUNTIME_INVALID":
+      return "Repair or remove invalid local session artifacts before retrying.";
+    default:
+      return "Check task text, cwd, session, provider, tool, memory, and output scopes before retrying.";
+  }
+}
+
+function createTaskStartRuntimeErrorResponse(
+  id: JsonRpcId,
+  error: unknown
+): JsonRpcErrorResponse {
+  const code = readSafeErrorCode(error);
+  const safeCodeSuffix = code === undefined ? "" : ` (${code})`;
+
+  return createJsonRpcErrorResponse({
+    code: -32602,
+    ...(code === undefined ? {} : { dataCode: code }),
+    id,
+    message: `Task request rejected${safeCodeSuffix}.`,
+    nextAction: createTaskStartErrorNextAction(code),
+    recoverable: true
+  });
+}
+
 function readParamsRecord(
   request: JsonRpcRequest
-): { ok: true; params: Record<string, unknown> } | { ok: false; response: JsonRpcErrorResponse } {
+):
+  | { ok: true; params: Record<string, unknown> }
+  | { ok: false; response: JsonRpcErrorResponse } {
   if (!isRecord(request.params)) {
     return {
       ok: false,
       response: createInvalidParamsResponse(
         request.id ?? null,
-        "Send params as an object with the required session fields."
+        "Send params as an object with the required method fields.",
+        "INVALID_PARAMS"
       )
     };
   }
@@ -259,7 +341,8 @@ function validateOptionalObjectParam(
 
   return createInvalidParamsResponse(
     null,
-    `${key} must be an object when provided.`
+    `${key} must be an object when provided.`,
+    key === "context" ? "INVALID_CONTEXT" : "INVALID_PARAMS"
   );
 }
 
@@ -280,7 +363,8 @@ function readScopedCwd(
       ok: false,
       response: createInvalidParamsResponse(
         request.id ?? null,
-        "Provide cwd as a non-empty string."
+        "Provide cwd as a non-empty string.",
+        "INVALID_CWD"
       )
     };
   }
@@ -326,7 +410,8 @@ function readScopedCwd(
       ok: false,
       response: createInvalidParamsResponse(
         request.id ?? null,
-        "Requested cwd must exist and be readable."
+        "Requested cwd must exist and be readable.",
+        "INVALID_CWD"
       )
     };
   }
@@ -343,7 +428,8 @@ function readScopedCwd(
       ok: false,
       response: createInvalidParamsResponse(
         request.id ?? null,
-        "Requested cwd is outside the current RPC runtime scope."
+        "Requested cwd is outside the current RPC runtime scope.",
+        "INVALID_CWD"
       )
     };
   }
@@ -352,6 +438,355 @@ function readScopedCwd(
     cwd: runtimeCwd,
     ok: true,
     params: params.params
+  };
+}
+
+interface TaskStartParams {
+  allowedTools: string[];
+  memoryScope?: {
+    manual: boolean;
+    procedural: boolean;
+    working: boolean;
+  };
+  outputFormat?: string;
+  provider?: {
+    baseUrl?: string;
+    model?: string;
+    providerName?: string;
+  };
+  sessionId?: string;
+  task: string;
+}
+
+interface ParamReadFailure {
+  dataCode: string;
+  nextAction: string;
+  ok: false;
+}
+
+function readTaskStartParams(
+  request: JsonRpcRequest,
+  scoped: { params: Record<string, unknown> }
+):
+  | { ok: true; value: TaskStartParams }
+  | { ok: false; response: JsonRpcErrorResponse } {
+  const task = readTaskText(scoped.params.task);
+
+  if (!task.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        task.nextAction,
+        task.dataCode
+      )
+    };
+  }
+
+  const sessionId = readOptionalSessionId(scoped.params.sessionId);
+
+  if (!sessionId.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        sessionId.nextAction,
+        sessionId.dataCode
+      )
+    };
+  }
+
+  const allowedTools = readAllowedTools(scoped.params.allowedTools);
+
+  if (!allowedTools.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        allowedTools.nextAction,
+        allowedTools.dataCode
+      )
+    };
+  }
+
+  const memoryScope = readMemoryScope(scoped.params.memoryScope);
+
+  if (!memoryScope.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        memoryScope.nextAction,
+        memoryScope.dataCode
+      )
+    };
+  }
+
+  const outputFormat = readOutputFormat(scoped.params.output);
+
+  if (!outputFormat.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        outputFormat.nextAction,
+        outputFormat.dataCode
+      )
+    };
+  }
+
+  const provider = readProviderPreferences(scoped.params.provider);
+
+  if (!provider.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        provider.nextAction,
+        provider.dataCode
+      )
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      allowedTools: allowedTools.value,
+      ...(memoryScope.value === undefined
+        ? {}
+        : { memoryScope: memoryScope.value }),
+      ...(outputFormat.value === undefined
+        ? {}
+        : { outputFormat: outputFormat.value }),
+      ...(provider.value === undefined ? {} : { provider: provider.value }),
+      ...(sessionId.value === undefined ? {} : { sessionId: sessionId.value }),
+      task: task.value
+    }
+  };
+}
+
+function readTaskText(
+  value: unknown
+): { ok: true; value: string } | ParamReadFailure {
+  if (typeof value !== "string") {
+    return {
+      dataCode: "TASK_TEXT_INVALID",
+      nextAction: "Provide task as a non-empty string.",
+      ok: false
+    };
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed.length === 0) {
+    return {
+      dataCode: "TASK_TEXT_INVALID",
+      nextAction: "Provide task as a non-empty string.",
+      ok: false
+    };
+  }
+
+  if (trimmed.length > TASK_START_TEXT_MAX_LENGTH) {
+    return {
+      dataCode: "TASK_TEXT_TOO_LARGE",
+      nextAction: `Provide task text no longer than ${TASK_START_TEXT_MAX_LENGTH} characters.`,
+      ok: false
+    };
+  }
+
+  return { ok: true, value: trimmed };
+}
+
+function readOptionalSessionId(
+  value: unknown
+): { ok: true; value?: string } | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true };
+  }
+
+  if (typeof value !== "string" || value.length === 0) {
+    return {
+      dataCode: "SESSION_ID_INVALID",
+      nextAction: "Provide sessionId as a non-empty string when supplied.",
+      ok: false
+    };
+  }
+
+  return { ok: true, value };
+}
+
+function readAllowedTools(
+  value: unknown
+): { ok: true; value: string[] } | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true, value: [] };
+  }
+
+  if (
+    !Array.isArray(value) ||
+    !value.every((toolName) => typeof toolName === "string")
+  ) {
+    return {
+      dataCode: "TASK_TOOL_SCOPE_INVALID",
+      nextAction:
+        "Provide allowedTools as an array of known tool name strings.",
+      ok: false
+    };
+  }
+
+  return {
+    ok: true,
+    value: [...new Set(value as string[])]
+  };
+}
+
+function readMemoryScope(value: unknown):
+  | {
+      ok: true;
+      value?: { manual: boolean; procedural: boolean; working: boolean };
+    }
+  | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true };
+  }
+
+  if (!isRecord(value)) {
+    return {
+      dataCode: "TASK_MEMORY_SCOPE_UNSUPPORTED",
+      nextAction: "Provide memoryScope as an object when supplied.",
+      ok: false
+    };
+  }
+
+  for (const key of Object.keys(value)) {
+    if (
+      !TASK_START_MEMORY_SCOPE_KEYS.includes(
+        key as (typeof TASK_START_MEMORY_SCOPE_KEYS)[number]
+      )
+    ) {
+      return {
+        dataCode: "TASK_MEMORY_SCOPE_UNSUPPORTED",
+        nextAction:
+          "Provide only supported memoryScope fields: working, manual, and procedural.",
+        ok: false
+      };
+    }
+  }
+
+  for (const key of ["manual", "procedural", "working"] as const) {
+    if (hasOwn(value, key) && typeof value[key] !== "boolean") {
+      return {
+        dataCode: "TASK_MEMORY_SCOPE_UNSUPPORTED",
+        nextAction:
+          "Provide memoryScope booleans for working, manual, and procedural.",
+        ok: false
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      manual: typeof value.manual === "boolean" ? value.manual : true,
+      procedural:
+        typeof value.procedural === "boolean" ? value.procedural : true,
+      working: typeof value.working === "boolean" ? value.working : true
+    }
+  };
+}
+
+function readOutputFormat(
+  value: unknown
+): { ok: true; value?: string } | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true };
+  }
+
+  if (!isRecord(value) || typeof value.format !== "string") {
+    return {
+      dataCode: "TASK_OUTPUT_FORMAT_INVALID",
+      nextAction: "Provide output.format as text, json, or ndjson.",
+      ok: false
+    };
+  }
+
+  if (
+    !TASK_START_OUTPUT_FORMATS.includes(
+      value.format as (typeof TASK_START_OUTPUT_FORMATS)[number]
+    )
+  ) {
+    return {
+      dataCode: "TASK_OUTPUT_FORMAT_INVALID",
+      nextAction: "Provide output.format as text, json, or ndjson.",
+      ok: false
+    };
+  }
+
+  return { ok: true, value: value.format };
+}
+
+function readProviderPreferences(value: unknown):
+  | {
+      ok: true;
+      value?: { baseUrl?: string; model?: string; providerName?: string };
+    }
+  | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true };
+  }
+
+  if (!isRecord(value)) {
+    return {
+      dataCode: "TASK_PROVIDER_UNSUPPORTED",
+      nextAction: "Provide provider as an object when supplied.",
+      ok: false
+    };
+  }
+
+  for (const key of Object.keys(value)) {
+    if (SECRET_LIKE_PROVIDER_FIELD_PATTERN.test(key)) {
+      return {
+        dataCode: "TASK_PROVIDER_SECRET_REJECTED",
+        nextAction:
+          "Do not send provider credentials through JSON-RPC params; use environment, config, or auth storage.",
+        ok: false
+      };
+    }
+
+    if (
+      !TASK_START_PROVIDER_KEYS.includes(
+        key as (typeof TASK_START_PROVIDER_KEYS)[number]
+      )
+    ) {
+      return {
+        dataCode: "TASK_PROVIDER_UNSUPPORTED",
+        nextAction:
+          "Provider preferences support only providerName, model, and baseUrl.",
+        ok: false
+      };
+    }
+  }
+
+  for (const key of ["baseUrl", "model", "providerName"] as const) {
+    if (hasOwn(value, key) && typeof value[key] !== "string") {
+      return {
+        dataCode: "TASK_PROVIDER_UNSUPPORTED",
+        nextAction:
+          "Provide providerName, model, and baseUrl as strings when supplied.",
+        ok: false
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...(typeof value.baseUrl === "string" ? { baseUrl: value.baseUrl } : {}),
+      ...(typeof value.model === "string" ? { model: value.model } : {}),
+      ...(typeof value.providerName === "string"
+        ? { providerName: value.providerName }
+        : {})
+    }
   };
 }
 
@@ -389,7 +824,9 @@ export function createRpcReadyNotification(
   };
 }
 
-function parseJsonRpcRequest(value: unknown):
+function parseJsonRpcRequest(
+  value: unknown
+):
   | { ok: true; request: JsonRpcRequest }
   | { id: JsonRpcId; ok: false; response: JsonRpcErrorResponse } {
   if (!isRecord(value)) {
@@ -527,7 +964,8 @@ function handleSessionResume(
   ) {
     return createInvalidParamsResponse(
       request.id ?? null,
-      "Provide sessionId as a non-empty string."
+      "Provide sessionId as a non-empty string.",
+      "SESSION_ID_INVALID"
     );
   }
 
@@ -560,6 +998,82 @@ function handleSessionResume(
   });
 }
 
+function handleTaskStart(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): JsonRpcResponse | undefined {
+  if (isNotification(request)) {
+    return undefined;
+  }
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  const taskParams = readTaskStartParams(request, scoped);
+
+  if (!taskParams.ok) {
+    return taskParams.response;
+  }
+
+  const started = runtime.startTask(taskParams.value.task, {
+    allowedTools: taskParams.value.allowedTools,
+    ...(taskParams.value.memoryScope === undefined
+      ? {}
+      : { memoryScope: taskParams.value.memoryScope }),
+    ...(taskParams.value.outputFormat === undefined
+      ? {}
+      : { outputFormat: taskParams.value.outputFormat }),
+    ...(taskParams.value.provider === undefined
+      ? {}
+      : { provider: taskParams.value.provider }),
+    ...(taskParams.value.sessionId === undefined
+      ? {}
+      : { sessionId: taskParams.value.sessionId })
+  });
+
+  if (!started.ok) {
+    return createTaskStartRuntimeErrorResponse(
+      request.id ?? null,
+      started.error
+    );
+  }
+
+  const flow = started.value.flow;
+
+  return createJsonRpcSuccessResponse(request.id ?? null, {
+    task: {
+      taskId: flow.taskId,
+      correlationId: flow.correlationId,
+      status: flow.status,
+      currentPhase: flow.currentPhase,
+      createdAt: flow.events[0]?.createdAt ?? started.value.session.createdAt
+    },
+    session: {
+      sessionId: started.value.session.sessionId,
+      createdAt: started.value.session.createdAt,
+      resumed: started.value.session.resumed,
+      restoredEventCount: started.value.session.restoredEventCount
+    },
+    acceptedScopes: started.value.acceptedScopes,
+    lifecycle: {
+      waitingReason: flow.waitingState?.reason ?? null,
+      initialEvents: flow.events.map((event) => ({
+        eventId: event.eventId,
+        type: event.type,
+        createdAt: event.createdAt
+      }))
+    },
+    runtime: {
+      eventCount: runtime.getEventHistory().length,
+      provider: flow.request.provider
+    },
+    warnings: started.value.warnings
+  });
+}
+
 function handleJsonRpcRequest(
   request: JsonRpcRequest,
   runtime: JsonRpcRuntimeBridge
@@ -576,13 +1090,18 @@ function handleJsonRpcRequest(
     return handleSessionResume(request, runtime);
   }
 
+  if (request.method === "task.start") {
+    return handleTaskStart(request, runtime);
+  }
+
   return isNotification(request)
     ? undefined
     : createJsonRpcErrorResponse({
         code: -32601,
         id: request.id,
         message: "Method not found.",
-        nextAction: "Use rpc.ping or wait for later RPC stories to add methods."
+        nextAction:
+          "Use rpc.ping, session.create, session.resume, or task.start."
       });
 }
 

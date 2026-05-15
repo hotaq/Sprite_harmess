@@ -275,6 +275,7 @@ function createRuntimeSnapshot(input: {
       sources: skillNames.length > 0 ? ["project"] : []
     },
     tools: {
+      allowedNames: ["read_file", "search_files"],
       available: true,
       names: ["read_file", "search_files"],
       providerDrivenExecutionAvailable: false,
@@ -354,6 +355,7 @@ function createPlannedExecutionFlow(
     intents: [],
     request: {
       allowedDefaults: {
+        allowedTools: [],
         outputFormat: bootstrapState.startup.outputFormat,
         sandboxMode: bootstrapState.startup.sandboxMode,
         toolExecutionEnabled: false

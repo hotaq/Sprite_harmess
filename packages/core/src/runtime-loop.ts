@@ -1,5 +1,6 @@
 import type { BootstrapState } from "./agent-runtime.js";
 import type { CompactedSessionContext } from "./compaction.js";
+import type { ToolName } from "@sprite/tools";
 import {
   createRuntimeEventRecord,
   type RuntimeEventPayload,
@@ -26,6 +27,7 @@ import {
 const DEFAULT_MAX_ITERATIONS = 1;
 
 export interface TaskRequestContextOptions {
+  allowedTools?: readonly ToolName[];
   compactedContext?: CompactedSessionContext;
   memoryEntries?: readonly TaskContextMemoryInput[];
   sessionState?: TaskContextSessionStateInput;
@@ -52,9 +54,11 @@ export function createTaskRequest(
       skillEntries: options.skillEntries,
       startup: bootstrapState.startup,
       task,
+      allowedTools: options.allowedTools,
       workingMemory: options.workingMemory
     }),
     allowedDefaults: {
+      allowedTools: [...(options.allowedTools ?? [])],
       outputFormat: bootstrapState.startup.outputFormat,
       sandboxMode: bootstrapState.startup.sandboxMode,
       toolExecutionEnabled: false

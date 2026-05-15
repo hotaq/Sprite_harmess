@@ -91,9 +91,67 @@ type CreateSessionResult = {
   };
 };
 
+type TaskStartResult = {
+  error?: { code: string; message: string };
+  ok: boolean;
+  value?: {
+    acceptedScopes: {
+      allowedTools: string[];
+      cwd: string;
+      memoryScope: {
+        manual: boolean;
+        procedural: boolean;
+        working: boolean;
+      };
+      outputFormat: string;
+      toolExecutionEnabled: boolean;
+    };
+    flow: {
+      correlationId: string;
+      currentPhase: string;
+      request: {
+        allowedDefaults: {
+          allowedTools: string[];
+          outputFormat: string;
+          toolExecutionEnabled: boolean;
+        };
+        contextPacket: {
+          sections: Array<{
+            metadata?: Record<string, unknown>;
+            source: string;
+          }>;
+        };
+      };
+      sessionId: string;
+      status: string;
+      taskId: string;
+    };
+    session: {
+      createdAt: string;
+      restoredEventCount: number;
+      resumed: boolean;
+      sessionId: string;
+    };
+    warnings: string[];
+  };
+};
+
 type ResumableRuntime = AgentRuntime & {
   createSession?: () => CreateSessionResult;
   resumeSession?: (sessionId: string) => ResumeSessionResult;
+  startTask?: (
+    task: string,
+    options?: {
+      allowedTools?: string[];
+      memoryScope?: {
+        manual: boolean;
+        procedural: boolean;
+        working: boolean;
+      };
+      outputFormat?: string;
+      sessionId?: string;
+    }
+  ) => TaskStartResult;
 };
 
 function createRuntimeSession(runtime: AgentRuntime): CreateSessionResult {
@@ -117,6 +175,20 @@ function resumeSession(
   }
 
   return resume.call(runtime, sessionId);
+}
+
+function startRuntimeTask(
+  runtime: AgentRuntime,
+  task: string,
+  options?: Parameters<NonNullable<ResumableRuntime["startTask"]>>[1]
+): TaskStartResult {
+  const startTask = (runtime as ResumableRuntime).startTask;
+
+  if (startTask === undefined) {
+    throw new Error("Expected AgentRuntime.startTask(task, options) to exist.");
+  }
+
+  return startTask.call(runtime, task, options);
 }
 
 describe("AgentRuntime session persistence", () => {
@@ -223,6 +295,254 @@ describe("AgentRuntime session persistence", () => {
       });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a scoped task inside a previously created no-task session", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const created = createRuntimeSession(runtime);
+
+      expect(created.ok).toBe(true);
+      if (!created.ok || created.value === undefined) {
+        return;
+      }
+
+      const started = startRuntimeTask(runtime, "start scoped RPC task", {
+        allowedTools: ["read_file"],
+        memoryScope: {
+          manual: false,
+          procedural: false,
+          working: true
+        },
+        outputFormat: "json",
+        sessionId: created.value.sessionId
+      });
+
+      expect(started.ok).toBe(true);
+      if (!started.ok || started.value === undefined) {
+        return;
+      }
+
+      expect(started.value).toMatchObject({
+        acceptedScopes: {
+          allowedTools: ["read_file"],
+          cwd: projectDir,
+          memoryScope: {
+            manual: false,
+            procedural: false,
+            working: true
+          },
+          outputFormat: "json",
+          toolExecutionEnabled: false
+        },
+        flow: {
+          currentPhase: "act",
+          sessionId: created.value.sessionId,
+          status: "waiting-for-input"
+        },
+        session: {
+          restoredEventCount: 0,
+          resumed: false,
+          sessionId: created.value.sessionId
+        }
+      });
+      expect(started.value.flow.request.allowedDefaults).toMatchObject({
+        allowedTools: ["read_file"],
+        outputFormat: "json",
+        toolExecutionEnabled: false
+      });
+      expect(
+        started.value.flow.request.contextPacket.sections.find(
+          (section) => section.source === "runtime-self-model"
+        )?.metadata
+      ).toMatchObject({
+        allowedToolNames: ["read_file"],
+        toolNames: [
+          "apply_patch",
+          "list_files",
+          "read_file",
+          "run_command",
+          "search_files"
+        ]
+      });
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        created.value.sessionId
+      );
+      const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+      const state = readJson(join(sessionDir, "state.json"));
+
+      expect(persistedEvents.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting"
+      ]);
+      expect(state).toMatchObject({
+        eventCount: 2,
+        latestTask: {
+          goal: "start scoped RPC task",
+          status: "waiting-for-input",
+          taskId: started.value.flow.taskId
+        },
+        sessionId: created.value.sessionId
+      });
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("starts a scoped task against an existing persisted session without losing prior audit events", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      const originalRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const first = originalRuntime.submitInteractiveTask(
+        "first persisted task"
+      );
+
+      expect(first.ok).toBe(true);
+      if (!first.ok) {
+        return;
+      }
+
+      const resumedRuntime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const second = startRuntimeTask(
+        resumedRuntime,
+        "second scoped RPC task",
+        {
+          sessionId: first.value.sessionId
+        }
+      );
+
+      expect(second.ok).toBe(true);
+      if (!second.ok || second.value === undefined) {
+        return;
+      }
+
+      expect(second.value.flow.sessionId).toBe(first.value.sessionId);
+      expect(second.value.flow.taskId).not.toBe(first.value.taskId);
+      expect(second.value.session).toMatchObject({
+        restoredEventCount: 2,
+        resumed: true,
+        sessionId: first.value.sessionId
+      });
+
+      const sessionDir = join(
+        projectDir,
+        ".sprite",
+        "sessions",
+        first.value.sessionId
+      );
+      const persistedEvents = readNdjson(join(sessionDir, "events.ndjson"));
+      const state = readJson(join(sessionDir, "state.json"));
+
+      expect(persistedEvents.map((event) => event.type)).toEqual([
+        "task.started",
+        "task.waiting",
+        "task.started",
+        "task.waiting"
+      ]);
+      expect(state).toMatchObject({
+        eventCount: 4,
+        latestTask: {
+          goal: "second scoped RPC task",
+          taskId: second.value.flow.taskId
+        },
+        sessionId: first.value.sessionId
+      });
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects scoped task start when the runtime already owns an active task", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const first = startRuntimeTask(runtime, "first active RPC task");
+
+      expect(first.ok).toBe(true);
+
+      const duplicate = startRuntimeTask(runtime, "second active RPC task");
+
+      expect(duplicate).toMatchObject({
+        error: {
+          code: "TASK_ALREADY_ACTIVE"
+        },
+        ok: false
+      });
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects unsupported scoped task memory fields before starting a task", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const rejected = startRuntimeTask(runtime, "bad memory scope", {
+        memoryScope: {
+          longTerm: true,
+          manual: true,
+          procedural: true,
+          working: true
+        } as {
+          manual: boolean;
+          procedural: boolean;
+          working: boolean;
+        }
+      });
+
+      expect(rejected).toMatchObject({
+        error: {
+          code: "TASK_MEMORY_SCOPE_UNSUPPORTED"
+        },
+        ok: false
+      });
+      expect(runtime.getActiveTask().ok).toBe(false);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("allows scoped task start after the previous task reaches a terminal state", () => {
+    const { homeDir, projectDir, rootDir } = createTempWorkspace();
+
+    try {
+      mkdirSync(projectDir, { recursive: true });
+      const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+      const first = startRuntimeTask(runtime, "first terminal RPC task");
+
+      expect(first.ok).toBe(true);
+      if (!first.ok || first.value === undefined) {
+        return;
+      }
+
+      const completed = runtime.completeActiveTask("first task finished");
+
+      expect(completed.ok).toBe(true);
+
+      const second = startRuntimeTask(runtime, "second RPC task");
+
+      expect(second.ok).toBe(true);
+      if (!second.ok || second.value === undefined) {
+        return;
+      }
+      expect(second.value.flow.taskId).not.toBe(first.value.flow.taskId);
+      expect(second.value.flow.sessionId).toBe(first.value.flow.sessionId);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
     }
   });
 

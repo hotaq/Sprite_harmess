@@ -228,6 +228,90 @@ describe("sprite rpc CLI", () => {
     }
   });
 
+  it("starts a task over JSON-RPC stdout only", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const canonicalProjectDir = realpathSync.native(projectDir);
+      const result = spawnSync("node", [cliPath, "rpc"], {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          SPRITE_TEST_SECRET: "sk-test-secret"
+        },
+        input: `${JSON.stringify({
+          id: "cli-start-task",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: {
+            allowedTools: ["read_file"],
+            cwd: projectDir,
+            output: { format: "json" },
+            provider: {
+              model: "gpt-rpc-test",
+              providerName: "openai-compatible"
+            },
+            task: "start from CLI RPC with sk-test-secret redacted"
+          }
+        })}\n`
+      });
+      const messages = parseJsonLines(result.stdout);
+      const started = messages[1].result as {
+        session: { sessionId: string };
+        task: { taskId: string };
+      };
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ method: "rpc.ready" });
+      expect(messages[1]).toMatchObject({
+        id: "cli-start-task",
+        result: {
+          acceptedScopes: {
+            allowedTools: ["read_file"],
+            cwd: canonicalProjectDir,
+            outputFormat: "json",
+            toolExecutionEnabled: false
+          },
+          lifecycle: {
+            waitingReason: "steering-required"
+          },
+          session: {
+            sessionId: expect.stringMatching(/^ses_/)
+          },
+          task: {
+            currentPhase: "act",
+            status: "waiting-for-input"
+          }
+        }
+      });
+      expect(
+        readJson(
+          join(
+            projectDir,
+            ".sprite",
+            "sessions",
+            started.session.sessionId,
+            "state.json"
+          )
+        )
+      ).toMatchObject({
+        eventCount: 2,
+        latestTask: {
+          taskId: started.task.taskId
+        },
+        sessionId: started.session.sessionId
+      });
+      expect(result.stdout).not.toContain("sk-test-secret");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
   it("returns JSON-RPC parse errors on stdout without stderr protocol leakage", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

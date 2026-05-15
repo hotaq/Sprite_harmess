@@ -4,6 +4,7 @@ import type {
   SpriteSandboxMode
 } from "@sprite/config";
 import type { ResolvedProviderState } from "@sprite/providers";
+import type { ToolName } from "@sprite/tools";
 import type { FileActivityRecord } from "./file-activity.js";
 import type { RuntimeEventRecord } from "./runtime-events.js";
 import type { TaskContextPacket } from "./task-context.js";
@@ -34,6 +35,7 @@ export interface TaskStopConditions {
 }
 
 export interface TaskAllowedDefaults {
+  allowedTools: ToolName[];
   outputFormat: SpriteOutputFormat;
   sandboxMode: SpriteSandboxMode;
   toolExecutionEnabled: boolean;
