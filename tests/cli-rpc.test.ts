@@ -419,4 +419,58 @@ describe("sprite rpc CLI", () => {
       rmSync(rootDir, { force: true, recursive: true });
     }
   });
+
+  it("rejects approval.respond with bounded errors over JSON-RPC stdout only", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const result = spawnSync("node", [cliPath, "rpc"], {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          SPRITE_TEST_SECRET: "sk-test-secret"
+        },
+        input: `${JSON.stringify({
+          id: "cli-approval-no-task",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            approvalRequestId: "appr_does-not-exist",
+            cwd: projectDir
+          }
+        })}\n`
+      });
+      const messages = parseJsonLines(result.stdout);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(messages.every((message) => message.jsonrpc === "2.0")).toBe(
+        true
+      );
+      expect(messages[0]).toMatchObject({
+        method: "rpc.ready",
+        params: {
+          capabilities: expect.arrayContaining(["approval.respond"])
+        }
+      });
+      expect(messages[1]).toMatchObject({
+        error: {
+          code: -32603,
+          data: {
+            code: "NO_ACTIVE_TASK",
+            recoverable: false,
+            subsystem: "rpc"
+          }
+        },
+        id: "cli-approval-no-task"
+      });
+      expect(result.stdout).not.toContain("sk-test-secret");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
 });

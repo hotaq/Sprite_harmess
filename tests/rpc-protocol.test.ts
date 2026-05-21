@@ -1676,3 +1676,597 @@ describe("JSON-RPC protocol adapter", () => {
     expect(response).toBeUndefined();
   });
 });
+
+describe("approval.respond", () => {
+  async function expectAsyncResponse(
+    response: ReturnType<typeof handleJsonRpcMessage>
+  ): Promise<Record<string, unknown>> {
+    expect(response).toBeDefined();
+    const awaited = await Promise.resolve(response);
+    expect(Array.isArray(awaited)).toBe(false);
+
+    return awaited as unknown as Record<string, unknown>;
+  }
+
+  async function createPendingCommandApproval(
+    runtime: AgentRuntime
+  ): Promise<{
+    approvalRequestId: string;
+    sessionId: string;
+    taskId: string;
+  }> {
+    const submitted = runtime.submitInteractiveTask("approval.respond fixture");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      throw new Error("expected submitInteractiveTask to succeed");
+    }
+
+    const pending = await runtime.executeToolCall({
+      input: {
+        args: ["--version"],
+        command: process.execPath,
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(pending.ok).toBe(false);
+
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      throw new Error("expected pending approval to be created");
+    }
+
+    return {
+      approvalRequestId: approval.approvalRequestId,
+      sessionId: submitted.value.sessionId,
+      taskId: submitted.value.taskId
+    };
+  }
+
+  it("advertises approval.respond in protocol capabilities", () => {
+    const { runtime } = createTempRuntime();
+    const ready = createRpcReadyNotification(runtime);
+
+    expect((ready.params as { capabilities: string[] }).capabilities).toEqual(
+      expect.arrayContaining(["approval.respond"])
+    );
+  });
+
+  it("returns a bounded execution result for allow responses", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "approval-allow",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+    const serialized = JSON.stringify(response);
+
+    expect(response).toMatchObject({
+      id: "approval-allow",
+      jsonrpc: "2.0",
+      result: {
+        action: "allow",
+        approvalRequestId: fixture.approvalRequestId,
+        execution: {
+          status: "completed",
+          toolName: "run_command"
+        }
+      }
+    });
+    const result = (response as { result: { execution: Record<string, unknown> } })
+      .result;
+    expect(result.execution).toMatchObject({
+      affectedFiles: [],
+      durationMs: expect.any(Number),
+      summary: expect.any(String)
+    });
+    expect(serialized).not.toMatch(/v\d+\.\d+\.\d+/);
+    expect(serialized).not.toContain("stdout");
+    expect(serialized).not.toContain("stderr");
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+  });
+
+  it("returns a denial confirmation when responding with deny", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "approval-deny",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "deny",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            reason: "Untrusted command in this scope."
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(response).toMatchObject({
+      id: "approval-deny",
+      jsonrpc: "2.0",
+      result: {
+        action: "deny",
+        approvalRequestId: fixture.approvalRequestId,
+        reason: "Untrusted command in this scope."
+      }
+    });
+    expect(response).not.toMatchObject({ error: { code: expect.any(Number) } });
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+  });
+
+  it("returns a timeout confirmation when responding with timeout", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "approval-timeout",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "timeout",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(response).toMatchObject({
+      id: "approval-timeout",
+      jsonrpc: "2.0",
+      result: {
+        action: "timeout",
+        approvalRequestId: fixture.approvalRequestId
+      }
+    });
+    expect(response).not.toMatchObject({ error: { code: expect.any(Number) } });
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+  });
+
+  it("executes a modified command request for edit responses", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "approval-edit-command",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "pwd",
+              cwd: projectDir,
+              timeoutMs: 30_000,
+              type: "command"
+            },
+            reason: "Restricting to read-only command."
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(response).toMatchObject({
+      id: "approval-edit-command",
+      jsonrpc: "2.0",
+      result: {
+        action: "edit",
+        approvalRequestId: fixture.approvalRequestId,
+        execution: {
+          status: "completed",
+          toolName: "run_command"
+        }
+      }
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+  });
+
+  it("executes a modified apply_patch tool call for edit responses", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    mkdirSync(join(projectDir, "src"), { recursive: true });
+    writeFileSync(
+      join(projectDir, "src", "edit.ts"),
+      "export const value = 1;\n"
+    );
+    writeFileSync(join(projectDir, "package.json"), '{"name":"old"}\n');
+    const submitted = runtime.submitInteractiveTask("approval edit apply_patch");
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const pending = await runtime.executeToolCall({
+      input: {
+        edits: [
+          {
+            newText: '{"name":"renamed"}\n',
+            oldText: '{"name":"old"}\n',
+            path: "package.json"
+          }
+        ],
+        summary: "rename package"
+      },
+      toolName: "apply_patch"
+    });
+
+    expect(pending.ok).toBe(false);
+
+    const approval = runtime.getPendingApprovals()[0];
+
+    expect(approval).toBeDefined();
+    if (approval === undefined) {
+      return;
+    }
+
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "approval-edit-patch",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: approval.approvalRequestId,
+            cwd: projectDir,
+            modifiedToolCall: {
+              input: {
+                edits: [
+                  {
+                    newText: "export const value = 2;\n",
+                    oldText: "export const value = 1;\n",
+                    path: "src/edit.ts"
+                  }
+                ],
+                summary: "bump value"
+              },
+              toolName: "apply_patch"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(response).toMatchObject({
+      id: "approval-edit-patch",
+      jsonrpc: "2.0",
+      result: {
+        action: "edit",
+        approvalRequestId: approval.approvalRequestId,
+        execution: {
+          status: "completed",
+          toolName: "apply_patch"
+        }
+      }
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+  });
+
+  it("ignores approval.respond notifications without producing side effects", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+    const response = handleJsonRpcMessage(
+      {
+        jsonrpc: "2.0",
+        method: "approval.respond",
+        params: {
+          action: "allow",
+          approvalRequestId: fixture.approvalRequestId,
+          cwd: projectDir
+        }
+      },
+      { runtime }
+    );
+
+    expect(response).toBeUndefined();
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+  });
+
+  it("rejects invalid approval.respond params with structured errors", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+
+    const missingCwd = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "missing-cwd",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            approvalRequestId: fixture.approvalRequestId
+          }
+        },
+        { runtime }
+      )
+    );
+    const missingId = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "missing-id",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+    const unknownId = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "unknown-id",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            approvalRequestId: "appr_does-not-exist",
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+    const badAction = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "bad-action",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "explode",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+    const editWithoutPayload = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "edit-missing",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+    const editWithBothPayloads = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "edit-both",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "pwd",
+              cwd: projectDir,
+              type: "command"
+            },
+            modifiedToolCall: {
+              input: {
+                edits: [
+                  {
+                    newText: "x",
+                    oldText: "y",
+                    path: "package.json"
+                  }
+                ]
+              },
+              toolName: "apply_patch"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const disallowedAction = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "disallowed-action",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "alwaysAllowForSession",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(missingCwd).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "INVALID_CWD", recoverable: true, subsystem: "rpc" }
+      },
+      id: "missing-cwd"
+    });
+    expect(missingId).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_REQUEST_ID_INVALID", subsystem: "rpc" }
+      },
+      id: "missing-id"
+    });
+    expect(unknownId).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_NOT_FOUND", subsystem: "rpc" }
+      },
+      id: "unknown-id"
+    });
+    expect(badAction).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_ACTION_INVALID", subsystem: "rpc" }
+      },
+      id: "bad-action"
+    });
+    expect(editWithoutPayload).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_EDIT_PAYLOAD_INVALID", subsystem: "rpc" }
+      },
+      id: "edit-missing"
+    });
+    expect(editWithBothPayloads).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_EDIT_PAYLOAD_INVALID", subsystem: "rpc" }
+      },
+      id: "edit-both"
+    });
+    expect(disallowedAction).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_ACTION_NOT_ALLOWED", subsystem: "rpc" }
+      },
+      id: "disallowed-action"
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(1);
+  });
+
+  it("rejects approval.respond when there is no active task", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "no-active",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            approvalRequestId: "appr_does-not-exist",
+            cwd: projectDir
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(response).toMatchObject({
+      error: {
+        code: -32603,
+        data: {
+          code: "NO_ACTIVE_TASK",
+          recoverable: false,
+          subsystem: "rpc"
+        }
+      },
+      id: "no-active"
+    });
+  });
+
+  it("does not echo secret-like values in approval.respond errors", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    await createPendingCommandApproval(runtime);
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "secret-bad-action",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "OPENAI_API_KEY=sk-test-secret",
+            approvalRequestId: "appr_OPENAI_API_KEY=sk-test-secret",
+            cwd: projectDir,
+            reason: "OPENAI_API_KEY=sk-test-secret"
+          }
+        },
+        { runtime }
+      )
+    );
+
+    expect(JSON.stringify(response)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(response)).not.toContain(
+      "OPENAI_API_KEY=sk-test-secret"
+    );
+  });
+
+  it("streams approval.respond responses through the serialized write queue", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const fixture = await createPendingCommandApproval(runtime);
+    const input = new PassThrough();
+    const server = runJsonRpcStdioServer({ input, output, runtime });
+
+    writeJsonLine(input, {
+      id: "stream-subscribe",
+      jsonrpc: "2.0",
+      method: "event.subscribe",
+      params: {
+        cwd: projectDir,
+        eventTypes: [
+          "approval.resolved",
+          "tool.call.completed",
+          "tool.call.requested",
+          "tool.call.started"
+        ]
+      }
+    });
+    writeJsonLine(input, {
+      id: "stream-allow",
+      jsonrpc: "2.0",
+      method: "approval.respond",
+      params: {
+        action: "allow",
+        approvalRequestId: fixture.approvalRequestId,
+        cwd: projectDir
+      }
+    });
+    input.end();
+    await server;
+
+    const messages = parseJsonLines(read());
+
+    expect(messages.every((message) => message.jsonrpc === "2.0")).toBe(true);
+    const allowResponse = messages.find(
+      (message) => message.id === "stream-allow"
+    ) as { result?: Record<string, unknown> } | undefined;
+
+    expect(allowResponse).toBeDefined();
+    expect(allowResponse?.result).toMatchObject({
+      action: "allow",
+      approvalRequestId: fixture.approvalRequestId
+    });
+  });
+});

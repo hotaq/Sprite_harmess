@@ -1,9 +1,14 @@
 import {
   RUNTIME_EVENT_TYPES,
   type AgentRuntime,
+  type RuntimeApprovalResponse,
   type RuntimeEventRecord,
   type RuntimeEventType
 } from "@sprite/core";
+import type {
+  ApprovalApplyPatchToolCall,
+  CommandPolicyRequest
+} from "@sprite/sandbox";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -58,8 +63,11 @@ export type JsonRpcMessage =
 
 export interface JsonRpcRuntimeBridge {
   createSession: AgentRuntime["createSession"];
+  getActiveTask: AgentRuntime["getActiveTask"];
   getBootstrapState: AgentRuntime["getBootstrapState"];
   getEventHistory: AgentRuntime["getEventHistory"];
+  getPendingApprovals: AgentRuntime["getPendingApprovals"];
+  respondToApproval: AgentRuntime["respondToApproval"];
   resumeSession: AgentRuntime["resumeSession"];
   startTask: AgentRuntime["startTask"];
   subscribeToEvents: AgentRuntime["subscribeToEvents"];
@@ -84,7 +92,8 @@ const RPC_CAPABILITIES = [
   "session.resume",
   "task.start",
   "event.subscribe",
-  "event.unsubscribe"
+  "event.unsubscribe",
+  "approval.respond"
 ] as const;
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
 const EVENT_REPLAY_DEFAULT_LIMIT = 50;
@@ -1575,10 +1584,756 @@ function handleTaskStart(
   });
 }
 
+const APPROVAL_RESPOND_ACTIONS = [
+  "allow",
+  "deny",
+  "edit",
+  "timeout",
+  "alwaysAllowForSession"
+] as const;
+type ApprovalRespondAction = (typeof APPROVAL_RESPOND_ACTIONS)[number];
+
+const APPROVAL_REASON_MAX_LENGTH = 1_000;
+const APPROVAL_PATCH_PATH_MAX_LENGTH = 512;
+
+const APPROVAL_COMMAND_REQUEST_KEYS = new Set([
+  "args",
+  "command",
+  "configuredValidation",
+  "cwd",
+  "env",
+  "timeoutMs",
+  "type"
+]);
+const APPROVAL_PATCH_INPUT_KEYS = new Set(["edits", "summary"]);
+const APPROVAL_PATCH_EDIT_KEYS = new Set(["newText", "oldText", "path"]);
+const APPROVAL_TOOL_CALL_KEYS = new Set(["input", "toolName"]);
+
+function createApprovalRespondErrorResponse(options: {
+  dataCode: string;
+  id: JsonRpcId;
+  nextAction: string;
+  recoverable?: boolean;
+}): JsonRpcErrorResponse {
+  return createJsonRpcErrorResponse({
+    code: -32602,
+    dataCode: options.dataCode,
+    id: options.id,
+    message: "Invalid approval response.",
+    nextAction: options.nextAction,
+    recoverable: options.recoverable ?? true
+  });
+}
+
+function createApprovalRespondRuntimeErrorResponse(
+  id: JsonRpcId,
+  error: unknown
+): JsonRpcErrorResponse {
+  const code = readSafeErrorCode(error);
+
+  switch (code) {
+    case "NO_ACTIVE_TASK":
+      return createJsonRpcErrorResponse({
+        code: -32603,
+        dataCode: "NO_ACTIVE_TASK",
+        id,
+        message: "Approval response rejected (NO_ACTIVE_TASK).",
+        nextAction:
+          "Start or resume a task before responding to approval requests.",
+        recoverable: false
+      });
+    case "APPROVAL_NOT_FOUND":
+      return createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_NOT_FOUND",
+        id,
+        nextAction:
+          "Check pending approvals via the event stream or retry with a valid approvalRequestId."
+      });
+    case "APPROVAL_SCOPE_MISMATCH":
+      return createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_SCOPE_MISMATCH",
+        id,
+        nextAction:
+          "Use an approvalRequestId that belongs to the active task before retrying.",
+        recoverable: false
+      });
+    case "APPROVAL_ACTION_NOT_ALLOWED":
+      return createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_ACTION_NOT_ALLOWED",
+        id,
+        nextAction:
+          "Retry with an action listed in the approval request's allowedActions."
+      });
+    case "APPROVAL_EDIT_PAYLOAD_INVALID":
+      return createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        id,
+        nextAction:
+          "Provide exactly one of modifiedRequest or modifiedToolCall when action is edit."
+      });
+    case "APPROVAL_TYPE_MISMATCH":
+      return createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_TYPE_MISMATCH",
+        id,
+        nextAction:
+          "Edit command approvals with modifiedRequest and file edit approvals with modifiedToolCall."
+      });
+    default:
+      return createApprovalRespondErrorResponse({
+        dataCode: code ?? "APPROVAL_REJECTED",
+        id,
+        nextAction:
+          "Review the approval request scope and retry with valid params."
+      });
+  }
+}
+
+function isApprovalRespondAction(value: unknown): value is ApprovalRespondAction {
+  return (
+    typeof value === "string" &&
+    (APPROVAL_RESPOND_ACTIONS as readonly string[]).includes(value)
+  );
+}
+
+function readApprovalReason(
+  value: unknown
+):
+  | { ok: true; value?: string }
+  | { dataCode: string; nextAction: string; ok: false } {
+  if (value === undefined) {
+    return { ok: true };
+  }
+
+  if (typeof value !== "string") {
+    return {
+      dataCode: "APPROVAL_REASON_INVALID",
+      nextAction: "Provide reason as a string when supplied.",
+      ok: false
+    };
+  }
+
+  if (value.length > APPROVAL_REASON_MAX_LENGTH) {
+    return {
+      dataCode: "APPROVAL_REASON_INVALID",
+      nextAction: `Provide reason no longer than ${APPROVAL_REASON_MAX_LENGTH} characters.`,
+      ok: false
+    };
+  }
+
+  return { ok: true, value };
+}
+
+function readApprovalRespondId(
+  value: unknown
+):
+  | { ok: true; value: string }
+  | { dataCode: string; nextAction: string; ok: false } {
+  if (typeof value !== "string" || value.length === 0) {
+    return {
+      dataCode: "APPROVAL_REQUEST_ID_INVALID",
+      nextAction: "Provide approvalRequestId as a non-empty string.",
+      ok: false
+    };
+  }
+
+  return { ok: true, value };
+}
+
+function readApprovalCommandRequest(
+  value: unknown,
+  cwd: string
+):
+  | { ok: true; value: CommandPolicyRequest }
+  | { dataCode: string; nextAction: string; ok: false } {
+  if (!isRecord(value)) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Provide modifiedRequest as a command policy request object.",
+      ok: false
+    };
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!APPROVAL_COMMAND_REQUEST_KEYS.has(key)) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide modifiedRequest with only command policy fields (type, command, args, cwd, env, timeoutMs, configuredValidation).",
+        ok: false
+      };
+    }
+  }
+
+  if (value.type !== "command") {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction: "Provide modifiedRequest.type as 'command'.",
+      ok: false
+    };
+  }
+
+  if (typeof value.command !== "string" || value.command.length === 0) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction: "Provide modifiedRequest.command as a non-empty string.",
+      ok: false
+    };
+  }
+
+  if (value.args !== undefined) {
+    if (
+      !Array.isArray(value.args) ||
+      !value.args.every((entry) => typeof entry === "string")
+    ) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide modifiedRequest.args as an array of strings when supplied.",
+        ok: false
+      };
+    }
+  }
+
+  if (typeof value.cwd !== "string" || value.cwd.length === 0) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction: "Provide modifiedRequest.cwd as a non-empty string.",
+      ok: false
+    };
+  }
+
+  if (
+    value.timeoutMs !== undefined &&
+    (typeof value.timeoutMs !== "number" || !Number.isFinite(value.timeoutMs))
+  ) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Provide modifiedRequest.timeoutMs as a finite number when supplied.",
+      ok: false
+    };
+  }
+
+  if (value.env !== undefined) {
+    if (!isRecord(value.env)) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide modifiedRequest.env as an object of string values when supplied.",
+        ok: false
+      };
+    }
+
+    for (const entry of Object.values(value.env)) {
+      if (typeof entry !== "string") {
+        return {
+          dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+          nextAction:
+            "Provide modifiedRequest.env values as strings when supplied.",
+          ok: false
+        };
+      }
+    }
+  }
+
+  if (
+    value.configuredValidation !== undefined &&
+    typeof value.configuredValidation !== "boolean"
+  ) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Provide modifiedRequest.configuredValidation as a boolean when supplied.",
+      ok: false
+    };
+  }
+
+  const normalizedCwd = normalizeCwd(value.cwd);
+
+  if (normalizedCwd === null || normalizedCwd !== cwd) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Set modifiedRequest.cwd to the same scoped cwd as the approval response.",
+      ok: false
+    };
+  }
+
+  const command: CommandPolicyRequest = {
+    command: value.command,
+    cwd: normalizedCwd,
+    type: "command",
+    ...(Array.isArray(value.args) ? { args: [...(value.args as string[])] } : {}),
+    ...(typeof value.timeoutMs === "number"
+      ? { timeoutMs: value.timeoutMs }
+      : {}),
+    ...(typeof value.configuredValidation === "boolean"
+      ? { configuredValidation: value.configuredValidation }
+      : {}),
+    ...(isRecord(value.env)
+      ? { env: { ...(value.env as Record<string, string>) } }
+      : {})
+  };
+
+  return { ok: true, value: command };
+}
+
+function readApprovalPatchToolCall(
+  value: unknown
+):
+  | { ok: true; value: ApprovalApplyPatchToolCall }
+  | { dataCode: string; nextAction: string; ok: false } {
+  if (!isRecord(value)) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Provide modifiedToolCall as an object with toolName and input.",
+      ok: false
+    };
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!APPROVAL_TOOL_CALL_KEYS.has(key)) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide modifiedToolCall with only toolName and input fields.",
+        ok: false
+      };
+    }
+  }
+
+  if (value.toolName !== "apply_patch") {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction: "Provide modifiedToolCall.toolName as 'apply_patch'.",
+      ok: false
+    };
+  }
+
+  if (!isRecord(value.input)) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction: "Provide modifiedToolCall.input as an apply_patch input object.",
+      ok: false
+    };
+  }
+
+  for (const key of Object.keys(value.input)) {
+    if (!APPROVAL_PATCH_INPUT_KEYS.has(key)) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide modifiedToolCall.input with only edits and an optional summary.",
+        ok: false
+      };
+    }
+  }
+
+  const editsValue = (value.input as { edits?: unknown }).edits;
+
+  if (!Array.isArray(editsValue) || editsValue.length === 0) {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Provide modifiedToolCall.input.edits as a non-empty array of edits.",
+      ok: false
+    };
+  }
+
+  const edits: ApprovalApplyPatchToolCall["input"]["edits"] = [];
+
+  for (const edit of editsValue) {
+    if (!isRecord(edit)) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide each modifiedToolCall.input.edits entry as an object with path, oldText, and newText.",
+        ok: false
+      };
+    }
+
+    for (const key of Object.keys(edit)) {
+      if (!APPROVAL_PATCH_EDIT_KEYS.has(key)) {
+        return {
+          dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+          nextAction:
+            "Provide edits entries with only path, oldText, and newText.",
+          ok: false
+        };
+      }
+    }
+
+    if (
+      typeof edit.path !== "string" ||
+      edit.path.length === 0 ||
+      edit.path.length > APPROVAL_PATCH_PATH_MAX_LENGTH
+    ) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide each edit.path as a non-empty bounded string.",
+        ok: false
+      };
+    }
+
+    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction: "Provide each edit.oldText and edit.newText as strings.",
+        ok: false
+      };
+    }
+
+    edits.push({
+      newText: edit.newText,
+      oldText: edit.oldText,
+      path: edit.path
+    });
+  }
+
+  const summaryValue = (value.input as { summary?: unknown }).summary;
+
+  if (summaryValue !== undefined && typeof summaryValue !== "string") {
+    return {
+      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      nextAction:
+        "Provide modifiedToolCall.input.summary as a string when supplied.",
+      ok: false
+    };
+  }
+
+  const toolCall: ApprovalApplyPatchToolCall = {
+    input: {
+      edits,
+      ...(typeof summaryValue === "string" ? { summary: summaryValue } : {})
+    },
+    toolName: "apply_patch"
+  };
+
+  return { ok: true, value: toolCall };
+}
+
+interface ApprovalRespondParams {
+  action: ApprovalRespondAction;
+  approvalRequestId: string;
+  modifiedRequest?: CommandPolicyRequest;
+  modifiedToolCall?: ApprovalApplyPatchToolCall;
+  reason?: string;
+}
+
+function readApprovalRespondParams(
+  request: JsonRpcRequest,
+  scoped: { cwd: string; params: Record<string, unknown> }
+):
+  | { ok: true; value: ApprovalRespondParams }
+  | { ok: false; response: JsonRpcErrorResponse } {
+  const params = scoped.params;
+  const requestId = request.id ?? null;
+
+  const idResult = readApprovalRespondId(params.approvalRequestId);
+
+  if (!idResult.ok) {
+    return {
+      ok: false,
+      response: createApprovalRespondErrorResponse({
+        dataCode: idResult.dataCode,
+        id: requestId,
+        nextAction: idResult.nextAction
+      })
+    };
+  }
+
+  if (params.action === undefined) {
+    return {
+      ok: false,
+      response: createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_ACTION_INVALID",
+        id: requestId,
+        nextAction:
+          "Provide action as one of allow, deny, edit, timeout, or alwaysAllowForSession."
+      })
+    };
+  }
+
+  if (!isApprovalRespondAction(params.action)) {
+    return {
+      ok: false,
+      response: createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_ACTION_INVALID",
+        id: requestId,
+        nextAction:
+          "Provide action as one of allow, deny, edit, timeout, or alwaysAllowForSession."
+      })
+    };
+  }
+
+  const action = params.action;
+  const reasonResult = readApprovalReason(params.reason);
+
+  if (!reasonResult.ok) {
+    return {
+      ok: false,
+      response: createApprovalRespondErrorResponse({
+        dataCode: reasonResult.dataCode,
+        id: requestId,
+        nextAction: reasonResult.nextAction
+      })
+    };
+  }
+
+  const hasModifiedRequest = hasOwn(params, "modifiedRequest");
+  const hasModifiedToolCall = hasOwn(params, "modifiedToolCall");
+
+  if (action === "edit") {
+    if (hasModifiedRequest === hasModifiedToolCall) {
+      return {
+        ok: false,
+        response: createApprovalRespondErrorResponse({
+          dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+          id: requestId,
+          nextAction:
+            "Provide exactly one of modifiedRequest or modifiedToolCall when action is edit."
+        })
+      };
+    }
+
+    if (hasModifiedRequest) {
+      const modifiedRequest = readApprovalCommandRequest(
+        params.modifiedRequest,
+        scoped.cwd
+      );
+
+      if (!modifiedRequest.ok) {
+        return {
+          ok: false,
+          response: createApprovalRespondErrorResponse({
+            dataCode: modifiedRequest.dataCode,
+            id: requestId,
+            nextAction: modifiedRequest.nextAction
+          })
+        };
+      }
+
+      return {
+        ok: true,
+        value: {
+          action,
+          approvalRequestId: idResult.value,
+          modifiedRequest: modifiedRequest.value,
+          ...(reasonResult.value === undefined
+            ? {}
+            : { reason: reasonResult.value })
+        }
+      };
+    }
+
+    const modifiedToolCall = readApprovalPatchToolCall(params.modifiedToolCall);
+
+    if (!modifiedToolCall.ok) {
+      return {
+        ok: false,
+        response: createApprovalRespondErrorResponse({
+          dataCode: modifiedToolCall.dataCode,
+          id: requestId,
+          nextAction: modifiedToolCall.nextAction
+        })
+      };
+    }
+
+    return {
+      ok: true,
+      value: {
+        action,
+        approvalRequestId: idResult.value,
+        modifiedToolCall: modifiedToolCall.value,
+        ...(reasonResult.value === undefined
+          ? {}
+          : { reason: reasonResult.value })
+      }
+    };
+  }
+
+  if (hasModifiedRequest || hasModifiedToolCall) {
+    return {
+      ok: false,
+      response: createApprovalRespondErrorResponse({
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        id: requestId,
+        nextAction:
+          "Provide modifiedRequest or modifiedToolCall only when action is edit."
+      })
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      action,
+      approvalRequestId: idResult.value,
+      ...(reasonResult.value === undefined
+        ? {}
+        : { reason: reasonResult.value })
+    }
+  };
+}
+
+function buildRuntimeApprovalResponse(
+  params: ApprovalRespondParams
+): RuntimeApprovalResponse {
+  switch (params.action) {
+    case "allow":
+    case "alwaysAllowForSession":
+      return {
+        action: params.action,
+        approvalRequestId: params.approvalRequestId
+      };
+    case "deny":
+      return {
+        action: "deny",
+        approvalRequestId: params.approvalRequestId,
+        ...(params.reason === undefined ? {} : { reason: params.reason })
+      };
+    case "timeout":
+      return {
+        action: "timeout",
+        approvalRequestId: params.approvalRequestId
+      };
+    case "edit":
+      if (params.modifiedRequest !== undefined) {
+        return {
+          action: "edit",
+          approvalRequestId: params.approvalRequestId,
+          modifiedRequest: params.modifiedRequest,
+          ...(params.reason === undefined ? {} : { reason: params.reason })
+        };
+      }
+
+      return {
+        action: "edit",
+        approvalRequestId: params.approvalRequestId,
+        modifiedToolCall: params.modifiedToolCall as ApprovalApplyPatchToolCall,
+        ...(params.reason === undefined ? {} : { reason: params.reason })
+      };
+  }
+}
+
+interface ApprovalExecutionSummary {
+  affectedFiles: string[];
+  durationMs: number;
+  status: "completed";
+  summary: string;
+  toolName: string;
+}
+
+function summarizeApprovalToolExecution(
+  result: Record<string, unknown>
+): ApprovalExecutionSummary {
+  const affectedFiles = Array.isArray(result.affectedFiles)
+    ? (result.affectedFiles as unknown[]).filter(
+        (entry): entry is string => typeof entry === "string"
+      )
+    : [];
+  const durationMs =
+    typeof result.durationMs === "number" && Number.isFinite(result.durationMs)
+      ? result.durationMs
+      : 0;
+  const summary =
+    typeof result.summary === "string"
+      ? result.summary
+      : "Approved tool call completed.";
+  const toolName =
+    typeof result.toolName === "string" ? result.toolName : "unknown";
+
+  return {
+    affectedFiles,
+    durationMs,
+    status: "completed",
+    summary,
+    toolName
+  };
+}
+
+async function handleApprovalRespond(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): Promise<JsonRpcResponse | undefined> {
+  if (isNotification(request)) {
+    return undefined;
+  }
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  const params = readApprovalRespondParams(request, scoped);
+
+  if (!params.ok) {
+    return params.response;
+  }
+
+  const requestId = request.id ?? null;
+  const activeTask = runtime.getActiveTask();
+
+  if (!activeTask.ok) {
+    return createJsonRpcErrorResponse({
+      code: -32603,
+      dataCode: "NO_ACTIVE_TASK",
+      id: requestId,
+      message: "Approval response rejected (NO_ACTIVE_TASK).",
+      nextAction:
+        "Start or resume a task before responding to approval requests.",
+      recoverable: false
+    });
+  }
+
+  const runtimeResponse = buildRuntimeApprovalResponse(params.value);
+  const result = await runtime.respondToApproval(runtimeResponse);
+
+  if (!result.ok) {
+    const code = readSafeErrorCode(result.error);
+
+    if (code === "APPROVAL_DENIED") {
+      return createJsonRpcSuccessResponse(requestId, {
+        action: "deny",
+        approvalRequestId: params.value.approvalRequestId,
+        ...(params.value.reason === undefined
+          ? {}
+          : { reason: params.value.reason })
+      });
+    }
+
+    if (code === "APPROVAL_TIMED_OUT") {
+      return createJsonRpcSuccessResponse(requestId, {
+        action: "timeout",
+        approvalRequestId: params.value.approvalRequestId
+      });
+    }
+
+    return createApprovalRespondRuntimeErrorResponse(requestId, result.error);
+  }
+
+  const execution = summarizeApprovalToolExecution(
+    result.value as unknown as Record<string, unknown>
+  );
+
+  return createJsonRpcSuccessResponse(requestId, {
+    action: params.value.action,
+    approvalRequestId: params.value.approvalRequestId,
+    execution
+  });
+}
+
 function handleJsonRpcRequest(
   request: JsonRpcRequest,
   runtime: JsonRpcRuntimeBridge
-): JsonRpcResponse | undefined {
+):
+  | JsonRpcResponse
+  | Promise<JsonRpcResponse | undefined>
+  | undefined {
   if (request.method === "rpc.ping") {
     return handleRpcPing(request, runtime);
   }
@@ -1595,6 +2350,14 @@ function handleJsonRpcRequest(
     return handleTaskStart(request, runtime);
   }
 
+  if (request.method === "approval.respond") {
+    if (isNotification(request)) {
+      return undefined;
+    }
+
+    return handleApprovalRespond(request, runtime);
+  }
+
   return isNotification(request)
     ? undefined
     : createJsonRpcErrorResponse({
@@ -1602,14 +2365,18 @@ function handleJsonRpcRequest(
         id: request.id,
         message: "Method not found.",
         nextAction:
-          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, or event.unsubscribe."
+          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, event.unsubscribe, or approval.respond."
       });
 }
 
 export function handleJsonRpcMessage(
   message: unknown,
   options: JsonRpcHandlerOptions
-): JsonRpcResponse | JsonRpcResponse[] | undefined {
+):
+  | JsonRpcResponse
+  | JsonRpcResponse[]
+  | Promise<JsonRpcResponse | JsonRpcResponse[] | undefined>
+  | undefined {
   if (Array.isArray(message)) {
     if (message.length === 0) {
       return createJsonRpcErrorResponse({
@@ -1619,17 +2386,42 @@ export function handleJsonRpcMessage(
       });
     }
 
-    const responses = message.flatMap((item) => {
-      const response = handleJsonRpcMessage(item, options);
+    const itemResponses = message.map((item) =>
+      handleJsonRpcMessage(item, options)
+    );
+    const hasAsync = itemResponses.some(
+      (response) => response instanceof Promise
+    );
 
-      if (response === undefined) {
-        return [];
-      }
+    if (!hasAsync) {
+      const responses = (
+        itemResponses as Array<
+          JsonRpcResponse | JsonRpcResponse[] | undefined
+        >
+      ).flatMap((response) => {
+        if (response === undefined) {
+          return [];
+        }
 
-      return Array.isArray(response) ? response : [response];
+        return Array.isArray(response) ? response : [response];
+      });
+
+      return responses.length === 0 ? undefined : responses;
+    }
+
+    return Promise.all(
+      itemResponses.map((response) => Promise.resolve(response))
+    ).then((awaited) => {
+      const responses = awaited.flatMap((response) => {
+        if (response === undefined) {
+          return [];
+        }
+
+        return Array.isArray(response) ? response : [response];
+      });
+
+      return responses.length === 0 ? undefined : responses;
     });
-
-    return responses.length === 0 ? undefined : responses;
   }
 
   const parsed = parseJsonRpcRequest(message);
@@ -1646,11 +2438,11 @@ interface ServerMessageHandlingResult {
   response?: JsonRpcResponse | JsonRpcResponse[];
 }
 
-function handleJsonRpcServerMessage(
+async function handleJsonRpcServerMessage(
   message: unknown,
   options: JsonRpcHandlerOptions,
   subscriptions: EventSubscriptionRegistry
-): ServerMessageHandlingResult {
+): Promise<ServerMessageHandlingResult> {
   if (Array.isArray(message)) {
     if (message.length === 0) {
       return {
@@ -1667,7 +2459,7 @@ function handleJsonRpcServerMessage(
     const afterResponse: JsonRpcNotification[] = [];
 
     for (const item of message) {
-      const handled = handleJsonRpcServerMessage(
+      const handled = await handleJsonRpcServerMessage(
         item,
         options,
         subscriptions
@@ -1710,9 +2502,13 @@ function handleJsonRpcServerMessage(
     };
   }
 
+  const response = await Promise.resolve(
+    handleJsonRpcRequest(parsed.request, options.runtime)
+  );
+
   return {
     afterResponse: [],
-    response: handleJsonRpcRequest(parsed.request, options.runtime)
+    ...(response === undefined ? {} : { response })
   };
 }
 
@@ -1795,7 +2591,7 @@ export async function runJsonRpcStdioServer(
       let liveNotifications: JsonRpcNotification[] = [];
 
       try {
-        handled = handleJsonRpcServerMessage(
+        handled = await handleJsonRpcServerMessage(
           message,
           {
             runtime: options.runtime
