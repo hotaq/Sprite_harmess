@@ -1,4 +1,10 @@
-import type { AgentRuntime } from "@sprite/core";
+import {
+  RUNTIME_EVENT_TYPES,
+  type AgentRuntime,
+  type RuntimeEventRecord,
+  type RuntimeEventType
+} from "@sprite/core";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -56,6 +62,7 @@ export interface JsonRpcRuntimeBridge {
   getEventHistory: AgentRuntime["getEventHistory"];
   resumeSession: AgentRuntime["resumeSession"];
   startTask: AgentRuntime["startTask"];
+  subscribeToEvents: AgentRuntime["subscribeToEvents"];
 }
 
 export interface JsonRpcHandlerOptions {
@@ -71,7 +78,20 @@ export interface JsonRpcStdioServerOptions extends JsonRpcHandlerOptions {
 const JSON_RPC_VERSION = "2.0";
 const RPC_SERVER_NAME = "sprite-rpc";
 const RPC_TRANSPORT = "stdio";
+const RPC_CAPABILITIES = [
+  "rpc.ping",
+  "session.create",
+  "session.resume",
+  "task.start",
+  "event.subscribe",
+  "event.unsubscribe"
+] as const;
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
+const EVENT_REPLAY_DEFAULT_LIMIT = 50;
+const EVENT_REPLAY_MAX_LIMIT = 100;
+const SESSION_ID_PATTERN = /^ses_[A-Za-z0-9_-]+$/u;
+const SUBSCRIPTION_ID_PATTERN = /^sub_[A-Za-z0-9_-]+$/u;
+const TASK_ID_PATTERN = /^task_[A-Za-z0-9_-]+$/u;
 const TASK_START_OUTPUT_FORMATS = ["text", "json", "ndjson"] as const;
 const TASK_START_TEXT_MAX_LENGTH = 16_000;
 const TASK_START_PROVIDER_KEYS = ["baseUrl", "model", "providerName"] as const;
@@ -154,12 +174,7 @@ function createProtocolMetadata(runtimeConnected: boolean): {
   transport: "stdio";
 } {
   return {
-    capabilities: [
-      "rpc.ping",
-      "session.create",
-      "session.resume",
-      "task.start"
-    ],
+    capabilities: [...RPC_CAPABILITIES],
     protocolVersion: JSON_RPC_VERSION,
     runtimeConnected,
     server: RPC_SERVER_NAME,
@@ -790,6 +805,492 @@ function readProviderPreferences(value: unknown):
   };
 }
 
+interface EventSubscriptionParams {
+  eventTypes: RuntimeEventType[] | null;
+  replay: {
+    limit: number;
+    mode: "none" | "recent";
+  };
+  sessionId: string | null;
+  taskId: string | null;
+}
+
+interface EventSubscriptionRecord extends EventSubscriptionParams {
+  createdAt: string;
+  subscriptionId: string;
+  unsubscribe: () => void;
+}
+
+interface EventSubscriptionResult {
+  afterResponse?: JsonRpcNotification[];
+  response?: JsonRpcResponse;
+}
+
+type JsonRpcPayloadWriter = (
+  payload: JsonRpcMessage | JsonRpcResponse[]
+) => Promise<void>;
+
+function isKnownRuntimeEventType(value: string): value is RuntimeEventType {
+  return (RUNTIME_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+function readOptionalEventSessionId(
+  value: unknown
+): { ok: true; value: string | null } | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true, value: null };
+  }
+
+  if (typeof value !== "string" || !SESSION_ID_PATTERN.test(value)) {
+    return {
+      dataCode: "SESSION_ID_INVALID",
+      nextAction: "Provide sessionId as a non-empty ses_-prefixed string.",
+      ok: false
+    };
+  }
+
+  return { ok: true, value };
+}
+
+function readOptionalEventTaskId(
+  value: unknown
+): { ok: true; value: string | null } | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true, value: null };
+  }
+
+  if (typeof value !== "string" || !TASK_ID_PATTERN.test(value)) {
+    return {
+      dataCode: "TASK_ID_INVALID",
+      nextAction: "Provide taskId as a non-empty task_-prefixed string.",
+      ok: false
+    };
+  }
+
+  return { ok: true, value };
+}
+
+function readEventTypes(
+  value: unknown
+): { ok: true; value: RuntimeEventType[] | null } | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true, value: null };
+  }
+
+  if (
+    !Array.isArray(value) ||
+    !value.every(
+      (eventType) =>
+        typeof eventType === "string" && isKnownRuntimeEventType(eventType)
+    )
+  ) {
+    return {
+      dataCode: "EVENT_TYPES_INVALID",
+      nextAction:
+        "Provide eventTypes as an array of known runtime event type strings.",
+      ok: false
+    };
+  }
+
+  return { ok: true, value: [...new Set(value as RuntimeEventType[])] };
+}
+
+function readReplayOptions(
+  value: unknown
+):
+  | { ok: true; value: { limit: number; mode: "none" | "recent" } }
+  | ParamReadFailure {
+  if (value === undefined) {
+    return { ok: true, value: { limit: 0, mode: "none" } };
+  }
+
+  if (!isRecord(value)) {
+    return {
+      dataCode: "EVENT_REPLAY_INVALID",
+      nextAction:
+        "Provide replay as an object with mode none or recent and an optional bounded limit.",
+      ok: false
+    };
+  }
+
+  const mode = value.mode;
+
+  if (mode !== "none" && mode !== "recent") {
+    return {
+      dataCode: "EVENT_REPLAY_INVALID",
+      nextAction: "Provide replay.mode as none or recent.",
+      ok: false
+    };
+  }
+
+  const limit =
+    value.limit === undefined
+      ? mode === "recent"
+        ? EVENT_REPLAY_DEFAULT_LIMIT
+        : 0
+      : value.limit;
+
+  if (
+    typeof limit !== "number" ||
+    !Number.isInteger(limit) ||
+    limit < (mode === "recent" ? 1 : 0) ||
+    limit > EVENT_REPLAY_MAX_LIMIT
+  ) {
+    return {
+      dataCode: "EVENT_REPLAY_INVALID",
+      nextAction: `Provide replay.limit as an integer between ${mode === "recent" ? 1 : 0} and ${EVENT_REPLAY_MAX_LIMIT}.`,
+      ok: false
+    };
+  }
+
+  return { ok: true, value: { limit, mode } };
+}
+
+function readEventSubscribeParams(
+  request: JsonRpcRequest,
+  scoped: { params: Record<string, unknown> }
+):
+  | { ok: true; value: EventSubscriptionParams }
+  | { ok: false; response: JsonRpcErrorResponse } {
+  const sessionId = readOptionalEventSessionId(scoped.params.sessionId);
+
+  if (!sessionId.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        sessionId.nextAction,
+        sessionId.dataCode
+      )
+    };
+  }
+
+  const taskId = readOptionalEventTaskId(scoped.params.taskId);
+
+  if (!taskId.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        taskId.nextAction,
+        taskId.dataCode
+      )
+    };
+  }
+
+  const eventTypes = readEventTypes(scoped.params.eventTypes);
+
+  if (!eventTypes.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        eventTypes.nextAction,
+        eventTypes.dataCode
+      )
+    };
+  }
+
+  const replay = readReplayOptions(scoped.params.replay);
+
+  if (!replay.ok) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        replay.nextAction,
+        replay.dataCode
+      )
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      eventTypes: eventTypes.value,
+      replay: replay.value,
+      sessionId: sessionId.value,
+      taskId: taskId.value
+    }
+  };
+}
+
+function readSubscriptionId(
+  request: JsonRpcRequest
+):
+  | { ok: true; subscriptionId: string }
+  | { ok: false; response: JsonRpcErrorResponse } {
+  const params = readParamsRecord(request);
+
+  if (!params.ok) {
+    return params;
+  }
+
+  if (
+    typeof params.params.subscriptionId !== "string" ||
+    !SUBSCRIPTION_ID_PATTERN.test(params.params.subscriptionId)
+  ) {
+    return {
+      ok: false,
+      response: createInvalidParamsResponse(
+        request.id ?? null,
+        "Provide subscriptionId as a non-empty sub_-prefixed string.",
+        "SUBSCRIPTION_ID_INVALID"
+      )
+    };
+  }
+
+  return { ok: true, subscriptionId: params.params.subscriptionId };
+}
+
+function eventMatchesSubscription(
+  subscription: EventSubscriptionRecord,
+  event: RuntimeEventRecord
+): boolean {
+  if (
+    subscription.sessionId !== null &&
+    event.sessionId !== subscription.sessionId
+  ) {
+    return false;
+  }
+
+  if (subscription.taskId !== null && event.taskId !== subscription.taskId) {
+    return false;
+  }
+
+  if (
+    subscription.eventTypes !== null &&
+    !subscription.eventTypes.includes(event.type)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function createRuntimeEventNotification(
+  subscriptionId: string,
+  event: RuntimeEventRecord,
+  replay: boolean
+): JsonRpcNotification {
+  const waitingReason =
+    event.type === "task.waiting" &&
+    typeof event.payload.reason === "string"
+      ? event.payload.reason
+      : undefined;
+  const terminal =
+    event.type === "task.completed" ||
+    event.type === "task.failed" ||
+    event.type === "task.cancelled";
+
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    method: "event.runtime",
+    params: {
+      subscriptionId,
+      event,
+      replay,
+      terminal,
+      actionable: waitingReason === "approval-required",
+      ...(waitingReason === undefined ? {} : { waitingReason })
+    }
+  };
+}
+
+function createQueuedJsonRpcWriter(output: Writable): {
+  drain: () => Promise<void>;
+  write: JsonRpcPayloadWriter;
+} {
+  let queue = Promise.resolve();
+
+  return {
+    drain: () => queue,
+    write(payload) {
+      const write = queue.then(() => writeJsonRpcPayload(output, payload));
+      queue = write.catch(() => undefined);
+      return write;
+    }
+  };
+}
+
+class EventSubscriptionRegistry {
+  private bufferedNotifications: JsonRpcNotification[] = [];
+  private notificationBufferDepth = 0;
+  private readonly subscriptions = new Map<string, EventSubscriptionRecord>();
+
+  constructor(
+    private readonly runtime: JsonRpcRuntimeBridge,
+    private readonly writePayload: JsonRpcPayloadWriter
+  ) {}
+
+  subscribe(request: JsonRpcRequest): EventSubscriptionResult {
+    if (isNotification(request)) {
+      return {};
+    }
+
+    const scoped = readScopedCwd(request, this.runtime);
+
+    if (!scoped.ok) {
+      return { response: scoped.response };
+    }
+
+    const params = readEventSubscribeParams(request, scoped);
+
+    if (!params.ok) {
+      return { response: params.response };
+    }
+
+    const subscriptionId = this.nextSubscriptionId();
+    const replayEvents = this.readReplayEvents(params.value);
+    const createdAt = new Date().toISOString();
+    const subscription: EventSubscriptionRecord = {
+      ...params.value,
+      createdAt,
+      subscriptionId,
+      unsubscribe: () => undefined
+    };
+
+    subscription.unsubscribe = this.runtime.subscribeToEvents((event) => {
+      if (!eventMatchesSubscription(subscription, event)) {
+        return;
+      }
+
+      this.sendNotification(
+        createRuntimeEventNotification(subscriptionId, event, false)
+      );
+    });
+    this.subscriptions.set(subscriptionId, subscription);
+
+    const lastEvent = replayEvents.at(-1);
+    const response = createJsonRpcSuccessResponse(request.id ?? null, {
+      subscription: {
+        subscriptionId,
+        sessionId: params.value.sessionId,
+        taskId: params.value.taskId,
+        eventTypes: params.value.eventTypes,
+        createdAt,
+        replayedEventCount: replayEvents.length,
+        lastEventId: lastEvent?.eventId ?? null
+      },
+      runtime: {
+        eventCount: this.runtime.getEventHistory().length,
+        capabilities: createProtocolMetadata(true).capabilities,
+        eventTypes: [...RUNTIME_EVENT_TYPES]
+      }
+    });
+
+    return {
+      afterResponse: replayEvents.map((event) =>
+        createRuntimeEventNotification(subscriptionId, event, true)
+      ),
+      response
+    };
+  }
+
+  unsubscribe(request: JsonRpcRequest): EventSubscriptionResult {
+    if (isNotification(request)) {
+      return {};
+    }
+
+    const parsed = readSubscriptionId(request);
+
+    if (!parsed.ok) {
+      return { response: parsed.response };
+    }
+
+    const subscription = this.subscriptions.get(parsed.subscriptionId);
+
+    if (subscription === undefined) {
+      return {
+        response: createInvalidParamsResponse(
+          request.id ?? null,
+          "Use an active subscriptionId returned by event.subscribe.",
+          "SUBSCRIPTION_NOT_FOUND"
+        )
+      };
+    }
+
+    subscription.unsubscribe();
+    this.subscriptions.delete(parsed.subscriptionId);
+
+    return {
+      response: createJsonRpcSuccessResponse(request.id ?? null, {
+        subscription: {
+          subscriptionId: parsed.subscriptionId,
+          status: "unsubscribed"
+        }
+      })
+    };
+  }
+
+  beginNotificationBuffer(): void {
+    this.notificationBufferDepth += 1;
+  }
+
+  disposeAll(): void {
+    for (const subscription of this.subscriptions.values()) {
+      subscription.unsubscribe();
+    }
+
+    this.subscriptions.clear();
+  }
+
+  endNotificationBuffer(): JsonRpcNotification[] {
+    this.notificationBufferDepth = Math.max(0, this.notificationBufferDepth - 1);
+
+    if (this.notificationBufferDepth > 0) {
+      return [];
+    }
+
+    const notifications = this.bufferedNotifications;
+    this.bufferedNotifications = [];
+
+    return notifications;
+  }
+
+  private nextSubscriptionId(): string {
+    return `sub_${randomUUID()}`;
+  }
+
+  private readReplayEvents(
+    subscription: EventSubscriptionParams
+  ): RuntimeEventRecord[] {
+    if (subscription.replay.mode !== "recent") {
+      return [];
+    }
+
+    const history =
+      subscription.taskId === null
+        ? this.runtime.getEventHistory()
+        : this.runtime.getEventHistory(subscription.taskId);
+    const matched = history.filter((event) =>
+      eventMatchesSubscription(
+        {
+          ...subscription,
+          createdAt: "",
+          subscriptionId: "",
+          unsubscribe: () => undefined
+        },
+        event
+      )
+    );
+
+    return matched.slice(-subscription.replay.limit);
+  }
+
+  private sendNotification(notification: JsonRpcNotification): void {
+    if (this.notificationBufferDepth > 0) {
+      this.bufferedNotifications.push(notification);
+      return;
+    }
+
+    void this.writePayload(notification).catch(() => {
+      // Stream write failures are handled by the server loop; runtime
+      // subscribers must not control task state.
+    });
+  }
+}
+
 function readBootstrapMetadata(runtime: JsonRpcRuntimeBridge): {
   runtimeConnected: boolean;
   warningCount: number;
@@ -1101,7 +1602,7 @@ function handleJsonRpcRequest(
         id: request.id,
         message: "Method not found.",
         nextAction:
-          "Use rpc.ping, session.create, session.resume, or task.start."
+          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, or event.unsubscribe."
       });
 }
 
@@ -1138,6 +1639,81 @@ export function handleJsonRpcMessage(
   }
 
   return handleJsonRpcRequest(parsed.request, options.runtime);
+}
+
+interface ServerMessageHandlingResult {
+  afterResponse: JsonRpcNotification[];
+  response?: JsonRpcResponse | JsonRpcResponse[];
+}
+
+function handleJsonRpcServerMessage(
+  message: unknown,
+  options: JsonRpcHandlerOptions,
+  subscriptions: EventSubscriptionRegistry
+): ServerMessageHandlingResult {
+  if (Array.isArray(message)) {
+    if (message.length === 0) {
+      return {
+        afterResponse: [],
+        response: createJsonRpcErrorResponse({
+          code: -32600,
+          message: "Invalid JSON-RPC batch request.",
+          nextAction: "Send a non-empty batch or a single JSON-RPC request."
+        })
+      };
+    }
+
+    const responses: JsonRpcResponse[] = [];
+    const afterResponse: JsonRpcNotification[] = [];
+
+    for (const item of message) {
+      const handled = handleJsonRpcServerMessage(
+        item,
+        options,
+        subscriptions
+      );
+
+      if (handled.response !== undefined) {
+        responses.push(
+          ...(Array.isArray(handled.response)
+            ? handled.response
+            : [handled.response])
+        );
+      }
+
+      afterResponse.push(...handled.afterResponse);
+    }
+
+    return {
+      afterResponse,
+      ...(responses.length === 0 ? {} : { response: responses })
+    };
+  }
+
+  const parsed = parseJsonRpcRequest(message);
+
+  if (!parsed.ok) {
+    return { afterResponse: [], response: parsed.response };
+  }
+
+  if (parsed.request.method === "event.subscribe") {
+    return {
+      afterResponse: [],
+      ...subscriptions.subscribe(parsed.request)
+    };
+  }
+
+  if (parsed.request.method === "event.unsubscribe") {
+    return {
+      afterResponse: [],
+      ...subscriptions.unsubscribe(parsed.request)
+    };
+  }
+
+  return {
+    afterResponse: [],
+    response: handleJsonRpcRequest(parsed.request, options.runtime)
+  };
 }
 
 function createParseErrorResponse(): JsonRpcErrorResponse {
@@ -1189,33 +1765,61 @@ async function* readStrictLfLines(input: Readable): AsyncGenerator<string> {
 export async function runJsonRpcStdioServer(
   options: JsonRpcStdioServerOptions
 ): Promise<void> {
-  if (options.emitReady !== false) {
-    await writeJsonRpcPayload(
-      options.output,
-      createRpcReadyNotification(options.runtime)
-    );
-  }
+  const writer = createQueuedJsonRpcWriter(options.output);
+  const subscriptions = new EventSubscriptionRegistry(
+    options.runtime,
+    writer.write
+  );
 
-  for await (const line of readStrictLfLines(options.input)) {
-    if (line.trim().length === 0) {
-      continue;
+  try {
+    if (options.emitReady !== false) {
+      await writer.write(createRpcReadyNotification(options.runtime));
     }
 
-    let message: unknown;
+    for await (const line of readStrictLfLines(options.input)) {
+      if (line.trim().length === 0) {
+        continue;
+      }
 
-    try {
-      message = JSON.parse(line);
-    } catch {
-      await writeJsonRpcPayload(options.output, createParseErrorResponse());
-      continue;
+      let message: unknown;
+
+      try {
+        message = JSON.parse(line);
+      } catch {
+        await writer.write(createParseErrorResponse());
+        continue;
+      }
+
+      subscriptions.beginNotificationBuffer();
+      let handled: ServerMessageHandlingResult;
+      let liveNotifications: JsonRpcNotification[] = [];
+
+      try {
+        handled = handleJsonRpcServerMessage(
+          message,
+          {
+            runtime: options.runtime
+          },
+          subscriptions
+        );
+      } finally {
+        liveNotifications = subscriptions.endNotificationBuffer();
+      }
+
+      if (handled.response !== undefined) {
+        await writer.write(handled.response);
+      }
+
+      for (const notification of handled.afterResponse) {
+        await writer.write(notification);
+      }
+
+      for (const notification of liveNotifications) {
+        await writer.write(notification);
+      }
     }
-
-    const response = handleJsonRpcMessage(message, {
-      runtime: options.runtime
-    });
-
-    if (response !== undefined) {
-      await writeJsonRpcPayload(options.output, response);
-    }
+  } finally {
+    subscriptions.disposeAll();
+    await writer.drain();
   }
 }

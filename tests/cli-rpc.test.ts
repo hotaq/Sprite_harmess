@@ -312,6 +312,83 @@ describe("sprite rpc CLI", () => {
     }
   });
 
+  it("streams subscribed task lifecycle events over JSON-RPC stdout only", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const subscribe = {
+        id: "cli-subscribe-events",
+        jsonrpc: "2.0",
+        method: "event.subscribe",
+        params: {
+          cwd: projectDir,
+          eventTypes: ["task.started", "task.waiting"]
+        }
+      };
+      const startTask = {
+        id: "cli-start-streamed-task",
+        jsonrpc: "2.0",
+        method: "task.start",
+        params: {
+          cwd: projectDir,
+          task: "start from CLI RPC with streamed events"
+        }
+      };
+      const result = spawnSync("node", [cliPath, "rpc"], {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: { ...process.env, HOME: homeDir },
+        input: `${JSON.stringify(subscribe)}\n${JSON.stringify(startTask)}\n`
+      });
+      const messages = parseJsonLines(result.stdout);
+      const subscribeResponse = messages.find(
+        (message) => message.id === "cli-subscribe-events"
+      ) as {
+        result: { subscription: { subscriptionId: string } };
+      };
+      const eventNotifications = messages.filter(
+        (message) => message.method === "event.runtime"
+      ) as Array<{
+        params: {
+          event: { taskId: string; type: string };
+          replay: boolean;
+          subscriptionId: string;
+        };
+      }>;
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(messages.every((message) => message.jsonrpc === "2.0")).toBe(
+        true
+      );
+      expect(messages[0]).toMatchObject({ method: "rpc.ready" });
+      expect(subscribeResponse).toMatchObject({
+        id: "cli-subscribe-events",
+        result: {
+          subscription: {
+            sessionId: null,
+            taskId: null
+          }
+        }
+      });
+      expect(eventNotifications.map((item) => item.params.event.type)).toEqual(
+        expect.arrayContaining(["task.started", "task.waiting"])
+      );
+      expect(
+        eventNotifications.every(
+          (item) =>
+            item.params.replay === false &&
+            item.params.subscriptionId ===
+              subscribeResponse.result.subscription.subscriptionId &&
+            item.params.event.taskId.startsWith("task_")
+        )
+      ).toBe(true);
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
   it("returns JSON-RPC parse errors on stdout without stderr protocol leakage", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

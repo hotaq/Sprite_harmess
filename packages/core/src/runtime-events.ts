@@ -239,7 +239,7 @@ const FORBIDDEN_SKILL_SIGNAL_PAYLOAD_FIELDS: ReadonlySet<string> = new Set([
   "routingRule",
   "skillCandidateId"
 ]);
-const RUNTIME_EVENT_TYPES = [
+export const RUNTIME_EVENT_TYPES = [
   "task.started",
   "task.waiting",
   "task.completed",

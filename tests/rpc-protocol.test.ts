@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 
 const tempRoots: string[] = [];
 
@@ -62,6 +62,25 @@ function parseJsonLines(text: string): Record<string, unknown>[] {
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function writeJsonLine(input: PassThrough, message: unknown): void {
+  input.write(`${JSON.stringify(message)}\n`);
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  description: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error(`Timed out waiting for ${description}.`);
 }
 
 function readJson(path: string): Record<string, unknown> {
@@ -433,6 +452,707 @@ describe("JSON-RPC protocol adapter", () => {
     });
     expect(JSON.stringify(response)).not.toContain("sk-test-secret");
     expect(JSON.stringify(response)).not.toContain(homeDir);
+  });
+
+  it("streams subscribed runtime lifecycle events over JSON-RPC notifications", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const input = new PassThrough();
+    const server = runJsonRpcStdioServer({ input, output, runtime });
+
+    writeJsonLine(input, {
+      id: "subscribe-events",
+      jsonrpc: "2.0",
+      method: "event.subscribe",
+      params: {
+        cwd: projectDir,
+        eventTypes: ["task.started", "task.waiting", "task.completed"]
+      }
+    });
+    writeJsonLine(input, {
+      id: "start-streamed-task",
+      jsonrpc: "2.0",
+      method: "task.start",
+      params: {
+        cwd: projectDir,
+        task: "stream lifecycle events"
+      }
+    });
+
+    await waitForCondition(
+      () => runtime.getActiveTask().ok,
+      "RPC task to become active"
+    );
+    const approvalRequired = runtime.waitForInput(
+      "approval-required",
+      "Approval is required before continuing."
+    );
+
+    expect(approvalRequired.ok).toBe(true);
+
+    const completed = runtime.completeActiveTask(
+      "Task completed after approval."
+    );
+
+    expect(completed.ok).toBe(true);
+
+    writeJsonLine(input, {
+      id: "unsubscribe-events",
+      jsonrpc: "2.0",
+      method: "event.unsubscribe",
+      params: {
+        subscriptionId: "sub_missing"
+      }
+    });
+    input.end();
+    await server;
+
+    const messages = parseJsonLines(read());
+    const subscribeResponse = messages.find(
+      (message) => message.id === "subscribe-events"
+    ) as {
+      result: {
+        runtime: { capabilities: string[] };
+        subscription: {
+          eventTypes: string[];
+          replayedEventCount: number;
+          sessionId: null;
+          subscriptionId: string;
+          taskId: null;
+        };
+      };
+    };
+    const notifications = messages.filter(
+      (message) => message.method === "event.runtime"
+    ) as Array<{
+      params: {
+        actionable: boolean;
+        event: {
+          correlationId: string;
+          createdAt: string;
+          eventId: string;
+          payload: Record<string, unknown>;
+          schemaVersion: number;
+          sessionId: string;
+          taskId: string;
+          type: string;
+        };
+        replay: boolean;
+        subscriptionId: string;
+        terminal: boolean;
+        waitingReason?: string;
+      };
+    }>;
+    const waitingApproval = notifications.find(
+      (notification) => notification.params.event.type === "task.waiting" &&
+        notification.params.waitingReason === "approval-required"
+    );
+    const completedNotification = notifications.find(
+      (notification) => notification.params.event.type === "task.completed"
+    );
+
+    expect(messages[0]).toMatchObject({ method: "rpc.ready" });
+    expect(subscribeResponse.result.subscription).toMatchObject({
+      eventTypes: ["task.started", "task.waiting", "task.completed"],
+      replayedEventCount: 0,
+      sessionId: null,
+      taskId: null,
+      subscriptionId: expect.stringMatching(/^sub_/)
+    });
+    expect(subscribeResponse.result.runtime.capabilities).toEqual(
+      expect.arrayContaining(["event.subscribe", "event.unsubscribe"])
+    );
+    expect(notifications.map((notification) => notification.params.event.type))
+      .toEqual(
+        expect.arrayContaining([
+          "task.started",
+          "task.waiting",
+          "task.completed"
+        ])
+      );
+    expect(
+      notifications.every(
+        (notification) =>
+          notification.params.subscriptionId ===
+            subscribeResponse.result.subscription.subscriptionId &&
+          notification.params.replay === false &&
+          notification.params.event.schemaVersion === 1 &&
+          notification.params.event.eventId.startsWith("evt_") &&
+          notification.params.event.sessionId.startsWith("ses_") &&
+          notification.params.event.taskId.startsWith("task_") &&
+          notification.params.event.correlationId.startsWith("corr_")
+      )
+    ).toBe(true);
+    expect(waitingApproval).toMatchObject({
+      params: {
+        actionable: true,
+        terminal: false,
+        waitingReason: "approval-required"
+      }
+    });
+    expect(completedNotification).toMatchObject({
+      params: {
+        actionable: false,
+        replay: false,
+        terminal: true
+      }
+    });
+  });
+
+  it("writes batch responses before live event notifications emitted by batch items", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+
+    await runJsonRpcStdioServer({
+      emitReady: false,
+      input: Readable.from([
+        `${JSON.stringify([
+          {
+            id: "batch-subscribe",
+            jsonrpc: "2.0",
+            method: "event.subscribe",
+            params: {
+              cwd: projectDir,
+              eventTypes: ["task.started", "task.waiting"]
+            }
+          },
+          {
+            id: "batch-start",
+            jsonrpc: "2.0",
+            method: "task.start",
+            params: {
+              cwd: projectDir,
+              task: "start after subscribing in the same batch"
+            }
+          }
+        ])}\n`
+      ]),
+      output,
+      runtime
+    });
+
+    const messages = read()
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as unknown);
+    const batchResponse = messages[0] as Array<{ id: string }>;
+    const liveNotifications = messages.slice(1) as Array<{
+      method: string;
+      params: { event: { type: string }; replay: boolean };
+    }>;
+
+    expect(Array.isArray(messages[0])).toBe(true);
+    expect(batchResponse.map((response) => response.id)).toEqual([
+      "batch-subscribe",
+      "batch-start"
+    ]);
+    expect(liveNotifications).toHaveLength(2);
+    expect(liveNotifications).toMatchObject([
+      {
+        method: "event.runtime",
+        params: {
+          event: { type: "task.started" },
+          replay: false
+        }
+      },
+      {
+        method: "event.runtime",
+        params: {
+          event: { type: "task.waiting" },
+          replay: false
+        }
+      }
+    ]);
+  });
+
+  it.each([
+    {
+      eventType: "task.failed",
+      finish: (runtime: AgentRuntime) =>
+        runtime.failActiveTask("Provider failed permanently.")
+    },
+    {
+      eventType: "task.cancelled",
+      finish: (runtime: AgentRuntime) =>
+        runtime.cancelActiveTask("User cancelled the task.")
+    }
+  ])("streams terminal $eventType notifications", async ({ eventType, finish }) => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const input = new PassThrough();
+    const server = runJsonRpcStdioServer({
+      emitReady: false,
+      input,
+      output,
+      runtime
+    });
+
+    writeJsonLine(input, {
+      id: `subscribe-${eventType}`,
+      jsonrpc: "2.0",
+      method: "event.subscribe",
+      params: {
+        cwd: projectDir,
+        eventTypes: [eventType]
+      }
+    });
+    writeJsonLine(input, {
+      id: `start-${eventType}`,
+      jsonrpc: "2.0",
+      method: "task.start",
+      params: {
+        cwd: projectDir,
+        task: `task that will emit ${eventType}`
+      }
+    });
+
+    await waitForCondition(
+      () => runtime.getActiveTask().ok,
+      `RPC task to become active before ${eventType}`
+    );
+
+    const terminal = finish(runtime);
+
+    expect(terminal.ok).toBe(true);
+
+    input.end();
+    await server;
+
+    const notifications = parseJsonLines(read()).filter(
+      (message) => message.method === "event.runtime"
+    ) as Array<{
+      params: {
+        event: { type: string };
+        replay: boolean;
+        terminal: boolean;
+      };
+    }>;
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      params: {
+        event: { type: eventType },
+        replay: false,
+        terminal: true
+      }
+    });
+  });
+
+  it("replays bounded current-runtime history after event subscription", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const started = runtime.startTask("seed replay history");
+
+    expect(started.ok).toBe(true);
+
+    await runJsonRpcStdioServer({
+      emitReady: false,
+      input: Readable.from([
+        `${JSON.stringify({
+          id: "subscribe-with-replay",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            eventTypes: ["task.started", "task.waiting"],
+            replay: {
+              limit: 1,
+              mode: "recent"
+            }
+          }
+        })}\n`
+      ]),
+      output,
+      runtime
+    });
+    const messages = parseJsonLines(read());
+    const subscribeResponse = messages.find(
+      (message) => message.id === "subscribe-with-replay"
+    ) as {
+      result: {
+        subscription: {
+          lastEventId: string;
+          replayedEventCount: number;
+          subscriptionId: string;
+        };
+      };
+    };
+    const replayNotifications = messages.filter(
+      (message) => message.method === "event.runtime"
+    ) as Array<{
+      params: {
+        event: { eventId: string; type: string };
+        replay: boolean;
+        subscriptionId: string;
+      };
+    }>;
+
+    expect(subscribeResponse.result.subscription.replayedEventCount).toBe(1);
+    expect(replayNotifications).toHaveLength(1);
+    expect(replayNotifications[0]).toMatchObject({
+      params: {
+        event: {
+          type: "task.waiting"
+        },
+        replay: true,
+        subscriptionId:
+          subscribeResponse.result.subscription.subscriptionId
+      }
+    });
+    expect(subscribeResponse.result.subscription.lastEventId).toBe(
+      replayNotifications[0].params.event.eventId
+    );
+  });
+
+  it("filters replayed runtime events by taskId without requiring sessionId", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const started = runtime.startTask("seed task-specific replay history");
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+
+    await runJsonRpcStdioServer({
+      emitReady: false,
+      input: Readable.from([
+        `${JSON.stringify({
+          id: "subscribe-matching-task",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            eventTypes: ["task.started", "task.waiting"],
+            replay: {
+              limit: 10,
+              mode: "recent"
+            },
+            taskId: started.value.flow.taskId
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "subscribe-missing-task",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            replay: {
+              limit: 10,
+              mode: "recent"
+            },
+            taskId: "task_missing"
+          }
+        })}\n`
+      ]),
+      output,
+      runtime
+    });
+
+    const messages = parseJsonLines(read());
+    const matchingResponse = messages.find(
+      (message) => message.id === "subscribe-matching-task"
+    ) as {
+      result: { subscription: { replayedEventCount: number; taskId: string } };
+    };
+    const missingResponse = messages.find(
+      (message) => message.id === "subscribe-missing-task"
+    ) as {
+      result: { subscription: { replayedEventCount: number; taskId: string } };
+    };
+    const replayNotifications = messages.filter(
+      (message) => message.method === "event.runtime"
+    ) as Array<{
+      params: {
+        event: { taskId: string; type: string };
+        replay: boolean;
+      };
+    }>;
+
+    expect(matchingResponse.result.subscription).toMatchObject({
+      replayedEventCount: 2,
+      taskId: started.value.flow.taskId
+    });
+    expect(missingResponse.result.subscription).toMatchObject({
+      replayedEventCount: 0,
+      taskId: "task_missing"
+    });
+    expect(
+      replayNotifications.map((notification) => ({
+        taskId: notification.params.event.taskId,
+        type: notification.params.event.type
+      }))
+    ).toEqual([
+        { taskId: started.value.flow.taskId, type: "task.started" },
+        { taskId: started.value.flow.taskId, type: "task.waiting" }
+      ]);
+    expect(
+      replayNotifications.every((notification) => notification.params.replay)
+    ).toBe(true);
+  });
+
+  it("filters replayed runtime events by sessionId without requiring taskId", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const started = runtime.startTask("seed session-specific replay history");
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+
+    await runJsonRpcStdioServer({
+      emitReady: false,
+      input: Readable.from([
+        `${JSON.stringify({
+          id: "subscribe-matching-session",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            replay: {
+              limit: 10,
+              mode: "recent"
+            },
+            sessionId: started.value.flow.sessionId
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "subscribe-missing-session",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            replay: {
+              limit: 10,
+              mode: "recent"
+            },
+            sessionId: "ses_missing"
+          }
+        })}\n`
+      ]),
+      output,
+      runtime
+    });
+
+    const messages = parseJsonLines(read());
+    const matchingResponse = messages.find(
+      (message) => message.id === "subscribe-matching-session"
+    ) as {
+      result: {
+        subscription: { replayedEventCount: number; sessionId: string };
+      };
+    };
+    const missingResponse = messages.find(
+      (message) => message.id === "subscribe-missing-session"
+    ) as {
+      result: {
+        subscription: { replayedEventCount: number; sessionId: string };
+      };
+    };
+    const replayNotifications = messages.filter(
+      (message) => message.method === "event.runtime"
+    ) as Array<{
+      params: {
+        event: { sessionId: string; type: string };
+        replay: boolean;
+      };
+    }>;
+
+    expect(matchingResponse.result.subscription).toMatchObject({
+      replayedEventCount: 2,
+      sessionId: started.value.flow.sessionId
+    });
+    expect(missingResponse.result.subscription).toMatchObject({
+      replayedEventCount: 0,
+      sessionId: "ses_missing"
+    });
+    expect(
+      replayNotifications.map((notification) => ({
+        sessionId: notification.params.event.sessionId,
+        type: notification.params.event.type
+      }))
+    ).toEqual([
+      { sessionId: started.value.flow.sessionId, type: "task.started" },
+      { sessionId: started.value.flow.sessionId, type: "task.waiting" }
+    ]);
+    expect(
+      replayNotifications.every((notification) => notification.params.replay)
+    ).toBe(true);
+  });
+
+  it("unsubscribes event streams and suppresses later notifications", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, runtime } = createTempRuntime();
+    const input = new PassThrough();
+    const server = runJsonRpcStdioServer({
+      emitReady: false,
+      input,
+      output,
+      runtime
+    });
+
+    writeJsonLine(input, {
+      id: "subscribe-then-unsubscribe",
+      jsonrpc: "2.0",
+      method: "event.subscribe",
+      params: {
+        cwd: projectDir,
+        eventTypes: ["task.started"]
+      }
+    });
+    await waitForCondition(
+      () =>
+        parseJsonLines(read()).some(
+          (message) => message.id === "subscribe-then-unsubscribe"
+        ),
+      "event.subscribe response"
+    );
+
+    const subscribeResponse = parseJsonLines(read()).find(
+      (message) => message.id === "subscribe-then-unsubscribe"
+    ) as {
+      result: { subscription: { subscriptionId: string } };
+    };
+
+    writeJsonLine(input, {
+      id: "unsubscribe-active",
+      jsonrpc: "2.0",
+      method: "event.unsubscribe",
+      params: {
+        subscriptionId: subscribeResponse.result.subscription.subscriptionId
+      }
+    });
+    await waitForCondition(
+      () =>
+        parseJsonLines(read()).some(
+          (message) => message.id === "unsubscribe-active"
+        ),
+      "event.unsubscribe response"
+    );
+
+    const started = runtime.startTask("no event after unsubscribe");
+
+    expect(started.ok).toBe(true);
+
+    input.end();
+    await server;
+
+    const messages = parseJsonLines(read());
+
+    expect(messages.find((message) => message.id === "unsubscribe-active"))
+      .toMatchObject({
+        result: {
+          subscription: {
+            status: "unsubscribed",
+            subscriptionId:
+              subscribeResponse.result.subscription.subscriptionId
+          }
+        }
+      });
+    expect(
+      messages.filter((message) => message.method === "event.runtime")
+    ).toEqual([]);
+  });
+
+  it("rejects invalid event subscription params without side effects", async () => {
+    const { output, read } = createCaptureWritable();
+    const { projectDir, rootDir, runtime } = createTempRuntime();
+    const outOfScopeDir = join(rootDir, "other-project");
+
+    mkdirSync(outOfScopeDir, { recursive: true });
+
+    await runJsonRpcStdioServer({
+      emitReady: false,
+      input: Readable.from([
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            eventTypes: ["task.started"]
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "bad-cwd",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: outOfScopeDir,
+            eventTypes: ["task.started"]
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "bad-session-id",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            sessionId: "not-session-prefixed"
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "bad-event-type",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            eventTypes: ["unknown.event"]
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "bad-task-id",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            taskId: "not-task-prefixed"
+          }
+        })}\n`,
+        `${JSON.stringify({
+          id: "bad-replay",
+          jsonrpc: "2.0",
+          method: "event.subscribe",
+          params: {
+            cwd: projectDir,
+            replay: {
+              limit: 10_000,
+              mode: "recent"
+            }
+          }
+        })}\n`
+      ]),
+      output,
+      runtime
+    });
+
+    const messages = parseJsonLines(read());
+
+    expect(messages).toHaveLength(5);
+    expect(messages).toMatchObject([
+      {
+        error: { data: { code: "INVALID_CWD" } },
+        id: "bad-cwd"
+      },
+      {
+        error: { data: { code: "SESSION_ID_INVALID" } },
+        id: "bad-session-id"
+      },
+      {
+        error: { data: { code: "EVENT_TYPES_INVALID" } },
+        id: "bad-event-type"
+      },
+      {
+        error: { data: { code: "TASK_ID_INVALID" } },
+        id: "bad-task-id"
+      },
+      {
+        error: { data: { code: "EVENT_REPLAY_INVALID" } },
+        id: "bad-replay"
+      }
+    ]);
+    expect(runtime.getEventHistory()).toEqual([]);
   });
 
   it("starts tasks over RPC without an explicit session id using the runtime default session", () => {
