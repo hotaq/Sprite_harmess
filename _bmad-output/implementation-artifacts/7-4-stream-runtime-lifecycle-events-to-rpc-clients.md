@@ -1,6 +1,6 @@
 # Story 7.4: Stream Runtime Lifecycle Events to RPC Clients
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -362,6 +362,7 @@ GPT-5.5
 
 ### Change Log
 
+- 2026-05-23: Closed Story 7.4 after review fixes and commit.
 - 2026-05-21: Added Story 7.4 subscription scope contract tests after code review.
 - 2026-05-21: Addressed Story 7.4 code review findings for batch response ordering, terminal event coverage, and taskId filter coverage.
 - 2026-05-18: Implemented Story 7.4 JSON-RPC runtime lifecycle event subscriptions and moved story to review.
