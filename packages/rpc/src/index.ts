@@ -1594,7 +1594,19 @@ const APPROVAL_RESPOND_ACTIONS = [
 type ApprovalRespondAction = (typeof APPROVAL_RESPOND_ACTIONS)[number];
 
 const APPROVAL_REASON_MAX_LENGTH = 1_000;
+const APPROVAL_CWD_MAX_LENGTH = 4_096;
+const APPROVAL_COMMAND_MAX_LENGTH = 16_000;
+const APPROVAL_COMMAND_ARG_MAX_COUNT = 128;
+const APPROVAL_COMMAND_ARG_MAX_LENGTH = 4_096;
+const APPROVAL_ENV_KEY_MAX_LENGTH = 128;
+const APPROVAL_ENV_MAX_ENTRIES = 64;
+const APPROVAL_ENV_VALUE_MAX_LENGTH = 4_096;
+const APPROVAL_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*[A-Za-z0-9]+$/u;
+const APPROVAL_MAX_TIMEOUT_MS = 3_600_000;
+const APPROVAL_PATCH_EDIT_MAX_COUNT = 50;
 const APPROVAL_PATCH_PATH_MAX_LENGTH = 512;
+const APPROVAL_PATCH_TEXT_MAX_LENGTH = 65_536;
+const APPROVAL_PATCH_SUMMARY_MAX_LENGTH = 1_000;
 
 const APPROVAL_COMMAND_REQUEST_KEYS = new Set([
   "args",
@@ -1775,17 +1787,33 @@ function readApprovalCommandRequest(
 
   if (typeof value.command !== "string" || value.command.length === 0) {
     return {
-      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
-      nextAction: "Provide modifiedRequest.command as a non-empty string.",
+      dataCode: "APPROVAL_COMMAND_EMPTY",
+      nextAction:
+        "Provide modifiedRequest.command as a non-empty string.",
+      ok: false
+    };
+  }
+
+  if (value.command.trim().length === 0) {
+    return {
+      dataCode: "APPROVAL_COMMAND_EMPTY",
+      nextAction:
+        "Provide modifiedRequest.command as a non-whitespace string.",
+      ok: false
+    };
+  }
+
+  if (value.command.length > APPROVAL_COMMAND_MAX_LENGTH) {
+    return {
+      dataCode: "APPROVAL_COMMAND_TOO_LONG",
+      nextAction:
+        `Provide modifiedRequest.command no longer than ${APPROVAL_COMMAND_MAX_LENGTH} characters.`,
       ok: false
     };
   }
 
   if (value.args !== undefined) {
-    if (
-      !Array.isArray(value.args) ||
-      !value.args.every((entry) => typeof entry === "string")
-    ) {
+    if (!Array.isArray(value.args)) {
       return {
         dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
         nextAction:
@@ -1793,24 +1821,57 @@ function readApprovalCommandRequest(
         ok: false
       };
     }
+
+    if (value.args.length > APPROVAL_COMMAND_ARG_MAX_COUNT) {
+      return {
+        dataCode: "APPROVAL_ARGS_TOO_MANY",
+        nextAction:
+          `Provide modifiedRequest.args with no more than ${APPROVAL_COMMAND_ARG_MAX_COUNT} entries.`,
+        ok: false
+      };
+    }
+
+    if (
+      !value.args.every(
+        (entry) =>
+          typeof entry === "string" &&
+          entry.length <= APPROVAL_COMMAND_ARG_MAX_LENGTH
+      )
+    ) {
+      return {
+        dataCode: "APPROVAL_ARG_TOO_LONG",
+        nextAction:
+          `Provide each modifiedRequest.args entry as a string no longer than ${APPROVAL_COMMAND_ARG_MAX_LENGTH} characters.`,
+        ok: false
+      };
+    }
   }
 
-  if (typeof value.cwd !== "string" || value.cwd.length === 0) {
+  if (
+    typeof value.cwd !== "string" ||
+    value.cwd.length === 0 ||
+    value.cwd.length > APPROVAL_CWD_MAX_LENGTH
+  ) {
     return {
       dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
-      nextAction: "Provide modifiedRequest.cwd as a non-empty string.",
+      nextAction:
+        `Provide modifiedRequest.cwd as a non-empty string no longer than ${APPROVAL_CWD_MAX_LENGTH} characters.`,
       ok: false
     };
   }
 
   if (
     value.timeoutMs !== undefined &&
-    (typeof value.timeoutMs !== "number" || !Number.isFinite(value.timeoutMs))
+    (typeof value.timeoutMs !== "number" ||
+      !Number.isFinite(value.timeoutMs) ||
+      value.timeoutMs <= 0 ||
+      value.timeoutMs < 1 ||
+      value.timeoutMs > APPROVAL_MAX_TIMEOUT_MS)
   ) {
     return {
-      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      dataCode: "APPROVAL_TIMEOUT_INVALID",
       nextAction:
-        "Provide modifiedRequest.timeoutMs as a finite number when supplied.",
+        `Provide modifiedRequest.timeoutMs as a positive integer between 1 and ${APPROVAL_MAX_TIMEOUT_MS} ms when supplied.`,
       ok: false
     };
   }
@@ -1825,12 +1886,50 @@ function readApprovalCommandRequest(
       };
     }
 
-    for (const entry of Object.values(value.env)) {
-      if (typeof entry !== "string") {
+    const envKeys = Object.keys(value.env);
+
+    if (envKeys.length !== new Set(envKeys).size) {
+      return {
+        dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+        nextAction:
+          "Provide modifiedRequest.env with unique keys (duplicate keys detected).",
+        ok: false
+      };
+    }
+
+    const envEntries = Object.entries(value.env);
+
+    if (envEntries.length > APPROVAL_ENV_MAX_ENTRIES) {
+      return {
+        dataCode: "APPROVAL_ENV_TOO_MANY_ENTRIES",
+        nextAction:
+          `Provide modifiedRequest.env with no more than ${APPROVAL_ENV_MAX_ENTRIES} entries.`,
+        ok: false
+      };
+    }
+
+    for (const [key, entry] of envEntries) {
+      if (
+        key.length === 0 ||
+        key.length > APPROVAL_ENV_KEY_MAX_LENGTH ||
+        !APPROVAL_ENV_KEY_PATTERN.test(key)
+      ) {
         return {
-          dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+          dataCode: "APPROVAL_ENV_KEY_INVALID",
           nextAction:
-            "Provide modifiedRequest.env values as strings when supplied.",
+            `Provide modifiedRequest.env keys as shell-style variable names (1-${APPROVAL_ENV_KEY_MAX_LENGTH} chars, alphanumeric + underscore, at least one letter/digit).`,
+          ok: false
+        };
+      }
+
+      if (
+        typeof entry !== "string" ||
+        entry.length > APPROVAL_ENV_VALUE_MAX_LENGTH
+      ) {
+        return {
+          dataCode: "APPROVAL_ENV_VALUE_TOO_LONG",
+          nextAction:
+            `Provide modifiedRequest.env values as strings no longer than ${APPROVAL_ENV_VALUE_MAX_LENGTH} characters.`,
           ok: false
         };
       }
@@ -1933,11 +2032,15 @@ function readApprovalPatchToolCall(
 
   const editsValue = (value.input as { edits?: unknown }).edits;
 
-  if (!Array.isArray(editsValue) || editsValue.length === 0) {
+  if (
+    !Array.isArray(editsValue) ||
+    editsValue.length === 0 ||
+    editsValue.length > APPROVAL_PATCH_EDIT_MAX_COUNT
+  ) {
     return {
-      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      dataCode: "APPROVAL_PATCH_EDITS_TOO_MANY",
       nextAction:
-        "Provide modifiedToolCall.input.edits as a non-empty array of edits.",
+        `Provide modifiedToolCall.input.edits as a non-empty array of no more than ${APPROVAL_PATCH_EDIT_MAX_COUNT} edits.`,
       ok: false
     };
   }
@@ -1978,10 +2081,35 @@ function readApprovalPatchToolCall(
       };
     }
 
-    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
+    if (
+      typeof edit.oldText !== "string" ||
+      typeof edit.newText !== "string"
+    ) {
       return {
         dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
-        nextAction: "Provide each edit.oldText and edit.newText as strings.",
+        nextAction:
+          "Provide each edit.oldText and edit.newText as strings.",
+        ok: false
+      };
+    }
+
+    if (edit.oldText.length === 0) {
+      return {
+        dataCode: "APPROVAL_PATCH_TEXT_EMPTY",
+        nextAction:
+          "Provide edit.oldText as a non-empty string.",
+        ok: false
+      };
+    }
+
+    if (
+      edit.oldText.length > APPROVAL_PATCH_TEXT_MAX_LENGTH ||
+      edit.newText.length > APPROVAL_PATCH_TEXT_MAX_LENGTH
+    ) {
+      return {
+        dataCode: "APPROVAL_PATCH_TEXT_TOO_LONG",
+        nextAction:
+          `Provide each edit.oldText and edit.newText no longer than ${APPROVAL_PATCH_TEXT_MAX_LENGTH} characters.`,
         ok: false
       };
     }
@@ -1995,11 +2123,15 @@ function readApprovalPatchToolCall(
 
   const summaryValue = (value.input as { summary?: unknown }).summary;
 
-  if (summaryValue !== undefined && typeof summaryValue !== "string") {
+  if (
+    summaryValue !== undefined &&
+    (typeof summaryValue !== "string" ||
+      summaryValue.length > APPROVAL_PATCH_SUMMARY_MAX_LENGTH)
+  ) {
     return {
-      dataCode: "APPROVAL_EDIT_PAYLOAD_INVALID",
+      dataCode: "APPROVAL_PATCH_SUMMARY_TOO_LONG",
       nextAction:
-        "Provide modifiedToolCall.input.summary as a string when supplied.",
+        `Provide modifiedToolCall.input.summary as a string no longer than ${APPROVAL_PATCH_SUMMARY_MAX_LENGTH} characters when supplied.`,
       ok: false
     };
   }

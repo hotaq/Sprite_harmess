@@ -3,7 +3,8 @@ import { AgentRuntime } from "@sprite/core";
 import {
   createRpcReadyNotification,
   handleJsonRpcMessage,
-  runJsonRpcStdioServer
+  runJsonRpcStdioServer,
+  type JsonRpcRuntimeBridge
 } from "@sprite/rpc";
 import {
   existsSync,
@@ -1781,6 +1782,97 @@ describe("approval.respond", () => {
     expect(runtime.getPendingApprovals()).toHaveLength(0);
   });
 
+  it("returns a bounded execution result for alwaysAllowForSession responses", async () => {
+    const { projectDir, runtime } = createTempRuntime();
+    const submitted = runtime.submitInteractiveTask(
+      "approval.respond always allow fixture"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const approvalRequestId = "appr_always-allow";
+    const bridge: JsonRpcRuntimeBridge = {
+      createSession: runtime.createSession.bind(runtime),
+      getActiveTask: runtime.getActiveTask.bind(runtime),
+      getBootstrapState: runtime.getBootstrapState.bind(runtime),
+      getEventHistory: runtime.getEventHistory.bind(runtime),
+      getPendingApprovals: runtime.getPendingApprovals.bind(runtime),
+      respondToApproval: async (approvalResponse) => {
+        expect(approvalResponse).toEqual({
+          action: "alwaysAllowForSession",
+          approvalRequestId
+        });
+
+        return {
+          ok: true,
+          value: {
+            command: process.execPath,
+            cwd: projectDir,
+            durationMs: 1,
+            exitCode: 0,
+            output: {
+              content: "",
+              originalBytes: 0,
+              originalLines: 0,
+              reference: {
+                fullOutputStored: false,
+                reason: "test fixture"
+              },
+              returnedBytes: 0,
+              returnedLines: 0,
+              thresholdBytes: 32_768,
+              thresholdLines: 500,
+              truncated: false
+            },
+            status: "completed",
+            stderr: "",
+            stdout: "",
+            summary: "Command completed successfully.",
+            timedOut: false,
+            timeoutMs: 30_000,
+            toolName: "run_command"
+          }
+        };
+      },
+      resumeSession: runtime.resumeSession.bind(runtime),
+      startTask: runtime.startTask.bind(runtime),
+      subscribeToEvents: runtime.subscribeToEvents.bind(runtime)
+    };
+
+    const response = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "approval-always-allow",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "alwaysAllowForSession",
+            approvalRequestId,
+            cwd: projectDir
+          }
+        },
+        { runtime: bridge }
+      )
+    );
+
+    expect(response).toMatchObject({
+      id: "approval-always-allow",
+      jsonrpc: "2.0",
+      result: {
+        action: "alwaysAllowForSession",
+        approvalRequestId,
+        execution: {
+          status: "completed",
+          toolName: "run_command"
+        }
+      }
+    });
+    expect(runtime.getPendingApprovals()).toHaveLength(0);
+  });
+
   it("returns a denial confirmation when responding with deny", async () => {
     const { projectDir, runtime } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
@@ -1988,9 +2080,109 @@ describe("approval.respond", () => {
     expect(runtime.getPendingApprovals()).toHaveLength(1);
   });
 
-  it("rejects invalid approval.respond params with structured errors", async () => {
+  it("streams approval.requested notifications with NFR31 presentation fields", async () => {
+    const { output, read } = createCaptureWritable();
     const { projectDir, runtime } = createTempRuntime();
+    const submitted = runtime.submitInteractiveTask(
+      "approval.requested notification fixture"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const input = new PassThrough();
+    const server = runJsonRpcStdioServer({
+      emitReady: false,
+      input,
+      output,
+      runtime
+    });
+
+    writeJsonLine(input, {
+      id: "subscribe-approval-requested",
+      jsonrpc: "2.0",
+      method: "event.subscribe",
+      params: {
+        cwd: projectDir,
+        eventTypes: ["approval.requested"]
+      }
+    });
+    await waitForCondition(
+      () =>
+        parseJsonLines(read()).some(
+          (message) => message.id === "subscribe-approval-requested"
+        ),
+      "approval.requested subscription response"
+    );
+
+    const pending = await runtime.executeToolCall({
+      input: {
+        args: ["--version"],
+        command: process.execPath,
+        env: { STORY_75_REVIEW: "1" },
+        timeoutMs: 30_000
+      },
+      toolName: "run_command"
+    });
+
+    expect(pending.ok).toBe(false);
+
+    await waitForCondition(
+      () =>
+        parseJsonLines(read()).some(
+          (message) => message.method === "event.runtime"
+        ),
+      "approval.requested notification"
+    );
+    input.end();
+    await server;
+
+    const notifications = parseJsonLines(read()).filter(
+      (message) => message.method === "event.runtime"
+    ) as Array<{
+      params: {
+        event: {
+          correlationId: string;
+          payload: Record<string, unknown>;
+          taskId: string;
+          type: string;
+        };
+        replay: boolean;
+      };
+    }>;
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].params).toMatchObject({
+      replay: false,
+      event: {
+        correlationId: submitted.value.correlationId,
+        taskId: submitted.value.taskId,
+        type: "approval.requested",
+        payload: {
+          allowedActions: expect.arrayContaining(["allow", "deny", "edit"]),
+          approvalRequestId: expect.stringMatching(/^appr_/),
+          command: `${process.execPath} --version`,
+          cwd: projectDir,
+          envExposure: "custom",
+          reason: expect.any(String),
+          requestType: "command",
+          riskLevel: expect.any(String),
+          status: "pending",
+          summary: expect.any(String),
+          timeoutMs: 30_000
+        }
+      }
+    });
+  });
+
+  it("rejects invalid approval.respond params with structured errors", async () => {
+    const { projectDir, rootDir, runtime } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
+    const outOfScopeDir = join(rootDir, "other-project");
+
+    mkdirSync(outOfScopeDir, { recursive: true });
 
     const missingCwd = await expectAsyncResponse(
       handleJsonRpcMessage(
@@ -2001,6 +2193,35 @@ describe("approval.respond", () => {
           params: {
             action: "allow",
             approvalRequestId: fixture.approvalRequestId
+          }
+        },
+        { runtime }
+      )
+    );
+    const badCwd = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "bad-cwd",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "allow",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: outOfScopeDir
+          }
+        },
+        { runtime }
+      )
+    );
+    const missingAction = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "missing-action",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir
           }
         },
         { runtime }
@@ -2097,6 +2318,264 @@ describe("approval.respond", () => {
         { runtime }
       )
     );
+    const nonPositiveTimeout = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "non-positive-timeout",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "pwd",
+              cwd: projectDir,
+              timeoutMs: 0,
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const invalidEnvKey = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "invalid-env-key",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "pwd",
+              cwd: projectDir,
+              env: { "BAD-NAME": "1" },
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooManyEnvEntries = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-many-env-entries",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "pwd",
+              cwd: projectDir,
+              env: Object.fromEntries(
+                Array.from({ length: 65 }, (_entry, index) => [
+                  `KEY_${index}`,
+                  "1"
+                ])
+              ),
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooLongEnvValue = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-long-env-value",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "pwd",
+              cwd: projectDir,
+              env: { OK: "x".repeat(4_097) },
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooLongCommand = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-long-command",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              command: "x".repeat(16_001),
+              cwd: projectDir,
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooManyArgs = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-many-args",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              args: Array.from({ length: 129 }, () => "x"),
+              command: "pwd",
+              cwd: projectDir,
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooLongArg = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-long-arg",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedRequest: {
+              args: ["x".repeat(4_097)],
+              command: "pwd",
+              cwd: projectDir,
+              type: "command"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooManyPatchEdits = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-many-patch-edits",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedToolCall: {
+              input: {
+                edits: Array.from({ length: 51 }, (_entry, index) => ({
+                  newText: `${index}\n`,
+                  oldText: `${index}\n`,
+                  path: `file-${index}.txt`
+                }))
+              },
+              toolName: "apply_patch"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooLongOldText = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-long-old-text",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedToolCall: {
+              input: {
+                edits: [
+                  {
+                    newText: "new\n",
+                    oldText: "x".repeat(65_537),
+                    path: "file.txt"
+                  }
+                ]
+              },
+              toolName: "apply_patch"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooLongNewText = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-long-new-text",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedToolCall: {
+              input: {
+                edits: [
+                  {
+                    newText: "y".repeat(65_537),
+                    oldText: "old\n",
+                    path: "file.txt"
+                  }
+                ]
+              },
+              toolName: "apply_patch"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
+    const tooLongPatchSummary = await expectAsyncResponse(
+      handleJsonRpcMessage(
+        {
+          id: "too-long-patch-summary",
+          jsonrpc: "2.0",
+          method: "approval.respond",
+          params: {
+            action: "edit",
+            approvalRequestId: fixture.approvalRequestId,
+            cwd: projectDir,
+            modifiedToolCall: {
+              input: {
+                edits: [
+                  {
+                    newText: "new\n",
+                    oldText: "old\n",
+                    path: "file.txt"
+                  }
+                ],
+                summary: "x".repeat(1_001)
+              },
+              toolName: "apply_patch"
+            }
+          }
+        },
+        { runtime }
+      )
+    );
     const disallowedAction = await expectAsyncResponse(
       handleJsonRpcMessage(
         {
@@ -2119,6 +2598,20 @@ describe("approval.respond", () => {
         data: { code: "INVALID_CWD", recoverable: true, subsystem: "rpc" }
       },
       id: "missing-cwd"
+    });
+    expect(badCwd).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "INVALID_CWD", recoverable: true, subsystem: "rpc" }
+      },
+      id: "bad-cwd"
+    });
+    expect(missingAction).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "APPROVAL_ACTION_INVALID", subsystem: "rpc" }
+      },
+      id: "missing-action"
     });
     expect(missingId).toMatchObject({
       error: {
@@ -2155,6 +2648,27 @@ describe("approval.respond", () => {
       },
       id: "edit-both"
     });
+    for (const [id, response, expectedCode] of [
+      ["non-positive-timeout", nonPositiveTimeout, "APPROVAL_TIMEOUT_INVALID"],
+      ["invalid-env-key", invalidEnvKey, "APPROVAL_ENV_KEY_INVALID"],
+      ["too-many-env-entries", tooManyEnvEntries, "APPROVAL_ENV_TOO_MANY_ENTRIES"],
+      ["too-long-env-value", tooLongEnvValue, "APPROVAL_ENV_VALUE_TOO_LONG"],
+      ["too-long-command", tooLongCommand, "APPROVAL_COMMAND_TOO_LONG"],
+      ["too-many-args", tooManyArgs, "APPROVAL_ARGS_TOO_MANY"],
+      ["too-long-arg", tooLongArg, "APPROVAL_ARG_TOO_LONG"],
+      ["too-many-patch-edits", tooManyPatchEdits, "APPROVAL_PATCH_EDITS_TOO_MANY"],
+      ["too-long-old-text", tooLongOldText, "APPROVAL_PATCH_TEXT_TOO_LONG"],
+      ["too-long-new-text", tooLongNewText, "APPROVAL_PATCH_TEXT_TOO_LONG"],
+      ["too-long-patch-summary", tooLongPatchSummary, "APPROVAL_PATCH_SUMMARY_TOO_LONG"]
+    ] as const) {
+      expect(response).toMatchObject({
+        error: {
+          code: -32602,
+          data: { code: expectedCode, subsystem: "rpc" }
+        },
+        id
+      });
+    }
     expect(disallowedAction).toMatchObject({
       error: {
         code: -32602,

@@ -1,6 +1,6 @@
     # Story 7.5: Respond to Approval Requests Through JSON-RPC
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -91,6 +91,33 @@ so that external tools, editors, and scripts can safely mediate risky commands a
   - [x] Run GitNexus detect/analyze/status before commit.
   - [x] Move story to `review` only after tests pass.
   - [x] During review phase, report issues found to Chinnaphat before fixing them, per standing instruction.
+
+### Review Findings
+
+- [x] [Review][Patch] AC11 — Add `alwaysAllowForSession` success test [tests/rpc-protocol.test.ts]
+- [x] [Review][Patch] AC11 — Add `bad cwd` and `missing action` cases to invalid-params matrix [tests/rpc-protocol.test.ts]
+- [x] [Review][Patch] AC7/NFR31 — Add RPC-level test asserting `approval.requested` notification carries all NFR31 fields [tests/rpc-protocol.test.ts]
+- [x] [Review][Patch] Bound `modifiedRequest.env` value length and count; reject malformed keys [packages/rpc/src/index.ts:1819]
+- [x] [Review][Patch] Reject non-positive `modifiedRequest.timeoutMs` [packages/rpc/src/index.ts:1808]
+- [x] [Review][Patch] Add max-length bounds on `command`, `oldText`, `newText`, `args.length`, `edits.length`, `summary` [packages/rpc/src/index.ts]
+- [x] [Review][Defer] State inconsistency when `persistCurrentActiveTaskSnapshot` fails mid-`respondToApproval` — deferred, pre-existing core/2-6 behavior
+- [x] [Review][Defer] Notification buffer grows unbounded during long-running approved tool execution — deferred, acknowledged in 7.5 commit Not-tested; needs cross-story design with 7.4
+- [x] [Review][Defer] Stdin liveness — long approved tool execution blocks subsequent RPC messages on the same pipe — deferred, pre-existing 7.4 design
+- [x] [Review][Defer] String length checks use UTF-16 code units, inconsistent with grapheme/byte limits across stories — deferred, cross-cutting 7.3/7.4/7.5 concern
+- [x] [Review][Defer] `correlationId` never populated in `approval.respond` error responses — deferred, same omission pattern in 7.3/7.4 errors
+- [x] [Review][Patch] Add granular sub-codes for edit validation failures (command too long, too many args, invalid env key, etc.) — currently all collapse into single `APPROVAL_EDIT_PAYLOAD_INVALID` [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Reject empty `oldText` in patch edits — semantically ambiguous, should require at least 1 character [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Add `APPROVAL_MAX_TIMEOUT_MS` cap and reject sub-millisecond `timeoutMs` values — `MAX_SAFE_INTEGER` overflows setTimeout, fractional values are practically zero [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Add `APPROVAL_CWD_MAX_LENGTH` bound — every other string field has a max-length constant but `cwd` does not [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Tighten env key pattern to reject underscore-only names (`_`, `__`) — these are reserved POSIX shell variables [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Reject duplicate env keys — `Object.entries()` silently drops first occurrence, enabling override attacks [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Add test for individual arg length exceeding `APPROVAL_COMMAND_ARG_MAX_LENGTH` (4096) — code path exists but has no coverage [tests/rpc-protocol.test.ts]
+- [x] [Review][Patch] Include actual bound values in "bounded" error messages — `APPROVAL_REASON_INVALID` handler already does this; extend the pattern [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Reject whitespace-only command strings — passes current length check but fails at OS level with confusing error [packages/rpc/src/index.ts]
+- [x] [Review][Defer] No combined ARG_MAX guard across args+env — deferred, individual field bounds are sufficient
+- [x] [Review][Defer] Magic number rationale undocumented — deferred, pre-existing pattern
+- [x] [Review][Defer] Missing boundary-at-limit tests (only over-limit cases tested) — deferred, test enhancement
+- [x] [Review][Defer] `edit.path` not scoped to `cwd` in `readApprovalPatchToolCall` — deferred, path scoping is the `apply_patch` tool's responsibility per architecture
 
 ## Dev Notes
 
@@ -304,6 +331,18 @@ Claude (Sonnet 4.5) via Kiro autonomous coding agent on 2026-05-22.
 - Full vitest + build run: `npm test` → 28 files / 431 tests passed.
 - Lint/typecheck: `npm run lint` → exit 0.
 - Red phase confirmed by adding `approval.respond` contract tests prior to implementation; initial run showed missing capability advertisement, missing handler routing, and method-not-found responses. Green phase reached after implementing the bridge surface, async-aware `handleJsonRpcRequest`/`handleJsonRpcServerMessage`, and the `handleApprovalRespond` flow described below.
+- Review fix pass (2026-05-23): GitNexus impact checks for `readApprovalCommandRequest`, `readApprovalPatchToolCall`, `readApprovalRespondParams`, `handleApprovalRespond`, and `buildRuntimeApprovalResponse` all reported LOW blast radius before editing.
+- Review fix pass (2026-05-23): Added regression coverage for `alwaysAllowForSession`, bad `cwd`, missing `action`, RPC-level `approval.requested` NFR31 payload fields, and modified approval payload bounds.
+- Low review cleanup (2026-05-23): GitNexus impact checks for `createPendingCommandApproval` and `handleJsonRpcMessage` reported LOW blast radius before editing.
+- Low review cleanup (2026-05-23): Removed private `pendingApprovals` mutation from the `alwaysAllowForSession` RPC test by using a scoped `JsonRpcRuntimeBridge` test double around a real active runtime.
+- Low review cleanup validation (2026-05-23): `rtk proxy sh -lc 'npm test -- --run tests/rpc-protocol.test.ts && npm run lint'` → 1 file / 39 tests passed and typecheck exit 0.
+- Low review cleanup validation (2026-05-23): `rtk proxy sh -lc 'npm test -- --run tests/rpc-protocol.test.ts tests/cli-rpc.test.ts tests/session-persistence.test.ts tests/runtime-events.test.ts'` → 4 files / 159 tests passed.
+- Review fix pass validation (2026-05-23): `rtk proxy sh -lc 'npm test -- --run tests/rpc-protocol.test.ts'` → 1 file / 39 tests passed.
+- Review fix pass validation (2026-05-23): `rtk proxy sh -lc 'npm test -- --run tests/rpc-protocol.test.ts tests/cli-rpc.test.ts tests/session-persistence.test.ts tests/runtime-events.test.ts'` → 4 files / 159 tests passed.
+- Review fix pass validation (2026-05-23): `rtk proxy sh -lc 'npm run lint'` → exit 0.
+- Review fix pass validation (2026-05-23): `rtk proxy sh -lc 'npm test'` → 28 files / 433 tests passed.
+- Review fix pass validation (2026-05-23): `rtk proxy sh -lc 'git diff --check -- packages/rpc/src/index.ts tests/rpc-protocol.test.ts _bmad-output/implementation-artifacts/7-5-respond-to-approval-requests-through-json-rpc.md'` → exit 0.
+- GitNexus status (2026-05-23): `rtk proxy sh -lc 'npx gitnexus status'` initially reported stale index; `rtk proxy sh -lc 'npx gitnexus analyze'` refreshed the index, then status reported up-to-date.
 
 ### Completion Notes List
 
@@ -320,6 +359,7 @@ Claude (Sonnet 4.5) via Kiro autonomous coding agent on 2026-05-22.
 - Made `handleJsonRpcMessage` and `handleJsonRpcServerMessage` async-aware so `approval.respond` can use the existing serialized stdout write queue from Story 7.4 without byte interleaving against streamed runtime events. Notifications continue to short-circuit synchronously and never resolve approvals.
 - Verified `approval.requested` runtime event payload already exposes every NFR31-required field through the existing event envelope (`approvalRequestId`, `requestType`, `command`, `summary`, `cwd`, `affectedFiles`, `riskLevel`, `reason`, `envExposure`, `timeoutMs`, `allowedActions`) plus the envelope-level `taskId` and `correlationId`. No core changes were necessary.
 - Added 11 new RPC contract tests in `tests/rpc-protocol.test.ts` (allow, deny, timeout, edit-command, edit-patch, capability advertisement, notification no-op, invalid-params matrix, no-active-task, redaction, write-queue streaming) and 1 CLI subprocess regression in `tests/cli-rpc.test.ts` covering structured `NO_ACTIVE_TASK` errors and capability advertisement on stdout-only output.
+- Addressed all review patch findings for Story 7.5: added `alwaysAllowForSession` success coverage, expanded invalid-param coverage, added RPC-level `approval.requested` NFR31 field coverage, and bounded modified command/patch payload dimensions. Deferred review items remain intentionally deferred as cross-story/pre-existing follow-ups.
 
 ### File List
 
@@ -333,3 +373,5 @@ Claude (Sonnet 4.5) via Kiro autonomous coding agent on 2026-05-22.
 
 - 2026-05-21: Created Story 7.5 implementation artifact following BMAD create-story workflow.
 - 2026-05-22: Implemented `approval.respond` JSON-RPC method end-to-end (bridge extension, handler, validation, runtime error mapping, write-queue integration), added contract and CLI subprocess tests, and moved story to `review`.
+- 2026-05-23: Addressed Story 7.5 review patch findings for approval.respond validation and contract coverage.
+- 2026-05-23: Cleaned up low review finding by removing private runtime-state mutation from the `alwaysAllowForSession` test.
