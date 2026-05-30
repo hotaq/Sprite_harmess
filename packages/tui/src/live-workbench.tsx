@@ -432,18 +432,16 @@ export function TuiWorkbenchApp({
 
     if (key.backspace || input === "\u007f") {
       setDraftText(Array.from(draftRef.current).slice(0, -1).join(""));
+      setSuggestionIndex(0);
       return;
     }
 
     if (isPrintableInput(input)) {
       setDraftText(`${draftRef.current}${input}`);
+      setSuggestionIndex(0);
     }
   });
   const slashCommandSuggestions = createTuiSlashCommandSuggestions(draftText);
-
-  useEffect(() => {
-    setSuggestionIndex(0);
-  }, [draftText]);
   const visibleActionPrompt =
     actionPrompt?.type === "approval"
       ? resolveVisibleActionPrompt(
