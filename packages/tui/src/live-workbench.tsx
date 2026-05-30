@@ -1537,13 +1537,18 @@ function isExitInput(
     return false;
   }
 
-  const inputIsD = input.toLowerCase() === "d";
+  const inputLower = input.toLowerCase();
 
-  return input === "\u0004" || (inputIsD && key.ctrl === true);
+  return (
+    input === "\u0003" ||
+    input === "\u0004" ||
+    (inputLower === "c" && key.ctrl === true) ||
+    (inputLower === "d" && key.ctrl === true)
+  );
 }
 
 function getExitShortcutLabel(): string {
-  return "Ctrl+D";
+  return "Ctrl+C / Ctrl+D";
 }
 
 function isCtrlCInput(
