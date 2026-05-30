@@ -2826,7 +2826,7 @@ function handleRuntimeGetState(
           status: activeTask.value.status,
           correlationId: activeTask.value.correlationId,
           createdAt:
-            activeTask.value.events[0]?.createdAt ?? null
+            activeTask.value.events?.[0]?.createdAt ?? null
         }
       : null;
 
@@ -2856,7 +2856,8 @@ function handleRuntimeGetState(
     task,
     provider,
     sandbox: {
-      pendingApprovals: pendingApprovals.length,
+      pendingApprovals:
+        Array.isArray(pendingApprovals) ? pendingApprovals.length : 0,
       eventCount:
         Array.isArray(eventHistory) ? eventHistory.length : 0
     },
