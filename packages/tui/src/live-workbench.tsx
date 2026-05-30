@@ -391,6 +391,20 @@ export function TuiWorkbenchApp({
       return;
     }
 
+    if (key.upArrow === true || key.downArrow === true) {
+      const suggestions = createTuiSlashCommandSuggestions(draftRef.current);
+
+      if (suggestions.length > 0) {
+        setSuggestionIndex((currentIndex) => {
+          const delta = key.upArrow === true ? -1 : 1;
+
+          return (currentIndex + delta + suggestions.length) % suggestions.length;
+        });
+      }
+
+      return;
+    }
+
     if (key.tab) {
       const suggestions = createTuiSlashCommandSuggestions(draftRef.current);
 
@@ -716,7 +730,7 @@ function SlashCommandSuggestionsSection({
       <Text dimColor>
         Command suggestions
         <Text dimColor>
-          {" · Tab to complete" + (suggestions.length > 1 ? " · Shift+Tab to cycle" : "")}
+          {" · ↑↓ to choose · Tab to complete" + (suggestions.length > 1 ? " · Shift+Tab back" : "")}
         </Text>
       </Text>
       {suggestions.map((suggestion, index) => (
