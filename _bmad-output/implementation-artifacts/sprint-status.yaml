@@ -105,7 +105,7 @@ development_status:
   7-3-submit-tasks-through-json-rpc: done
   7-4-stream-runtime-lifecycle-events-to-rpc-clients: done
   7-5-respond-to-approval-requests-through-json-rpc: done
-  7-6-retrieve-final-summaries-and-learning-reviews-through-json-rpc: backlog
+  7-6-retrieve-final-summaries-and-learning-reviews-through-json-rpc: ready-for-dev
   7-7-inspect-runtime-state-through-scoped-json-rpc: backlog
   epic-7-retrospective: optional
   epic-8: backlog
