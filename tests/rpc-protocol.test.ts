@@ -5,7 +5,8 @@ import {
   handleJsonRpcMessage,
   runJsonRpcStdioServer,
   type JsonRpcResponse,
-  type JsonRpcRuntimeBridge
+  type JsonRpcRuntimeBridge,
+  type JsonRpcSuccessResponse
 } from "@sprite/rpc";
 import {
   existsSync,
@@ -3090,6 +3091,178 @@ describe("task.learningReview", () => {
       {
         jsonrpc: "2.0",
         method: "task.learningReview",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    );
+
+    expect(response).toBeUndefined();
+  });
+});
+
+describe("runtime.getState", () => {
+  it("advertises runtime.getState in protocol capabilities", () => {
+    const { runtime, bridge } = createTempRuntime();
+    const ready = createRpcReadyNotification(bridge);
+
+    expect((ready.params as { capabilities: string[] }).capabilities).toEqual(
+      expect.arrayContaining(["runtime.getState"])
+    );
+  });
+
+  it("returns protocol metadata and no session when no task is active", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-state-no-session",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "get-state-no-session",
+      jsonrpc: "2.0",
+      result: {
+        protocol: {
+          capabilities: expect.arrayContaining(["runtime.getState"]),
+          protocolVersion: "2.0",
+          runtimeConnected: true,
+          server: "sprite-rpc",
+          transport: "stdio"
+        },
+        session: null,
+        task: null,
+        provider: null,
+        sandbox: {
+          pendingApprovals: 0,
+          eventCount: 0
+        },
+        warnings: expect.arrayContaining([
+          expect.stringContaining("No active session")
+        ])
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("sk-test-secret");
+  });
+
+  it("returns session and task state when a task is active", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+    const submitted = runtime.submitInteractiveTask(
+      "runtime.getState active task fixture"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-state-active-task",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    const result = (response as JsonRpcSuccessResponse).result as Record<string, unknown>;
+
+    expect(result.session).not.toBeNull();
+    expect(result.task).not.toBeNull();
+    expect(result.protocol).toBeDefined();
+
+    const session = result.session as Record<string, unknown>;
+    expect(session.sessionId).toEqual(expect.stringMatching(/^ses_/));
+    expect(session.cwd).toBe(projectDir);
+
+    const task = result.task as Record<string, unknown>;
+    expect(task.taskId).toBe(submitted.value.taskId);
+    expect(task.correlationId).toBe(submitted.value.correlationId);
+    expect(task.status).toBe(submitted.value.status);
+
+    expect(result.sandbox).toBeDefined();
+    expect(JSON.stringify(response)).not.toContain("sk-test-secret");
+  });
+
+  it("strips provider secrets from the state response", async () => {
+    const { projectDir, homeDir, bridge } = createTempRuntime();
+    const runtimeWithProvider = new AgentRuntime({
+      cwd: projectDir,
+      homeDir,
+      providerOverride: {
+        apiKey: "sk-deadbeef1234-secret",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o",
+        providerName: "openai"
+      }
+    });
+    const runtimeBridge = toBridge(runtimeWithProvider);
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-state-no-secrets",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: projectDir }
+      },
+      { runtime: runtimeBridge }
+    )) as JsonRpcResponse;
+
+    const serialized = JSON.stringify(response);
+
+    expect(serialized).not.toContain("sk-deadbeef1234");
+    expect(serialized).not.toContain("deadbeef");
+    expect(serialized).not.toContain("https://api.openai.com");
+
+    const result = (response as JsonRpcSuccessResponse).result as Record<string, unknown>;
+    const provider = result.provider as Record<string, unknown> | null;
+
+    if (provider !== null) {
+      expect(provider.providerName).toBe("openai");
+      expect(provider.model).toBe("gpt-4o");
+      expect(provider).not.toHaveProperty("apiKey");
+      expect(provider).not.toHaveProperty("baseUrl");
+    }
+  });
+
+  it("rejects runtime.getState with out-of-scope cwd", async () => {
+    const { rootDir, runtime, bridge } = createTempRuntime();
+    const outOfScopeDir = join(rootDir, "other-project");
+
+    mkdirSync(outOfScopeDir, { recursive: true });
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "wrong-cwd-state",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: outOfScopeDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "wrong-cwd-state",
+      jsonrpc: "2.0",
+      error: {
+        code: -32602,
+        data: { code: "INVALID_CWD", subsystem: "rpc" }
+      }
+    });
+  });
+
+  it("does not respond to runtime.getState notifications", () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    const response = handleJsonRpcMessage(
+      {
+        jsonrpc: "2.0",
+        method: "runtime.getState",
         params: { cwd: projectDir }
       },
       { runtime: bridge }

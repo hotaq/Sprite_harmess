@@ -100,7 +100,8 @@ const RPC_CAPABILITIES = [
   "event.unsubscribe",
   "approval.respond",
   "task.getResult",
-  "task.learningReview"
+  "task.learningReview",
+  "runtime.getState"
 ] as const;
 
 const TASK_RESULT_IMPORTANT_EVENTS_MAX_COUNT = 100;
@@ -2770,6 +2771,99 @@ async function handleTaskLearningReview(
   );
 }
 
+function summarizeProviderForState(
+  bootstrap: ReturnType<JsonRpcRuntimeBridge["getBootstrapState"]>
+): { providerName: string; model: string | null } | null {
+  if (!bootstrap.ok || bootstrap.value.provider === null) {
+    return null;
+  }
+
+  return {
+    providerName: bootstrap.value.provider.providerName,
+    model: bootstrap.value.provider.model ?? null
+  };
+}
+
+function handleRuntimeGetState(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): JsonRpcResponse {
+  const requestId = request.id ?? null;
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  if (!isRecord(request.params)) {
+    return createJsonRpcErrorResponse({
+      code: -32602,
+      dataCode: "INVALID_PARAMS",
+      id: requestId,
+      message: "Invalid params.",
+      nextAction: "Provide runtime.getState params as an object with cwd.",
+      recoverable: true
+    });
+  }
+
+  const bootstrap = runtime.getBootstrapState();
+  const activeTask = runtime.getActiveTask();
+  const eventHistory = runtime.getEventHistory();
+  const pendingApprovals = runtime.getPendingApprovals();
+
+  const protocol = createProtocolMetadata(
+    bootstrap.ok ? true : false
+  );
+
+  const provider = summarizeProviderForState(bootstrap);
+
+  const session =
+    activeTask.ok
+      ? {
+          sessionId: activeTask.value.sessionId,
+          cwd: activeTask.value.request.cwd,
+          status: activeTask.value.status,
+          correlationId: activeTask.value.correlationId,
+          createdAt:
+            activeTask.value.events[0]?.createdAt ?? null
+        }
+      : null;
+
+  const task = activeTask.ok
+    ? {
+        taskId: activeTask.value.taskId,
+        status: activeTask.value.status,
+        correlationId: activeTask.value.correlationId
+      }
+    : null;
+
+  const warnings: string[] = [];
+
+  if (bootstrap.ok) {
+    warnings.push(...bootstrap.value.warnings);
+  }
+
+  if (!activeTask.ok) {
+    warnings.push(
+      "No active session. Create a session or resume an existing one."
+    );
+  }
+
+  return createJsonRpcSuccessResponse(requestId, {
+    protocol,
+    session,
+    task,
+    provider,
+    sandbox: {
+      pendingApprovals: pendingApprovals.length,
+      eventCount:
+        Array.isArray(eventHistory) ? eventHistory.length : 0
+    },
+    warnings
+  });
+}
+
 function handleJsonRpcRequest(
   request: JsonRpcRequest,
   runtime: JsonRpcRuntimeBridge
@@ -2817,6 +2911,14 @@ function handleJsonRpcRequest(
     return handleTaskLearningReview(request, runtime);
   }
 
+  if (request.method === "runtime.getState") {
+    if (isNotification(request)) {
+      return undefined;
+    }
+
+    return handleRuntimeGetState(request, runtime);
+  }
+
   return isNotification(request)
     ? undefined
     : createJsonRpcErrorResponse({
@@ -2824,7 +2926,7 @@ function handleJsonRpcRequest(
         id: request.id,
         message: "Method not found.",
         nextAction:
-          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, event.unsubscribe, approval.respond, task.getResult, or task.learningReview."
+          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, event.unsubscribe, approval.respond, task.getResult, task.learningReview, or runtime.getState."
       });
 }
 

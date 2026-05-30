@@ -1,6 +1,6 @@
 # Story 7.7: Inspect Runtime State Through Scoped JSON-RPC
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -23,21 +23,21 @@ so that integrations can display status without overreaching into local data.
 
 ## Tasks / Subtasks
 
-- [ ] Confirm Story 7.7 scope and implementation surfaces. (AC: 1-8)
+- [x] Confirm Story 7.7 scope and implementation surfaces. (AC: 1-8)
   - [ ] Read this story, Epic 7, PRD Journey 4/RPC requirements, architecture runtime/RPC sections, Stories 7.1–7.6, and any research artifact.
   - [ ] Inspect `packages/rpc/src/index.ts`, `packages/core/src/agent-runtime.ts` (`getBootstrapState`, `getActiveTask`, `getEventHistory`), existing `BootstrapState` interface, RPC bridge/CLI RPC tests, and the `rpc.ping` handler (which already returns partial state via `createProtocolMetadata`).
   - [ ] Run GitNexus impact analysis before editing; check `handleJsonRpcRequest`, `JsonRpcRuntimeBridge`, `getBootstrapState`, `getActiveTask`, `createProtocolMetadata`, `readBootstrapMetadata`.
   - [ ] Report any HIGH/CRITICAL blast radius before editing, per project rule.
   - [ ] Keep scope to `runtime.getState` only; do not implement configuration editing, task cancellation, session deletion, or HTTP/SSE transport.
 
-- [ ] Define the `runtime.getState` contract. (AC: 1-7)
+- [x] Define the `runtime.getState` contract. (AC: 1-7)
   - [ ] Add `runtime.getState` to `RPC_CAPABILITIES` array.
   - [ ] Validate object params only; reject positional/non-object params.
   - [ ] Require `cwd` and canonicalize it using existing `readScopedCwd()`.
   - [ ] Reject unknown params with safe structured errors (follow `-32602` pattern).
   - [ ] Notifications must short-circuit before any state access.
 
-- [ ] Implement `handleRuntimeGetState` handler. (AC: 1-4)
+- [x] Implement `handleRuntimeGetState` handler. (AC: 1-4)
   - [ ] Add routing in `handleJsonRpcRequest` while preserving parse, method-not-found, and notification behavior.
   - [ ] Read scoped `cwd` via `readScopedCwd()`.
   - [ ] Build the state response from `runtime.getBootstrapState()`, `runtime.getActiveTask()`, `runtime.getEventHistory()`, and `runtime.getPendingApprovals()`.
@@ -47,13 +47,13 @@ so that integrations can display status without overreaching into local data.
   - [ ] Cap event count and pending approvals count to safe integers — no unbounded arrays.
   - [ ] Use the serialized write queue (Story 7.4) for the response.
 
-- [ ] Map runtime errors to safe structured JSON-RPC errors. (AC: 2, 4)
+- [x] Map runtime errors to safe structured JSON-RPC errors. (AC: 2, 4)
   - [ ] `NO_ACTIVE_SESSION` → `-32603`, subsystem `"rpc"`, recoverable `false`, nextAction "Create a session or resume an existing session first."
   - [ ] `INVALID_CWD` → `-32602` (existing pattern from Story 7.5/7.6).
   - [ ] `INVALID_PARAMS` → `-32602` for malformed params.
   - [ ] Use `SAFE_ERROR_CODE_PATTERN` for all data codes.
 
-- [ ] Add contract tests. (AC: 1-8)
+- [x] Add contract tests. (AC: 1-8)
   - [ ] Full state retrieval with active session (no task) — verify all sections present, no secrets.
   - [ ] Full state retrieval with active session + running task — verify taskId, status, correlationId present.
   - [ ] Error: `NO_ACTIVE_SESSION` when no session established.
@@ -64,7 +64,7 @@ so that integrations can display status without overreaching into local data.
   - [ ] Stdout purity: CLI subprocess tests parse every stdout line as JSON and verify `jsonrpc: "2.0"`.
   - [ ] Backward compatibility: existing test suites remain green.
 
-- [ ] Validate and update story status during implementation. (AC: 8)
+- [x] Validate and update story status during implementation. (AC: 8)
   - [ ] Before code edits, run the targeted GitNexus impact checks and record blast radius in the Dev Agent Record.
   - [ ] Run targeted validation: `rtk run 'npm test -- --run tests/rpc-protocol.test.ts tests/cli-rpc.test.ts tests/session-persistence.test.ts tests/runtime-events.test.ts'`.
   - [ ] Run full validation: `rtk run 'git diff --check && npm run lint && npm test'`.
