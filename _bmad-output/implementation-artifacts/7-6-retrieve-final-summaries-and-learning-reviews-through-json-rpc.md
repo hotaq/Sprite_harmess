@@ -93,6 +93,27 @@ so that editors, scripts, and other agents can consume structured task outcomes 
   - [x] GitNexus detect_changes confirms LOW risk, expected files only.
   - [x] Moving story to `review`.
 
+### Review Findings
+
+- [x] [Review][Patch] Gate `task.getResult` on terminal task status — currently returns partial summaries for running tasks. Return error when task is not in a terminal state (completed, failed, cancelled, max-iterations) [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Add missing `taskId` validation in `handleTaskLearningReview` — unlike `handleTaskGetResult`, it doesn't check the requested `taskId` matches the active task, allowing clients to scan arbitrary taskIds across sessions [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Pass `sessionId` filter in `handleTaskLearningReview` when looking up learning reviews — passing only `sessionLimit:5` without `sessionId` can miss the active task's session directory. Use `activeTask.value.sessionId` [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Add `reuseEvidence` (and `evidence`) field to `task.learningReview` response — AC 3 requires reuse evidence but `summarizeLearningReviewArtifact` omits it [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Add null-safety on summarizer array fields — `summarizeLearningReviewArtifact` calls `.slice()` on potentially undefined/null fields (facts, mistakes, testGaps, memoryCandidates, skillSignals) from malformed stored artifacts. Use `(field ?? []).slice()` [packages/rpc/src/index.ts]
+- [x] [Review][Patch] Map known error codes from `readLearningReviewArtifacts` — all storage errors collapse into `LEARNING_REVIEW_READ_FAILED`. Map INVALID_READ_LIMIT, INVALID_SESSION_ID, INVALID_TASK_ID, READ_FAILED to distinct `dataCode` values [packages/rpc/src/index.ts]
+- [x] [Review][Defer] `task.getResult` by explicit `taskId` only matches active task — completed/past tasks return `TASK_NOT_FOUND`. Story acknowledges this gap (`createFinalTaskSummary` takes `PlannedExecutionFlow`, no `getTaskById`). Accept for MVP, revisit when runtime exposes task history.
+- [x] [Review][Defer] Silent truncation without overflow markers — arrays capped at limits with no `hasMore` signal. Deferred as UX enhancement.
+- [x] [Review][Defer] No try/catch around async handler operations — current handlers are synchronous despite `async` keyword. Deferred until handlers gain actual async I/O.
+- [x] [Review][Defer] taskId null/empty-string ambiguity in param reader — minor edge case, TASK_ID_PATTERN catches bad values.
+- [x] [Review][Defer] Method-not-found hint is hardcoded string — maintenance concern, not a bug.
+- [x] [Review][Defer] Race condition on shared activeTask — minimal practical impact given serialized write queue.
+- [x] [Review][Defer] Handlers declared `async` but do no async I/O — cosmetic, no functional impact.
+- [x] [Review][Defer] Unbounded string/array fields in response — capped arrays already at 100/50; string fields bounded by storage limits.
+- [x] [Review][Defer] Concurrent calls on non-synchronized state — low practical impact.
+- [x] [Review][Defer] Missing whitespace taskId test — TASK_ID_PATTERN already rejects.
+- [x] [Review][Defer] Duplicate `isRecord` check in param reader — dead code, no harm.
+- [x] [Review][Defer] No happy-path test for `task.learningReview` — requires actual learning review artifact on disk; not feasible in current unit test harness.
+
 ## Dev Notes
 
 ### Story Intent

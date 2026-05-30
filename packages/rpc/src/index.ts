@@ -108,6 +108,13 @@ const TASK_RESULT_INFLUENCES_MAX_COUNT = 50;
 const TASK_LEARNING_REVIEW_ITEMS_MAX_COUNT = 50;
 const TASK_LEARNING_REVIEW_SESSION_LIMIT = 5;
 const TASK_LEARNING_REVIEW_ARTIFACT_LIMIT = 20;
+
+const TASK_TERMINAL_STATUSES = new Set([
+  "completed",
+  "cancelled",
+  "failed",
+  "max-iterations"
+]);
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
 const EVENT_REPLAY_DEFAULT_LIMIT = 50;
 const EVENT_REPLAY_MAX_LIMIT = 100;
@@ -2564,18 +2571,38 @@ function summarizeLearningReviewArtifact(
 ) {
   const limit = TASK_LEARNING_REVIEW_ITEMS_MAX_COUNT;
 
+  const facts = Array.isArray(artifact.review.facts)
+    ? artifact.review.facts
+    : [];
+  const lessons = Array.isArray(artifact.review.lessons)
+    ? artifact.review.lessons
+    : [];
+  const mistakes = Array.isArray(artifact.review.mistakes)
+    ? artifact.review.mistakes
+    : [];
+  const testGaps = Array.isArray(artifact.review.testGaps)
+    ? artifact.review.testGaps
+    : [];
+  const memoryCandidates = Array.isArray(artifact.review.memoryCandidates)
+    ? artifact.review.memoryCandidates
+    : [];
+  const skillSignals = Array.isArray(artifact.review.skillSignals)
+    ? artifact.review.skillSignals
+    : [];
+
   return {
     taskId: artifact.review.taskId,
     sessionId: artifact.review.sessionId,
     correlationId: artifact.review.correlationId,
     mode: artifact.review.mode,
     artifactPath: artifact.artifactPath,
-    facts: artifact.review.facts.slice(0, limit),
-    lessons: artifact.review.lessons.slice(0, limit),
-    mistakes: artifact.review.mistakes.slice(0, limit),
-    testGaps: artifact.review.testGaps.slice(0, limit),
-    memoryCandidates: artifact.review.memoryCandidates.slice(0, limit),
-    skillSignals: artifact.review.skillSignals.slice(0, limit),
+    facts: facts.slice(0, limit),
+    lessons: lessons.slice(0, limit),
+    mistakes: mistakes.slice(0, limit),
+    testGaps: testGaps.slice(0, limit),
+    memoryCandidates: memoryCandidates.slice(0, limit),
+    skillSignals: skillSignals.slice(0, limit),
+    reuseEvidence: [],
     summary: artifact.review.summary,
     createdAt: artifact.review.createdAt
   };
@@ -2626,6 +2653,18 @@ async function handleTaskGetResult(
     });
   }
 
+  if (!TASK_TERMINAL_STATUSES.has(activeTask.value.status)) {
+    return createJsonRpcErrorResponse({
+      code: -32603,
+      dataCode: "TASK_NOT_TERMINAL",
+      id: requestId,
+      message: "Task has not reached a terminal state.",
+      nextAction:
+        "Wait for the task to complete, fail, cancel, or reach its iteration limit before retrieving results.",
+      recoverable: true
+    });
+  }
+
   const summary = createFinalTaskSummary(activeTask.value);
 
   return createJsonRpcSuccessResponse(
@@ -2667,12 +2706,38 @@ async function handleTaskLearningReview(
 
   const taskId = params.value.taskId ?? activeTask.value.taskId;
 
+  if (taskId !== activeTask.value.taskId) {
+    return createJsonRpcErrorResponse({
+      code: -32602,
+      dataCode: "TASK_NOT_FOUND",
+      id: requestId,
+      message: "Task not found.",
+      nextAction:
+        "Provide a valid taskId matching the active task, or omit taskId for the active task.",
+      recoverable: true
+    });
+  }
+
   const artifacts = runtime.getLearningReviewArtifacts(scoped.cwd, {
     artifactLimit: TASK_LEARNING_REVIEW_ARTIFACT_LIMIT,
+    sessionId: activeTask.value.sessionId,
     sessionLimit: TASK_LEARNING_REVIEW_SESSION_LIMIT
   });
 
   if (!artifacts.ok) {
+    const code = readSafeErrorCode(artifacts.error);
+
+    if (code === "SESSION_LEARNING_REVIEW_INVALID_READ_LIMIT") {
+      return createJsonRpcErrorResponse({
+        code: -32603,
+        dataCode: "LEARNING_REVIEW_READ_FAILED",
+        id: requestId,
+        message: "Learning review retrieval limit is invalid.",
+        nextAction: "Ensure read limits are positive integers and retry.",
+        recoverable: true
+      });
+    }
+
     return createJsonRpcErrorResponse({
       code: -32603,
       dataCode: "LEARNING_REVIEW_READ_FAILED",

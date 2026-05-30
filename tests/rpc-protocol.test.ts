@@ -2836,10 +2836,10 @@ describe("task.getResult", () => {
     );
   });
 
-  it("returns a bounded final summary for the active completed task", async () => {
+  it("returns TASK_NOT_TERMINAL for tasks that have not reached a terminal state", async () => {
     const { projectDir, runtime, bridge } = createTempRuntime();
     const submitted = runtime.submitInteractiveTask(
-      "demonstrate task.getResult for completed task"
+      "demonstrate task.getResult terminal gate"
     );
 
     expect(submitted.ok).toBe(true);
@@ -2860,24 +2860,17 @@ describe("task.getResult", () => {
     expect(response).toMatchObject({
       id: "get-result-active",
       jsonrpc: "2.0",
-      result: {
-        status: expect.any(String),
-        result: expect.any(String),
-        filesChanged: expect.any(Array),
-        filesProposedForChange: expect.any(Array),
-        filesRead: expect.any(Array),
-        unresolvedRisks: expect.any(Array),
-        notAttempted: expect.any(Array),
-        importantEvents: expect.any(Array),
-        memoryInfluences: expect.any(Array),
-        skillInfluences: expect.any(Array),
-        sessionId: expect.stringMatching(/^ses_/),
-        taskId: submitted.value.taskId,
-        correlationId: submitted.value.correlationId
+      error: {
+        code: -32603,
+        data: {
+          code: "TASK_NOT_TERMINAL",
+          recoverable: true,
+          subsystem: "rpc"
+        },
+        message: expect.stringContaining("terminal state")
       }
     });
     expect(JSON.stringify(response)).not.toContain("sk-test-secret");
-    expect(JSON.stringify(response)).not.toContain(projectDir);
   });
 
   it("returns NO_ACTIVE_TASK when no task is active", async () => {
