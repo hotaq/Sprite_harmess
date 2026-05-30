@@ -142,6 +142,10 @@ export function TuiWorkbenchApp({
   const [submittedPrompts, setSubmittedPrompts] = useState<
     readonly TuiSubmittedPrompt[]
   >([]);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const suggestionIndexRef = useRef(suggestionIndex);
+
+  suggestionIndexRef.current = suggestionIndex;
   const [commandResults, setCommandResults] = useState<
     readonly TuiCommandResultCardState[]
   >([]);
@@ -387,6 +391,31 @@ export function TuiWorkbenchApp({
       return;
     }
 
+    if (key.tab) {
+      const suggestions = createTuiSlashCommandSuggestions(draftRef.current);
+
+      if (suggestions.length > 0) {
+        const idx = suggestionIndexRef.current;
+        const nextIndex = key.shift
+          ? (idx - 1 + suggestions.length) % suggestions.length
+          : idx % suggestions.length;
+
+        const selected = suggestions[nextIndex];
+
+        if (selected !== undefined) {
+          setDraftText(`/${selected.command} `);
+        }
+
+        setSuggestionIndex(
+          key.shift
+            ? (idx - 1 + suggestions.length) % suggestions.length
+            : (idx + 1) % suggestions.length
+        );
+      }
+
+      return;
+    }
+
     if (key.backspace || input === "\u007f") {
       setDraftText(Array.from(draftRef.current).slice(0, -1).join(""));
       return;
@@ -397,6 +426,10 @@ export function TuiWorkbenchApp({
     }
   });
   const slashCommandSuggestions = createTuiSlashCommandSuggestions(draftText);
+
+  useEffect(() => {
+    setSuggestionIndex(0);
+  }, [draftText]);
   const visibleActionPrompt =
     actionPrompt?.type === "approval"
       ? resolveVisibleActionPrompt(
@@ -433,7 +466,7 @@ export function TuiWorkbenchApp({
         <ApprovalsSection state={state} />
       </Box>
       <Box flexDirection="column">
-        <SlashCommandSuggestionsSection suggestions={slashCommandSuggestions} />
+        <SlashCommandSuggestionsSection activeIndex={suggestionIndex} suggestions={slashCommandSuggestions} />
         <InputSection draftText={draftText} />
         <ActionPromptSection prompt={dockActionPrompt} />
         <FooterSection state={state} />
@@ -662,8 +695,10 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 }
 
 function SlashCommandSuggestionsSection({
+  activeIndex,
   suggestions
 }: {
+  activeIndex: number;
   suggestions: readonly TuiSlashCommandSuggestion[];
 }): React.JSX.Element | null {
   if (suggestions.length === 0) {
@@ -678,10 +713,21 @@ function SlashCommandSuggestionsSection({
       marginTop={1}
       paddingX={1}
     >
-      <Text dimColor>Command suggestions</Text>
-      {suggestions.map((suggestion) => (
+      <Text dimColor>
+        Command suggestions
+        <Text dimColor>
+          {" · Tab to complete" + (suggestions.length > 1 ? " · Shift+Tab to cycle" : "")}
+        </Text>
+      </Text>
+      {suggestions.map((suggestion, index) => (
         <Text key={suggestion.command}>
-          <Text color="cyan">{`/${suggestion.command}`}</Text>
+          {index === activeIndex % suggestions.length ? (
+            <Text backgroundColor="cyan" color="black" bold>
+              {`/${suggestion.command}`}
+            </Text>
+          ) : (
+            <Text color="cyan">{`/${suggestion.command}`}</Text>
+          )}
           <Text dimColor>{`  ${suggestion.description}`}</Text>
         </Text>
       ))}
