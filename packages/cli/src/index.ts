@@ -2307,7 +2307,20 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
       await runJsonRpcStdioServer({
         input: process.stdin,
         output: createCliOutputWritable(io.stdout),
-        runtime
+        runtime: {
+          createSession: runtime.createSession.bind(runtime),
+          getActiveTask: runtime.getActiveTask.bind(runtime),
+          getBootstrapState: runtime.getBootstrapState.bind(runtime),
+          getEventHistory: runtime.getEventHistory.bind(runtime),
+          getLearningReviewArtifacts(cwd, options) {
+            return readLearningReviewArtifacts(cwd, options);
+          },
+          getPendingApprovals: runtime.getPendingApprovals.bind(runtime),
+          respondToApproval: runtime.respondToApproval.bind(runtime),
+          resumeSession: runtime.resumeSession.bind(runtime),
+          startTask: runtime.startTask.bind(runtime),
+          subscribeToEvents: runtime.subscribeToEvents.bind(runtime)
+        }
       });
     });
 

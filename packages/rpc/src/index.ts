@@ -1,9 +1,13 @@
 import {
   RUNTIME_EVENT_TYPES,
   type AgentRuntime,
+  type FinalTaskSummary,
   type RuntimeApprovalResponse,
   type RuntimeEventRecord,
-  type RuntimeEventType
+  type RuntimeEventType,
+  type StoredLearningReviewArtifactResult,
+  createFinalTaskSummary,
+  readLearningReviewArtifacts
 } from "@sprite/core";
 import type {
   ApprovalApplyPatchToolCall,
@@ -66,6 +70,7 @@ export interface JsonRpcRuntimeBridge {
   getActiveTask: AgentRuntime["getActiveTask"];
   getBootstrapState: AgentRuntime["getBootstrapState"];
   getEventHistory: AgentRuntime["getEventHistory"];
+  getLearningReviewArtifacts: typeof readLearningReviewArtifacts;
   getPendingApprovals: AgentRuntime["getPendingApprovals"];
   respondToApproval: AgentRuntime["respondToApproval"];
   resumeSession: AgentRuntime["resumeSession"];
@@ -93,8 +98,16 @@ const RPC_CAPABILITIES = [
   "task.start",
   "event.subscribe",
   "event.unsubscribe",
-  "approval.respond"
+  "approval.respond",
+  "task.getResult",
+  "task.learningReview"
 ] as const;
+
+const TASK_RESULT_IMPORTANT_EVENTS_MAX_COUNT = 100;
+const TASK_RESULT_INFLUENCES_MAX_COUNT = 50;
+const TASK_LEARNING_REVIEW_ITEMS_MAX_COUNT = 50;
+const TASK_LEARNING_REVIEW_SESSION_LIMIT = 5;
+const TASK_LEARNING_REVIEW_ARTIFACT_LIMIT = 20;
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
 const EVENT_REPLAY_DEFAULT_LIMIT = 50;
 const EVENT_REPLAY_MAX_LIMIT = 100;
@@ -2459,6 +2472,239 @@ async function handleApprovalRespond(
   });
 }
 
+function readTaskGetResultParams(
+  request: JsonRpcRequest,
+  scoped: { cwd: string }
+):
+  | { ok: true; value: { taskId: string | null } }
+  | { ok: false; response: JsonRpcResponse } {
+  if (!isRecord(request.params)) {
+    return {
+      ok: false,
+      response: createJsonRpcErrorResponse({
+        code: -32602,
+        dataCode: "INVALID_PARAMS",
+        id: request.id ?? null,
+        message: "Invalid params.",
+        nextAction: "Provide task.getResult params as an object with cwd and an optional taskId.",
+        recoverable: true
+      })
+    };
+  }
+
+  if (request.params.taskId !== undefined) {
+    if (
+      typeof request.params.taskId !== "string" ||
+      request.params.taskId.length === 0 ||
+      !TASK_ID_PATTERN.test(request.params.taskId)
+    ) {
+      return {
+        ok: false,
+        response: createJsonRpcErrorResponse({
+          code: -32602,
+          dataCode: "TASK_ID_INVALID",
+          id: request.id ?? null,
+          message: "Invalid taskId.",
+          nextAction:
+            "Provide taskId as a non-empty string matching the task_ prefix pattern, or omit it for the active task.",
+          recoverable: true
+        })
+      };
+    }
+
+    return {
+      ok: true,
+      value: { taskId: request.params.taskId }
+    };
+  }
+
+  return { ok: true, value: { taskId: null } };
+}
+
+function readTaskLearningReviewParams(
+  request: JsonRpcRequest,
+  scoped: { cwd: string }
+):
+  | { ok: true; value: { taskId: string | null } }
+  | { ok: false; response: JsonRpcResponse } {
+  return readTaskGetResultParams(request, scoped);
+}
+
+function summarizeTaskGetResult(summary: FinalTaskSummary) {
+  return {
+    status: summary.status,
+    result: summary.result,
+    provider: summary.provider,
+    model: summary.model,
+    filesChanged: summary.filesChanged,
+    filesProposedForChange: summary.filesProposedForChange,
+    filesRead: summary.filesRead,
+    unresolvedRisks: summary.unresolvedRisks,
+    notAttempted: summary.notAttempted,
+    importantEvents: summary.importantEvents.slice(
+      0,
+      TASK_RESULT_IMPORTANT_EVENTS_MAX_COUNT
+    ),
+    memoryInfluences: summary.memoryInfluences.slice(
+      0,
+      TASK_RESULT_INFLUENCES_MAX_COUNT
+    ),
+    skillInfluences: summary.skillInfluences.slice(
+      0,
+      TASK_RESULT_INFLUENCES_MAX_COUNT
+    ),
+    sessionId: summary.sessionId,
+    taskId: summary.taskId,
+    correlationId: summary.correlationId
+  };
+}
+
+function summarizeLearningReviewArtifact(
+  artifact: StoredLearningReviewArtifactResult
+) {
+  const limit = TASK_LEARNING_REVIEW_ITEMS_MAX_COUNT;
+
+  return {
+    taskId: artifact.review.taskId,
+    sessionId: artifact.review.sessionId,
+    correlationId: artifact.review.correlationId,
+    mode: artifact.review.mode,
+    artifactPath: artifact.artifactPath,
+    facts: artifact.review.facts.slice(0, limit),
+    lessons: artifact.review.lessons.slice(0, limit),
+    mistakes: artifact.review.mistakes.slice(0, limit),
+    testGaps: artifact.review.testGaps.slice(0, limit),
+    memoryCandidates: artifact.review.memoryCandidates.slice(0, limit),
+    skillSignals: artifact.review.skillSignals.slice(0, limit),
+    summary: artifact.review.summary,
+    createdAt: artifact.review.createdAt
+  };
+}
+
+async function handleTaskGetResult(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): Promise<JsonRpcResponse> {
+  const requestId = request.id ?? null;
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  const params = readTaskGetResultParams(request, scoped);
+
+  if (!params.ok) {
+    return params.response;
+  }
+
+  const activeTask = runtime.getActiveTask();
+
+  if (!activeTask.ok) {
+    return createJsonRpcErrorResponse({
+      code: -32603,
+      dataCode: "NO_ACTIVE_TASK",
+      id: requestId,
+      message: "No active task.",
+      nextAction: "Start or resume a task before retrieving results.",
+      recoverable: false
+    });
+  }
+
+  const taskId = params.value.taskId ?? activeTask.value.taskId;
+
+  if (taskId !== activeTask.value.taskId) {
+    return createJsonRpcErrorResponse({
+      code: -32602,
+      dataCode: "TASK_NOT_FOUND",
+      id: requestId,
+      message: "Task not found.",
+      nextAction:
+        "Provide a valid taskId matching the active task, or omit taskId for the active task.",
+      recoverable: true
+    });
+  }
+
+  const summary = createFinalTaskSummary(activeTask.value);
+
+  return createJsonRpcSuccessResponse(
+    requestId,
+    summarizeTaskGetResult(summary)
+  );
+}
+
+async function handleTaskLearningReview(
+  request: JsonRpcRequest,
+  runtime: JsonRpcRuntimeBridge
+): Promise<JsonRpcResponse> {
+  const requestId = request.id ?? null;
+
+  const scoped = readScopedCwd(request, runtime);
+
+  if (!scoped.ok) {
+    return scoped.response;
+  }
+
+  const params = readTaskLearningReviewParams(request, scoped);
+
+  if (!params.ok) {
+    return params.response;
+  }
+
+  const activeTask = runtime.getActiveTask();
+
+  if (!activeTask.ok) {
+    return createJsonRpcErrorResponse({
+      code: -32603,
+      dataCode: "NO_ACTIVE_TASK",
+      id: requestId,
+      message: "No active task.",
+      nextAction: "Start or resume a task before retrieving learning reviews.",
+      recoverable: false
+    });
+  }
+
+  const taskId = params.value.taskId ?? activeTask.value.taskId;
+
+  const artifacts = runtime.getLearningReviewArtifacts(scoped.cwd, {
+    artifactLimit: TASK_LEARNING_REVIEW_ARTIFACT_LIMIT,
+    sessionLimit: TASK_LEARNING_REVIEW_SESSION_LIMIT
+  });
+
+  if (!artifacts.ok) {
+    return createJsonRpcErrorResponse({
+      code: -32603,
+      dataCode: "LEARNING_REVIEW_READ_FAILED",
+      id: requestId,
+      message: "Failed to read learning review artifacts.",
+      nextAction: "Ensure the session directory is readable and retry.",
+      recoverable: true
+    });
+  }
+
+  const match = artifacts.value.find(
+    (entry) => entry.review.taskId === taskId
+  );
+
+  if (match === undefined) {
+    return createJsonRpcErrorResponse({
+      code: -32602,
+      dataCode: "LEARNING_REVIEW_NOT_FOUND",
+      id: requestId,
+      message: "No learning review found for this task.",
+      nextAction:
+        "Learning reviews are generated for non-trivial completed tasks. Verify the task ID or ensure the task completed successfully.",
+      recoverable: true
+    });
+  }
+
+  return createJsonRpcSuccessResponse(
+    requestId,
+    summarizeLearningReviewArtifact(match)
+  );
+}
+
 function handleJsonRpcRequest(
   request: JsonRpcRequest,
   runtime: JsonRpcRuntimeBridge
@@ -2490,6 +2736,22 @@ function handleJsonRpcRequest(
     return handleApprovalRespond(request, runtime);
   }
 
+  if (request.method === "task.getResult") {
+    if (isNotification(request)) {
+      return undefined;
+    }
+
+    return handleTaskGetResult(request, runtime);
+  }
+
+  if (request.method === "task.learningReview") {
+    if (isNotification(request)) {
+      return undefined;
+    }
+
+    return handleTaskLearningReview(request, runtime);
+  }
+
   return isNotification(request)
     ? undefined
     : createJsonRpcErrorResponse({
@@ -2497,7 +2759,7 @@ function handleJsonRpcRequest(
         id: request.id,
         message: "Method not found.",
         nextAction:
-          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, event.unsubscribe, or approval.respond."
+          "Use rpc.ping, session.create, session.resume, task.start, event.subscribe, event.unsubscribe, approval.respond, task.getResult, or task.learningReview."
       });
 }
 

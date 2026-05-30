@@ -4,6 +4,7 @@ import {
   createRpcReadyNotification,
   handleJsonRpcMessage,
   runJsonRpcStdioServer,
+  type JsonRpcResponse,
   type JsonRpcRuntimeBridge
 } from "@sprite/rpc";
 import {
@@ -20,11 +21,29 @@ import { PassThrough, Readable, Writable } from "node:stream";
 
 const tempRoots: string[] = [];
 
+function toBridge(runtime: AgentRuntime): JsonRpcRuntimeBridge {
+  return {
+    createSession: runtime.createSession.bind(runtime),
+    getActiveTask: runtime.getActiveTask.bind(runtime),
+    getBootstrapState: runtime.getBootstrapState.bind(runtime),
+    getEventHistory: runtime.getEventHistory.bind(runtime),
+    getLearningReviewArtifacts(cwd, options) {
+      return { ok: true, value: [] };
+    },
+    getPendingApprovals: runtime.getPendingApprovals.bind(runtime),
+    respondToApproval: runtime.respondToApproval.bind(runtime),
+    resumeSession: runtime.resumeSession.bind(runtime),
+    startTask: runtime.startTask.bind(runtime),
+    subscribeToEvents: runtime.subscribeToEvents.bind(runtime)
+  };
+}
+
 function createTempRuntime(): {
   homeDir: string;
   projectDir: string;
   rootDir: string;
   runtime: AgentRuntime;
+  bridge: JsonRpcRuntimeBridge;
 } {
   const rootDir = mkdtempSync(join(tmpdir(), "sprite-rpc-"));
   const homeDir = join(rootDir, "home");
@@ -34,11 +53,27 @@ function createTempRuntime(): {
   mkdirSync(projectDir, { recursive: true });
   tempRoots.push(rootDir);
 
+  const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+
   return {
+    bridge: {
+      createSession: runtime.createSession.bind(runtime),
+      getActiveTask: runtime.getActiveTask.bind(runtime),
+      getBootstrapState: runtime.getBootstrapState.bind(runtime),
+      getEventHistory: runtime.getEventHistory.bind(runtime),
+      getLearningReviewArtifacts(_cwd, _options) {
+        return { ok: true, value: [] };
+      },
+      getPendingApprovals: runtime.getPendingApprovals.bind(runtime),
+      respondToApproval: runtime.respondToApproval.bind(runtime),
+      resumeSession: runtime.resumeSession.bind(runtime),
+      startTask: runtime.startTask.bind(runtime),
+      subscribeToEvents: runtime.subscribeToEvents.bind(runtime)
+    },
     homeDir,
     projectDir,
     rootDir,
-    runtime: new AgentRuntime({ cwd: projectDir, homeDir })
+    runtime
   };
 }
 
@@ -119,8 +154,8 @@ afterEach(() => {
 
 describe("JSON-RPC protocol adapter", () => {
   it("creates a ready notification without private runtime details", () => {
-    const { homeDir, projectDir, runtime } = createTempRuntime();
-    const notification = createRpcReadyNotification(runtime);
+    const { homeDir, projectDir, runtime, bridge } = createTempRuntime();
+    const notification = createRpcReadyNotification(bridge);
 
     expect(notification).toMatchObject({
       jsonrpc: "2.0",
@@ -137,7 +172,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("handles rpc.ping through the shared runtime bridge without starting a task", () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const response = handleJsonRpcMessage(
       {
         id: "ping-1",
@@ -147,7 +182,7 @@ describe("JSON-RPC protocol adapter", () => {
           token: "OPENAI_API_KEY=sk-test-secret"
         }
       },
-      { runtime }
+      { runtime: bridge }
     );
 
     expect(response).toMatchObject({
@@ -173,7 +208,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("creates sessions over RPC without starting a task", () => {
-    const { homeDir, projectDir, runtime } = createTempRuntime();
+    const { homeDir, projectDir, runtime, bridge } = createTempRuntime();
     const response = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -187,7 +222,7 @@ describe("JSON-RPC protocol adapter", () => {
             token: "OPENAI_API_KEY=sk-test-secret"
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const result = response.result as {
@@ -240,7 +275,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("rejects repeated session.create calls on one runtime without creating a hidden second session", () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const created = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -249,7 +284,7 @@ describe("JSON-RPC protocol adapter", () => {
           method: "session.create",
           params: { cwd: projectDir }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const duplicate = expectSingleResponse(
@@ -260,7 +295,7 @@ describe("JSON-RPC protocol adapter", () => {
           method: "session.create",
           params: { cwd: projectDir }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -288,7 +323,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("resumes existing sessions over RPC and returns safe metadata", () => {
-    const { homeDir, projectDir, runtime: seedRuntime } = createTempRuntime();
+    const { homeDir, projectDir, runtime: seedRuntime, bridge } = createTempRuntime();
     const submitted = seedRuntime.submitInteractiveTask(
       "resume this RPC session with sk-test-secret hidden"
     );
@@ -299,6 +334,7 @@ describe("JSON-RPC protocol adapter", () => {
     }
 
     const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+    const runtimeBridge = toBridge(runtime);
     const response = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -310,7 +346,7 @@ describe("JSON-RPC protocol adapter", () => {
             sessionId: submitted.value.sessionId
           }
         },
-        { runtime }
+        { runtime: runtimeBridge }
       )
     );
 
@@ -336,7 +372,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("starts tasks over RPC inside a previously created session", () => {
-    const { homeDir, projectDir, runtime } = createTempRuntime();
+    const { homeDir, projectDir, runtime, bridge } = createTempRuntime();
     const created = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -345,7 +381,7 @@ describe("JSON-RPC protocol adapter", () => {
           method: "session.create",
           params: { cwd: projectDir }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const createdResult = created.result as {
@@ -380,7 +416,7 @@ describe("JSON-RPC protocol adapter", () => {
             task: "start this task without leaking sk-test-secret"
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const result = response.result as {
@@ -457,9 +493,9 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("streams subscribed runtime lifecycle events over JSON-RPC notifications", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const input = new PassThrough();
-    const server = runJsonRpcStdioServer({ input, output, runtime });
+    const server = runJsonRpcStdioServer({ input, output, runtime: bridge });
 
     writeJsonLine(input, {
       id: "subscribe-events",
@@ -602,7 +638,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("writes batch responses before live event notifications emitted by batch items", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
 
     await runJsonRpcStdioServer({
       emitReady: false,
@@ -629,7 +665,7 @@ describe("JSON-RPC protocol adapter", () => {
         ])}\n`
       ]),
       output,
-      runtime
+      runtime: bridge
     });
 
     const messages = read()
@@ -680,13 +716,13 @@ describe("JSON-RPC protocol adapter", () => {
     }
   ])("streams terminal $eventType notifications", async ({ eventType, finish }) => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const input = new PassThrough();
     const server = runJsonRpcStdioServer({
       emitReady: false,
       input,
       output,
-      runtime
+      runtime: bridge
     });
 
     writeJsonLine(input, {
@@ -742,7 +778,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("replays bounded current-runtime history after event subscription", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const started = runtime.startTask("seed replay history");
 
     expect(started.ok).toBe(true);
@@ -765,7 +801,7 @@ describe("JSON-RPC protocol adapter", () => {
         })}\n`
       ]),
       output,
-      runtime
+      runtime: bridge
     });
     const messages = parseJsonLines(read());
     const subscribeResponse = messages.find(
@@ -808,7 +844,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("filters replayed runtime events by taskId without requiring sessionId", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const started = runtime.startTask("seed task-specific replay history");
 
     expect(started.ok).toBe(true);
@@ -848,7 +884,7 @@ describe("JSON-RPC protocol adapter", () => {
         })}\n`
       ]),
       output,
-      runtime
+      runtime: bridge
     });
 
     const messages = parseJsonLines(read());
@@ -895,7 +931,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("filters replayed runtime events by sessionId without requiring taskId", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const started = runtime.startTask("seed session-specific replay history");
 
     expect(started.ok).toBe(true);
@@ -934,7 +970,7 @@ describe("JSON-RPC protocol adapter", () => {
         })}\n`
       ]),
       output,
-      runtime
+      runtime: bridge
     });
 
     const messages = parseJsonLines(read());
@@ -985,13 +1021,13 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("unsubscribes event streams and suppresses later notifications", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const input = new PassThrough();
     const server = runJsonRpcStdioServer({
       emitReady: false,
       input,
       output,
-      runtime
+      runtime: bridge
     });
 
     writeJsonLine(input, {
@@ -1059,7 +1095,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("rejects invalid event subscription params without side effects", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, rootDir, runtime } = createTempRuntime();
+    const { projectDir, rootDir, runtime, bridge } = createTempRuntime();
     const outOfScopeDir = join(rootDir, "other-project");
 
     mkdirSync(outOfScopeDir, { recursive: true });
@@ -1125,7 +1161,7 @@ describe("JSON-RPC protocol adapter", () => {
         })}\n`
       ]),
       output,
-      runtime
+      runtime: bridge
     });
 
     const messages = parseJsonLines(read());
@@ -1157,7 +1193,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("starts tasks over RPC without an explicit session id using the runtime default session", () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const response = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -1169,7 +1205,7 @@ describe("JSON-RPC protocol adapter", () => {
             task: "start with default runtime session"
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const result = response.result as {
@@ -1214,7 +1250,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("starts tasks over RPC against an existing persisted session id", () => {
-    const { homeDir, projectDir, runtime: seedRuntime } = createTempRuntime();
+    const { homeDir, projectDir, runtime: seedRuntime, bridge } = createTempRuntime();
     const first = seedRuntime.submitInteractiveTask("seed persisted RPC task");
 
     expect(first.ok).toBe(true);
@@ -1223,6 +1259,7 @@ describe("JSON-RPC protocol adapter", () => {
     }
 
     const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+    const runtimeBridge = toBridge(runtime);
     const response = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -1235,7 +1272,7 @@ describe("JSON-RPC protocol adapter", () => {
             task: "append task through RPC"
           }
         },
-        { runtime }
+        { runtime: runtimeBridge }
       )
     );
     const result = response.result as {
@@ -1275,7 +1312,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("does not respond to task.start notifications and does not create task side effects", () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const response = handleJsonRpcMessage(
       {
         jsonrpc: "2.0",
@@ -1285,7 +1322,7 @@ describe("JSON-RPC protocol adapter", () => {
           task: "notification must not start"
         }
       },
-      { runtime }
+      { runtime: bridge }
     );
 
     expect(response).toBeUndefined();
@@ -1295,7 +1332,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("returns invalid params for malformed or out-of-scope session requests", () => {
-    const { projectDir, rootDir, runtime } = createTempRuntime();
+    const { projectDir, rootDir, runtime, bridge } = createTempRuntime();
     const missingCwd = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -1304,7 +1341,7 @@ describe("JSON-RPC protocol adapter", () => {
           method: "session.create",
           params: {}
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const missingSession = expectSingleResponse(
@@ -1318,7 +1355,7 @@ describe("JSON-RPC protocol adapter", () => {
             sessionId: "ses_missing"
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const outOfScope = expectSingleResponse(
@@ -1331,7 +1368,7 @@ describe("JSON-RPC protocol adapter", () => {
             cwd: join(rootDir, "other-project")
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -1353,7 +1390,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("returns invalid params for unsafe or unsupported task.start scopes", () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const requests = [
       {
         expectedDataCode: "INVALID_CWD",
@@ -1436,7 +1473,7 @@ describe("JSON-RPC protocol adapter", () => {
             method: "task.start",
             params: request.params
           },
-          { runtime }
+          { runtime: bridge }
         )
       );
       const serialized = JSON.stringify(response);
@@ -1459,7 +1496,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("returns a safe task.start conflict error instead of replacing an active task", () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const first = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -1468,7 +1505,7 @@ describe("JSON-RPC protocol adapter", () => {
           method: "task.start",
           params: { cwd: projectDir, task: "first task" }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const duplicate = expectSingleResponse(
@@ -1479,7 +1516,7 @@ describe("JSON-RPC protocol adapter", () => {
           method: "task.start",
           params: { cwd: projectDir, task: "second task" }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -1505,7 +1542,7 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("sanitizes session storage errors without leaking local paths or file contents", () => {
-    const { homeDir, projectDir, runtime: seedRuntime } = createTempRuntime();
+    const { homeDir, projectDir, runtime: seedRuntime, bridge } = createTempRuntime();
     const submitted = seedRuntime.submitInteractiveTask("corrupt-safe-resume");
 
     expect(submitted.ok).toBe(true);
@@ -1525,6 +1562,7 @@ describe("JSON-RPC protocol adapter", () => {
     );
 
     const runtime = new AgentRuntime({ cwd: projectDir, homeDir });
+    const runtimeBridge = toBridge(runtime);
     const response = expectSingleResponse(
       handleJsonRpcMessage(
         {
@@ -1536,7 +1574,7 @@ describe("JSON-RPC protocol adapter", () => {
             sessionId: submitted.value.sessionId
           }
         },
-        { runtime }
+        { runtime: runtimeBridge }
       )
     );
     const serialized = JSON.stringify(response);
@@ -1562,9 +1600,9 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("returns structured errors without echoing raw malformed or unknown input", () => {
-    const { runtime } = createTempRuntime();
+    const { runtime, bridge } = createTempRuntime();
     const malformed = handleJsonRpcMessage("OPENAI_API_KEY=sk-test-secret", {
-      runtime
+      runtime: bridge
     });
     const unknown = handleJsonRpcMessage(
       {
@@ -1572,7 +1610,7 @@ describe("JSON-RPC protocol adapter", () => {
         jsonrpc: "2.0",
         method: "unknown.secret.sk-test-secret"
       },
-      { runtime }
+      { runtime: bridge }
     );
 
     expect(malformed).toMatchObject({
@@ -1603,7 +1641,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("runs newline-delimited JSON-RPC over streams with parseable stdout messages", async () => {
     const { output, read } = createCaptureWritable();
-    const { runtime } = createTempRuntime();
+    const { runtime, bridge } = createTempRuntime();
 
     await runJsonRpcStdioServer({
       input: Readable.from([
@@ -1612,7 +1650,7 @@ describe("JSON-RPC protocol adapter", () => {
         '{"jsonrpc":"2.0","id":2,"method":"missing"}\n'
       ]),
       output,
-      runtime
+      runtime: bridge
     });
 
     const messages = parseJsonLines(read());
@@ -1630,7 +1668,7 @@ describe("JSON-RPC protocol adapter", () => {
 
   it("frames stdio records strictly on LF while accepting CRLF endings", async () => {
     const { output, read } = createCaptureWritable();
-    const { runtime } = createTempRuntime();
+    const { runtime, bridge } = createTempRuntime();
     const unicodeSeparatorLine = `${JSON.stringify({
       id: "unicode",
       jsonrpc: "2.0",
@@ -1646,7 +1684,7 @@ describe("JSON-RPC protocol adapter", () => {
         unicodeSeparatorLine
       ]),
       output,
-      runtime
+      runtime: bridge
     });
 
     const messages = parseJsonLines(read());
@@ -1665,13 +1703,13 @@ describe("JSON-RPC protocol adapter", () => {
   });
 
   it("does not respond to client notifications", () => {
-    const { runtime } = createTempRuntime();
+    const { runtime, bridge } = createTempRuntime();
     const response = handleJsonRpcMessage(
       {
         jsonrpc: "2.0",
         method: "rpc.ping"
       },
-      { runtime }
+      { runtime: bridge }
     );
 
     expect(response).toBeUndefined();
@@ -1729,8 +1767,8 @@ describe("approval.respond", () => {
   }
 
   it("advertises approval.respond in protocol capabilities", () => {
-    const { runtime } = createTempRuntime();
-    const ready = createRpcReadyNotification(runtime);
+    const { runtime, bridge } = createTempRuntime();
+    const ready = createRpcReadyNotification(bridge);
 
     expect((ready.params as { capabilities: string[] }).capabilities).toEqual(
       expect.arrayContaining(["approval.respond"])
@@ -1738,7 +1776,7 @@ describe("approval.respond", () => {
   });
 
   it("returns a bounded execution result for allow responses", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const response = await expectAsyncResponse(
       handleJsonRpcMessage(
@@ -1752,7 +1790,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const serialized = JSON.stringify(response);
@@ -1799,6 +1837,9 @@ describe("approval.respond", () => {
       getActiveTask: runtime.getActiveTask.bind(runtime),
       getBootstrapState: runtime.getBootstrapState.bind(runtime),
       getEventHistory: runtime.getEventHistory.bind(runtime),
+      getLearningReviewArtifacts(cwd, options) {
+        return { ok: true, value: [] };
+      },
       getPendingApprovals: runtime.getPendingApprovals.bind(runtime),
       respondToApproval: async (approvalResponse) => {
         expect(approvalResponse).toEqual({
@@ -1874,7 +1915,7 @@ describe("approval.respond", () => {
   });
 
   it("returns a denial confirmation when responding with deny", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const response = await expectAsyncResponse(
       handleJsonRpcMessage(
@@ -1889,7 +1930,7 @@ describe("approval.respond", () => {
             reason: "Untrusted command in this scope."
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -1907,7 +1948,7 @@ describe("approval.respond", () => {
   });
 
   it("returns a timeout confirmation when responding with timeout", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const response = await expectAsyncResponse(
       handleJsonRpcMessage(
@@ -1921,7 +1962,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -1938,7 +1979,7 @@ describe("approval.respond", () => {
   });
 
   it("executes a modified command request for edit responses", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const response = await expectAsyncResponse(
       handleJsonRpcMessage(
@@ -1959,7 +2000,7 @@ describe("approval.respond", () => {
             reason: "Restricting to read-only command."
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -1979,7 +2020,7 @@ describe("approval.respond", () => {
   });
 
   it("executes a modified apply_patch tool call for edit responses", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     mkdirSync(join(projectDir, "src"), { recursive: true });
     writeFileSync(
       join(projectDir, "src", "edit.ts"),
@@ -2041,7 +2082,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -2061,7 +2102,7 @@ describe("approval.respond", () => {
   });
 
   it("ignores approval.respond notifications without producing side effects", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const response = handleJsonRpcMessage(
       {
@@ -2073,7 +2114,7 @@ describe("approval.respond", () => {
           cwd: projectDir
         }
       },
-      { runtime }
+      { runtime: bridge }
     );
 
     expect(response).toBeUndefined();
@@ -2082,7 +2123,7 @@ describe("approval.respond", () => {
 
   it("streams approval.requested notifications with NFR31 presentation fields", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const submitted = runtime.submitInteractiveTask(
       "approval.requested notification fixture"
     );
@@ -2097,7 +2138,7 @@ describe("approval.respond", () => {
       emitReady: false,
       input,
       output,
-      runtime
+      runtime: bridge
     });
 
     writeJsonLine(input, {
@@ -2178,7 +2219,7 @@ describe("approval.respond", () => {
   });
 
   it("rejects invalid approval.respond params with structured errors", async () => {
-    const { projectDir, rootDir, runtime } = createTempRuntime();
+    const { projectDir, rootDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const outOfScopeDir = join(rootDir, "other-project");
 
@@ -2195,7 +2236,7 @@ describe("approval.respond", () => {
             approvalRequestId: fixture.approvalRequestId
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const badCwd = await expectAsyncResponse(
@@ -2210,7 +2251,7 @@ describe("approval.respond", () => {
             cwd: outOfScopeDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const missingAction = await expectAsyncResponse(
@@ -2224,7 +2265,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const missingId = await expectAsyncResponse(
@@ -2238,7 +2279,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const unknownId = await expectAsyncResponse(
@@ -2253,7 +2294,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const badAction = await expectAsyncResponse(
@@ -2268,7 +2309,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const editWithoutPayload = await expectAsyncResponse(
@@ -2283,7 +2324,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const editWithBothPayloads = await expectAsyncResponse(
@@ -2315,7 +2356,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const nonPositiveTimeout = await expectAsyncResponse(
@@ -2336,7 +2377,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const invalidEnvKey = await expectAsyncResponse(
@@ -2357,7 +2398,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooManyEnvEntries = await expectAsyncResponse(
@@ -2383,7 +2424,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooLongEnvValue = await expectAsyncResponse(
@@ -2404,7 +2445,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooLongCommand = await expectAsyncResponse(
@@ -2424,7 +2465,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooManyArgs = await expectAsyncResponse(
@@ -2445,7 +2486,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooLongArg = await expectAsyncResponse(
@@ -2466,7 +2507,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooManyPatchEdits = await expectAsyncResponse(
@@ -2491,7 +2532,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooLongOldText = await expectAsyncResponse(
@@ -2518,7 +2559,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooLongNewText = await expectAsyncResponse(
@@ -2545,7 +2586,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const tooLongPatchSummary = await expectAsyncResponse(
@@ -2573,7 +2614,7 @@ describe("approval.respond", () => {
             }
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
     const disallowedAction = await expectAsyncResponse(
@@ -2588,7 +2629,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -2680,7 +2721,7 @@ describe("approval.respond", () => {
   });
 
   it("rejects approval.respond when there is no active task", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const response = await expectAsyncResponse(
       handleJsonRpcMessage(
         {
@@ -2693,7 +2734,7 @@ describe("approval.respond", () => {
             cwd: projectDir
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -2711,7 +2752,7 @@ describe("approval.respond", () => {
   });
 
   it("does not echo secret-like values in approval.respond errors", async () => {
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     await createPendingCommandApproval(runtime);
     const response = await expectAsyncResponse(
       handleJsonRpcMessage(
@@ -2726,7 +2767,7 @@ describe("approval.respond", () => {
             reason: "OPENAI_API_KEY=sk-test-secret"
           }
         },
-        { runtime }
+        { runtime: bridge }
       )
     );
 
@@ -2738,10 +2779,10 @@ describe("approval.respond", () => {
 
   it("streams approval.respond responses through the serialized write queue", async () => {
     const { output, read } = createCaptureWritable();
-    const { projectDir, runtime } = createTempRuntime();
+    const { projectDir, runtime, bridge } = createTempRuntime();
     const fixture = await createPendingCommandApproval(runtime);
     const input = new PassThrough();
-    const server = runJsonRpcStdioServer({ input, output, runtime });
+    const server = runJsonRpcStdioServer({ input, output, runtime: bridge });
 
     writeJsonLine(input, {
       id: "stream-subscribe",
@@ -2782,5 +2823,285 @@ describe("approval.respond", () => {
       action: "allow",
       approvalRequestId: fixture.approvalRequestId
     });
+  });
+});
+
+describe("task.getResult", () => {
+  it("advertises task.getResult in protocol capabilities", () => {
+    const { runtime, bridge } = createTempRuntime();
+    const ready = createRpcReadyNotification(bridge);
+
+    expect((ready.params as { capabilities: string[] }).capabilities).toEqual(
+      expect.arrayContaining(["task.getResult"])
+    );
+  });
+
+  it("returns a bounded final summary for the active completed task", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+    const submitted = runtime.submitInteractiveTask(
+      "demonstrate task.getResult for completed task"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-result-active",
+        jsonrpc: "2.0",
+        method: "task.getResult",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "get-result-active",
+      jsonrpc: "2.0",
+      result: {
+        status: expect.any(String),
+        result: expect.any(String),
+        filesChanged: expect.any(Array),
+        filesProposedForChange: expect.any(Array),
+        filesRead: expect.any(Array),
+        unresolvedRisks: expect.any(Array),
+        notAttempted: expect.any(Array),
+        importantEvents: expect.any(Array),
+        memoryInfluences: expect.any(Array),
+        skillInfluences: expect.any(Array),
+        sessionId: expect.stringMatching(/^ses_/),
+        taskId: submitted.value.taskId,
+        correlationId: submitted.value.correlationId
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("sk-test-secret");
+    expect(JSON.stringify(response)).not.toContain(projectDir);
+  });
+
+  it("returns NO_ACTIVE_TASK when no task is active", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    expect(runtime.getActiveTask().ok).toBe(false);
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "no-active-task",
+        jsonrpc: "2.0",
+        method: "task.getResult",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "no-active-task",
+      jsonrpc: "2.0",
+      error: {
+        code: -32603,
+        data: {
+          code: "NO_ACTIVE_TASK",
+          recoverable: false,
+          subsystem: "rpc"
+        },
+        message: expect.stringContaining("No active task")
+      }
+    });
+  });
+
+  it("returns TASK_NOT_FOUND for a taskId that does not match the active task", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+    const submitted = runtime.submitInteractiveTask(
+      "task.getResult non-matching taskId fixture"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "wrong-task-id",
+        jsonrpc: "2.0",
+        method: "task.getResult",
+        params: {
+          cwd: projectDir,
+          taskId: "task_nonexistent_01"
+        }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "wrong-task-id",
+      jsonrpc: "2.0",
+      error: {
+        code: -32602,
+        data: {
+          code: "TASK_NOT_FOUND",
+          recoverable: true,
+          subsystem: "rpc"
+        }
+      }
+    });
+  });
+
+  it("rejects task.getResult with out-of-scope cwd", async () => {
+    const { rootDir, runtime, bridge } = createTempRuntime();
+    const outOfScopeDir = join(rootDir, "other-project");
+
+    mkdirSync(outOfScopeDir, { recursive: true });
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "wrong-cwd",
+        jsonrpc: "2.0",
+        method: "task.getResult",
+        params: { cwd: outOfScopeDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "wrong-cwd",
+      jsonrpc: "2.0",
+      error: {
+        code: -32602,
+        data: { code: "INVALID_CWD", subsystem: "rpc" }
+      }
+    });
+  });
+
+  it("does not respond to task.getResult notifications", () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    const response = handleJsonRpcMessage(
+      {
+        jsonrpc: "2.0",
+        method: "task.getResult",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    );
+
+    expect(response).toBeUndefined();
+    expect(runtime.getActiveTask().ok).toBe(false);
+  });
+});
+
+describe("task.learningReview", () => {
+  it("advertises task.learningReview in protocol capabilities", () => {
+    const { runtime, bridge } = createTempRuntime();
+    const ready = createRpcReadyNotification(bridge);
+
+    expect((ready.params as { capabilities: string[] }).capabilities).toEqual(
+      expect.arrayContaining(["task.learningReview"])
+    );
+  });
+
+  it("returns LEARNING_REVIEW_NOT_FOUND when no learning review exists for the active task", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+    const submitted = runtime.submitInteractiveTask(
+      "task.learningReview absent fixture"
+    );
+
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) {
+      return;
+    }
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "no-learning-review",
+        jsonrpc: "2.0",
+        method: "task.learningReview",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "no-learning-review",
+      jsonrpc: "2.0",
+      error: {
+        code: -32602,
+        data: {
+          code: "LEARNING_REVIEW_NOT_FOUND",
+          recoverable: true,
+          subsystem: "rpc"
+        }
+      }
+    });
+  });
+
+  it("returns NO_ACTIVE_TASK when no task is active", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    expect(runtime.getActiveTask().ok).toBe(false);
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "no-active-task-lr",
+        jsonrpc: "2.0",
+        method: "task.learningReview",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "no-active-task-lr",
+      jsonrpc: "2.0",
+      error: {
+        code: -32603,
+        data: {
+          code: "NO_ACTIVE_TASK",
+          subsystem: "rpc"
+        }
+      }
+    });
+  });
+
+  it("rejects task.learningReview with out-of-scope cwd", async () => {
+    const { rootDir, runtime, bridge } = createTempRuntime();
+    const outOfScopeDir = join(rootDir, "other-project");
+
+    mkdirSync(outOfScopeDir, { recursive: true });
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "wrong-cwd-lr",
+        jsonrpc: "2.0",
+        method: "task.learningReview",
+        params: { cwd: outOfScopeDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "wrong-cwd-lr",
+      jsonrpc: "2.0",
+      error: {
+        code: -32602,
+        data: { code: "INVALID_CWD", subsystem: "rpc" }
+      }
+    });
+  });
+
+  it("does not respond to task.learningReview notifications", () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    const response = handleJsonRpcMessage(
+      {
+        jsonrpc: "2.0",
+        method: "task.learningReview",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    );
+
+    expect(response).toBeUndefined();
   });
 });
