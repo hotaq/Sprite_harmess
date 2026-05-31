@@ -3149,6 +3149,50 @@ describe("runtime.getState", () => {
     expect(JSON.stringify(response)).not.toContain("sk-test-secret");
   });
 
+  it("returns a created session even when no task is active", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+    const created = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "create-before-state",
+          jsonrpc: "2.0",
+          method: "session.create",
+          params: { cwd: projectDir }
+        },
+        { runtime: bridge }
+      )
+    );
+    const createdResult = created.result as {
+      session: { createdAt: string; sessionId: string };
+    };
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-state-created-session",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "get-state-created-session",
+      jsonrpc: "2.0",
+      result: {
+        session: {
+          createdAt: createdResult.session.createdAt,
+          cwd: projectDir,
+          sessionId: createdResult.session.sessionId,
+          status: "created",
+          taskId: null
+        },
+        task: null
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("***");
+  });
+
   it("returns session and task state when a task is active", async () => {
     const { projectDir, runtime, bridge } = createTempRuntime();
     const submitted = runtime.submitInteractiveTask(
@@ -3187,6 +3231,87 @@ describe("runtime.getState", () => {
 
     expect(result.sandbox).toBeDefined();
     expect(JSON.stringify(response)).not.toContain("sk-test-secret");
+  });
+
+  it("returns accepted tool and memory scopes for an active RPC task", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+    const started = expectSingleResponse(
+      handleJsonRpcMessage(
+        {
+          id: "start-scoped-state-task",
+          jsonrpc: "2.0",
+          method: "task.start",
+          params: {
+            allowedTools: ["read_file"],
+            cwd: projectDir,
+            memoryScope: {
+              manual: false,
+              procedural: false,
+              working: true
+            },
+            output: { format: "json" },
+            task: "inspect scoped state"
+          }
+        },
+        { runtime: bridge }
+      )
+    );
+    const startedResult = started.result as {
+      task: { taskId: string };
+    };
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-state-scoped-task",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: projectDir }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "get-state-scoped-task",
+      jsonrpc: "2.0",
+      result: {
+        scope: {
+          allowedTools: ["read_file"],
+          memoryScope: {
+            manual: false,
+            procedural: false,
+            working: true
+          },
+          outputFormat: "json",
+          toolExecutionEnabled: false
+        },
+        task: {
+          taskId: startedResult.task.taskId
+        }
+      }
+    });
+  });
+
+  it("rejects runtime.getState params with unknown fields", async () => {
+    const { projectDir, runtime, bridge } = createTempRuntime();
+
+    const response = (await handleJsonRpcMessage(
+      {
+        id: "get-state-extra-param",
+        jsonrpc: "2.0",
+        method: "runtime.getState",
+        params: { cwd: projectDir, extra: true }
+      },
+      { runtime: bridge }
+    )) as JsonRpcResponse;
+
+    expect(response).toMatchObject({
+      id: "get-state-extra-param",
+      jsonrpc: "2.0",
+      error: {
+        code: -32602,
+        data: { code: "INVALID_PARAMS", subsystem: "rpc" }
+      }
+    });
   });
 
   it("strips provider secrets from the state response", async () => {

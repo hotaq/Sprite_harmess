@@ -5,6 +5,7 @@ import {
   type RuntimeApprovalResponse,
   type RuntimeEventRecord,
   type RuntimeEventType,
+  type RuntimeTaskStartAcceptedScopes,
   type StoredLearningReviewArtifactResult,
   createFinalTaskSummary,
   readLearningReviewArtifacts
@@ -65,8 +66,31 @@ export type JsonRpcMessage =
   | JsonRpcRequest
   | JsonRpcResponse;
 
+interface RuntimeGetStateSessionSummary {
+  correlationId?: string;
+  createdAt: string | null;
+  cwd: string;
+  sessionId: string;
+  status: string;
+  taskId: string | null;
+}
+
+interface RuntimeGetStateScopeSummary {
+  allowedTools: string[];
+  memoryScope: {
+    manual: boolean;
+    procedural: boolean;
+    working: boolean;
+  };
+  outputFormat: string;
+  provider: { providerName: string; model: string | null } | null;
+  toolExecutionEnabled: boolean;
+}
+
 export interface JsonRpcRuntimeBridge {
   createSession: AgentRuntime["createSession"];
+  currentSession?: RuntimeGetStateSessionSummary | null;
+  currentScopes?: RuntimeGetStateScopeSummary | null;
   getActiveTask: AgentRuntime["getActiveTask"];
   getBootstrapState: AgentRuntime["getBootstrapState"];
   getEventHistory: AgentRuntime["getEventHistory"];
@@ -1457,6 +1481,15 @@ function handleSessionCreate(
     return createSessionRuntimeErrorResponse(request.id ?? null, created.error);
   }
 
+  runtime.currentSession = {
+    sessionId: created.value.sessionId,
+    cwd: created.value.cwd,
+    status: "created",
+    taskId: null,
+    createdAt: created.value.createdAt
+  };
+  runtime.currentScopes = null;
+
   return createJsonRpcSuccessResponse(request.id ?? null, {
     session: {
       sessionId: created.value.sessionId,
@@ -1573,6 +1606,16 @@ function handleTaskStart(
   }
 
   const flow = started.value.flow;
+
+  runtime.currentSession = {
+    sessionId: started.value.session.sessionId,
+    cwd: flow.request.cwd,
+    status: flow.status,
+    correlationId: flow.correlationId,
+    taskId: flow.taskId,
+    createdAt: started.value.session.createdAt
+  };
+  runtime.currentScopes = summarizeScopeForState(started.value.acceptedScopes);
 
   return createJsonRpcSuccessResponse(request.id ?? null, {
     task: {
@@ -2784,27 +2827,71 @@ function summarizeProviderForState(
   };
 }
 
+function summarizeScopeForState(
+  acceptedScopes: RuntimeTaskStartAcceptedScopes
+): RuntimeGetStateScopeSummary {
+  return {
+    allowedTools: acceptedScopes.allowedTools,
+    memoryScope: acceptedScopes.memoryScope,
+    outputFormat: acceptedScopes.outputFormat,
+    provider:
+      acceptedScopes.provider === null
+        ? null
+        : {
+            providerName: acceptedScopes.provider.providerName,
+            model: acceptedScopes.provider.model ?? null
+          },
+    toolExecutionEnabled: acceptedScopes.toolExecutionEnabled
+  };
+}
+
+const RUNTIME_GET_STATE_PARAM_KEYS = new Set(["cwd"]);
+
+function validateRuntimeGetStateParams(
+  request: JsonRpcRequest
+): JsonRpcErrorResponse | null {
+  if (!isRecord(request.params)) {
+    return createJsonRpcErrorResponse({
+      code: -32602,
+      dataCode: "INVALID_PARAMS",
+      id: request.id ?? null,
+      message: "Invalid params.",
+      nextAction: "Provide runtime.getState params as an object with cwd.",
+      recoverable: true
+    });
+  }
+
+  for (const key of Object.keys(request.params)) {
+    if (!RUNTIME_GET_STATE_PARAM_KEYS.has(key)) {
+      return createJsonRpcErrorResponse({
+        code: -32602,
+        dataCode: "INVALID_PARAMS",
+        id: request.id ?? null,
+        message: "Invalid params.",
+        nextAction: "Remove unknown runtime.getState params and provide only cwd.",
+        recoverable: true
+      });
+    }
+  }
+
+  return null;
+}
+
 function handleRuntimeGetState(
   request: JsonRpcRequest,
   runtime: JsonRpcRuntimeBridge
 ): JsonRpcResponse {
   const requestId = request.id ?? null;
+  const paramsError = validateRuntimeGetStateParams(request);
+
+  if (paramsError !== null) {
+    return paramsError;
+  }
 
   const scoped = readScopedCwd(request, runtime);
 
   if (!scoped.ok) {
     return scoped.response;
-  }
-
-  if (!isRecord(request.params)) {
-    return createJsonRpcErrorResponse({
-      code: -32602,
-      dataCode: "INVALID_PARAMS",
-      id: requestId,
-      message: "Invalid params.",
-      nextAction: "Provide runtime.getState params as an object with cwd.",
-      recoverable: true
-    });
   }
 
   const bootstrap = runtime.getBootstrapState();
@@ -2818,17 +2905,16 @@ function handleRuntimeGetState(
 
   const provider = summarizeProviderForState(bootstrap);
 
-  const session =
-    activeTask.ok
-      ? {
-          sessionId: activeTask.value.sessionId,
-          cwd: activeTask.value.request.cwd,
-          status: activeTask.value.status,
-          correlationId: activeTask.value.correlationId,
-          createdAt:
-            activeTask.value.events?.[0]?.createdAt ?? null
-        }
-      : null;
+  const session = activeTask.ok
+    ? {
+        sessionId: activeTask.value.sessionId,
+        cwd: activeTask.value.request.cwd,
+        status: activeTask.value.status,
+        correlationId: activeTask.value.correlationId,
+        taskId: activeTask.value.taskId,
+        createdAt: activeTask.value.events?.[0]?.createdAt ?? null
+      }
+    : runtime.currentSession ?? null;
 
   const task = activeTask.ok
     ? {
@@ -2838,13 +2924,34 @@ function handleRuntimeGetState(
       }
     : null;
 
+  const scope = activeTask.ok
+    ? runtime.currentScopes ?? {
+        allowedTools: activeTask.value.request.allowedDefaults.allowedTools,
+        memoryScope: {
+          manual: true,
+          procedural: true,
+          working: true
+        },
+        outputFormat: activeTask.value.request.allowedDefaults.outputFormat,
+        provider:
+          activeTask.value.request.provider === null
+            ? null
+            : {
+                providerName: activeTask.value.request.provider.providerName,
+                model: activeTask.value.request.provider.model ?? null
+              },
+        toolExecutionEnabled:
+          activeTask.value.request.allowedDefaults.toolExecutionEnabled
+      }
+    : runtime.currentScopes ?? null;
+
   const warnings: string[] = [];
 
   if (bootstrap.ok) {
     warnings.push(...bootstrap.value.warnings);
   }
 
-  if (!activeTask.ok) {
+  if (!activeTask.ok && session === null) {
     warnings.push(
       "No active session. Create a session or resume an existing one."
     );
@@ -2855,6 +2962,15 @@ function handleRuntimeGetState(
     session,
     task,
     provider,
+    scope,
+    noActiveSession:
+      session === null
+        ? {
+            code: "NO_ACTIVE_SESSION",
+            recoverable: false,
+            subsystem: "rpc"
+          }
+        : null,
     sandbox: {
       pendingApprovals:
         Array.isArray(pendingApprovals) ? pendingApprovals.length : 0,

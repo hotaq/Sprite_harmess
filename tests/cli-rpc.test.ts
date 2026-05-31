@@ -420,6 +420,56 @@ describe("sprite rpc CLI", () => {
     }
   });
 
+  it("advertises and serves runtime.getState over JSON-RPC stdout only", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const result = spawnSync("node", [cliPath, "rpc"], {
+        cwd: projectDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          SPRITE_TEST_SECRET: "***"
+        },
+        input: `${JSON.stringify({
+          id: "cli-runtime-state",
+          jsonrpc: "2.0",
+          method: "runtime.getState",
+          params: { cwd: projectDir }
+        })}
+`
+      });
+      const messages = parseJsonLines(result.stdout);
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(messages.every((message) => message.jsonrpc === "2.0")).toBe(
+        true
+      );
+      expect(messages[0]).toMatchObject({
+        method: "rpc.ready",
+        params: {
+          capabilities: expect.arrayContaining(["runtime.getState"])
+        }
+      });
+      expect(messages[1]).toMatchObject({
+        id: "cli-runtime-state",
+        result: {
+          protocol: {
+            capabilities: expect.arrayContaining(["runtime.getState"]),
+            server: "sprite-rpc",
+            transport: "stdio"
+          }
+        }
+      });
+      expect(result.stdout).not.toContain("***");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { force: true, recursive: true });
+    }
+  });
+
   it("rejects approval.respond with bounded errors over JSON-RPC stdout only", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 
