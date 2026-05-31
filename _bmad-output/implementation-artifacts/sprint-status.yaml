@@ -107,7 +107,7 @@ development_status:
   7-5-respond-to-approval-requests-through-json-rpc: done
   7-6-retrieve-final-summaries-and-learning-reviews-through-json-rpc: done
   7-7-inspect-runtime-state-through-scoped-json-rpc: done
-  epic-7-retrospective: optional
+  epic-7-retrospective: done
   epic-8: backlog
   8-1-run-provider-login-flow-for-oauth-capable-providers: backlog
   8-2-logout-and-remove-stored-provider-credentials: backlog
