@@ -300,6 +300,76 @@ describe("sprite cli smoke tests", () => {
     }
   });
 
+  it("removes stored provider credentials through logout text output", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+    const authPath = join(homeDir, ".sprite", "auth", "openai-compatible.json");
+
+    try {
+      writeJson(authPath, { apiKey: "SECRET_LOGOUT_CLI_KEY_82" });
+
+      const result = spawnSync(
+        "node",
+        [cliPath, "provider", "logout", "--provider", "openai-compatible"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "SECRET_ENV_KEY_82" },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Provider logout: removed");
+      expect(result.stdout).toContain("provider: openai-compatible");
+      expect(result.stdout).toContain("auth mode: api-key");
+      expect(existsSync(authPath)).toBe(false);
+      expect(result.stdout).not.toContain("SECRET_LOGOUT_CLI_KEY_82");
+      expect(result.stdout).not.toContain("SECRET_ENV_KEY_82");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns pure JSON when provider logout has nothing stored", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      const result = spawnSync(
+        "node",
+        [
+          cliPath,
+          "provider",
+          "logout",
+          "--provider",
+          "openai-compatible",
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const output = parseJsonOutput(result.stdout);
+      expect(output).toMatchObject({
+        ok: true,
+        providerName: "openai-compatible",
+        authMode: "api-key",
+        status: "not-found",
+        code: "LOGOUT_NOT_FOUND",
+        recoverable: false
+      });
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("lists project, global, and unavailable manual skills as safe text", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

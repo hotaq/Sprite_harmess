@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -10,6 +10,12 @@ export interface LoadedApiKeyAuthFile {
   apiKey: string | null;
   path: string;
   loaded: boolean;
+  warning: string | null;
+}
+
+export interface RemovedProviderAuthFile {
+  path: string;
+  removed: boolean;
   warning: string | null;
 }
 
@@ -42,6 +48,37 @@ export function resolveProviderAuthFilePath(
     ".sprite/auth",
     `${normalizeProviderAuthFileName(providerName)}.json`
   );
+}
+
+export function removeProviderAuthFile(
+  providerName: string,
+  options: AuthStoreOptions = {}
+): RemovedProviderAuthFile {
+  const path = resolveProviderAuthFilePath(providerName, options);
+
+  if (!existsSync(path)) {
+    return {
+      path,
+      removed: false,
+      warning: null
+    };
+  }
+
+  try {
+    unlinkSync(path);
+    return {
+      path,
+      removed: true,
+      warning: null
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      path,
+      removed: false,
+      warning: `Failed to remove auth file ${path}: ${message}`
+    };
+  }
 }
 
 export function loadApiKeyAuthFile(

@@ -33,7 +33,9 @@ import {
 import { resolveSpriteRuntimeConfig } from "@sprite/config";
 import {
   runProviderLogin,
-  type ProviderLoginResult
+  runProviderLogout,
+  type ProviderLoginResult,
+  type ProviderLogoutResult
 } from "@sprite/providers";
 import { runJsonRpcStdioServer } from "@sprite/rpc";
 import {
@@ -325,6 +327,28 @@ function renderProviderLoginText(result: ProviderLoginResult): string {
   if (result.code !== undefined) {
     lines.push(`code: ${result.code}`);
   }
+
+  if (result.warnings.length > 0) {
+    lines.push("warnings:", ...result.warnings.map((warning) => `- ${warning}`));
+  }
+
+  return lines.join("\n");
+}
+
+function renderProviderLogoutJson(result: ProviderLogoutResult): string {
+  return JSON.stringify(result, null, 2);
+}
+
+function renderProviderLogoutText(result: ProviderLogoutResult): string {
+  const lines = [
+    `Provider logout: ${result.status}`,
+    `provider: ${result.providerName}`,
+    `auth mode: ${result.authMode}`,
+    `source: ${result.source}`,
+    `recoverable: ${String(result.recoverable)}`,
+    `next action: ${result.nextAction}`,
+    `code: ${result.code}`
+  ];
 
   if (result.warnings.length > 0) {
     lines.push("warnings:", ...result.warnings.map((warning) => `- ${warning}`));
@@ -2388,6 +2412,35 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
         outputFormat === "json"
           ? renderProviderLoginJson(result)
           : renderProviderLoginText(result)
+      );
+    });
+
+  providerCommand
+    .command("logout")
+    .description("remove locally stored provider credentials when present")
+    .option("--provider <name>", "provider name to log out from")
+    .option("--output <format>", "print output format: text or json")
+    .action((options: { output?: string; provider?: string }, command: Command) => {
+      const optionValues = command.optsWithGlobals<{ output?: string }>();
+      const outputFormat = parseSessionTextJsonOutputFormat(
+        options.output ?? optionValues.output,
+        "Provider logout"
+      );
+      const runtimeConfig = resolveSpriteRuntimeConfig({
+        cwd: process.cwd(),
+        homeDir: process.env.HOME ?? process.env.USERPROFILE
+      });
+      const result = runProviderLogout(runtimeConfig, {
+        env: process.env,
+        homeDir: process.env.HOME ?? process.env.USERPROFILE,
+        providerName: options.provider
+      });
+
+      writeMessage(
+        io,
+        outputFormat === "json"
+          ? renderProviderLogoutJson(result)
+          : renderProviderLogoutText(result)
       );
     });
 

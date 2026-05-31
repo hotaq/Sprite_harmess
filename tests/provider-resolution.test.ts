@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveSpriteRuntimeConfig } from "@sprite/config";
-import { initializeProviderAdapter, runProviderLogin } from "@sprite/providers";
+import {
+  initializeProviderAdapter,
+  runProviderLogin,
+  runProviderLogout
+} from "@sprite/providers";
 
 const tempRoots: string[] = [];
 
@@ -307,5 +311,100 @@ describe("runProviderLogin", () => {
       recoverable: true
     });
     expect(serialized).not.toContain("SECRET_CALLBACK_81");
+  });
+});
+
+describe("runProviderLogout", () => {
+  it("removes stored API-key credentials without leaking removed secrets or private paths", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+    const authPath = join(homeDir, ".sprite/auth/openai-compatible.json");
+
+    writeJson(authPath, { apiKey: "SECRET_LOGOUT_KEY_82" });
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "deepseek-chat"
+      }
+    });
+
+    const runtimeConfig = resolveSpriteRuntimeConfig({ cwd: projectDir, homeDir });
+    const result = runProviderLogout(runtimeConfig, {
+      env: { OPENAI_API_KEY: "SECRET_ENV_KEY_82" },
+      homeDir
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      ok: true,
+      providerName: "openai-compatible",
+      authMode: "api-key",
+      status: "removed",
+      code: "LOGOUT_REMOVED",
+      recoverable: false
+    });
+    expect(existsSync(authPath)).toBe(false);
+    expect(serialized).not.toContain("SECRET_LOGOUT_KEY_82");
+    expect(serialized).not.toContain("SECRET_ENV_KEY_82");
+    expect(serialized).not.toContain(homeDir);
+  });
+
+  it("returns a non-fatal no-op when no stored credentials exist", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+    const runtimeConfig = resolveSpriteRuntimeConfig({ cwd: projectDir, homeDir });
+
+    const result = runProviderLogout(runtimeConfig, {
+      providerName: "openai-compatible",
+      homeDir
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      providerName: "openai-compatible",
+      authMode: "api-key",
+      status: "not-found",
+      code: "LOGOUT_NOT_FOUND",
+      recoverable: false
+    });
+    expect(result.nextAction).toContain("No stored provider credentials");
+    expect(JSON.stringify(result)).not.toContain(homeDir);
+  });
+
+  it("delegates supported OAuth logout through a provider auth module", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+    const runtimeConfig = resolveSpriteRuntimeConfig({ cwd: projectDir, homeDir });
+
+    const result = runProviderLogout(runtimeConfig, {
+      authModules: {
+        "test-oauth": {
+          authMode: "subscription-oauth",
+          logout() {
+            return {
+              ok: true,
+              providerName: "test-oauth",
+              authMode: "subscription-oauth",
+              status: "removed",
+              source: "provider-auth-module",
+              recoverable: false,
+              code: "LOGOUT_REMOVED",
+              nextAction: "Local provider session was removed.",
+              warnings: ["removed callback secret SECRET_LOGOUT_CALLBACK_82"]
+            };
+          }
+        }
+      },
+      providerName: "test-oauth",
+      homeDir
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      ok: true,
+      providerName: "test-oauth",
+      authMode: "subscription-oauth",
+      status: "removed",
+      source: "provider-auth-module",
+      recoverable: false
+    });
+    expect(serialized).not.toContain("SECRET_LOGOUT_CALLBACK_82");
   });
 });

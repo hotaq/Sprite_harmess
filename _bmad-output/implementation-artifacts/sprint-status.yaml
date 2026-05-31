@@ -110,7 +110,7 @@ development_status:
   epic-7-retrospective: done
   epic-8: in-progress
   8-1-run-provider-login-flow-for-oauth-capable-providers: done
-  8-2-logout-and-remove-stored-provider-credentials: backlog
+  8-2-logout-and-remove-stored-provider-credentials: review
   8-3-store-provider-credentials-with-restricted-local-permissions: backlog
   8-4-refresh-oauth-credentials-when-supported: backlog
   8-5-distinguish-api-key-auth-from-subscription-oauth-auth: backlog
