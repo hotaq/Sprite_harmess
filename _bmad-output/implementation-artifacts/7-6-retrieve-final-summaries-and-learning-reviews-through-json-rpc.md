@@ -1,6 +1,6 @@
 # Story 7.6: Retrieve Final Summaries and Learning Reviews Through JSON-RPC
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

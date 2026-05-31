@@ -1,6 +1,6 @@
 # Story 7.7: Inspect Runtime State Through Scoped JSON-RPC
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
