@@ -30,6 +30,11 @@ import {
   type StoredLearningReviewArtifactResult,
   type UnavailableSkillRegistryEntry
 } from "@sprite/core";
+import { resolveSpriteRuntimeConfig } from "@sprite/config";
+import {
+  runProviderLogin,
+  type ProviderLoginResult
+} from "@sprite/providers";
 import { runJsonRpcStdioServer } from "@sprite/rpc";
 import {
   createTuiApprovalResponseIntent,
@@ -301,6 +306,31 @@ function renderOneShotText(result: OneShotPrintTaskResult): string {
 
 function renderOneShotJson(result: OneShotPrintTaskResult): string {
   return JSON.stringify(result, null, 2);
+}
+
+function renderProviderLoginJson(result: ProviderLoginResult): string {
+  return JSON.stringify(result, null, 2);
+}
+
+function renderProviderLoginText(result: ProviderLoginResult): string {
+  const lines = [
+    `Provider login: ${result.status}`,
+    `provider: ${result.providerName}`,
+    `auth mode: ${result.authMode}`,
+    `source: ${result.source}`,
+    `recoverable: ${String(result.recoverable)}`,
+    `next action: ${result.nextAction}`
+  ];
+
+  if (result.code !== undefined) {
+    lines.push(`code: ${result.code}`);
+  }
+
+  if (result.warnings.length > 0) {
+    lines.push("warnings:", ...result.warnings.map((warning) => `- ${warning}`));
+  }
+
+  return lines.join("\n");
 }
 
 function renderSkillsListJson(result: ListSkillsResult): string {
@@ -2327,6 +2357,39 @@ export function createProgram(io: CliIO, version = CLI_VERSION): Command {
   const sessionCommand = program
     .command("session")
     .description("inspect or compact local session state");
+
+  const providerCommand = program
+    .command("provider")
+    .description("manage provider authentication and configuration");
+
+  providerCommand
+    .command("login")
+    .description("run provider-specific interactive login when supported")
+    .option("--provider <name>", "provider name to log in with")
+    .option("--output <format>", "print output format: text or json")
+    .action((options: { output?: string; provider?: string }, command: Command) => {
+      const optionValues = command.optsWithGlobals<{ output?: string }>();
+      const outputFormat = parseSessionTextJsonOutputFormat(
+        options.output ?? optionValues.output,
+        "Provider login"
+      );
+      const runtimeConfig = resolveSpriteRuntimeConfig({
+        cwd: process.cwd(),
+        homeDir: process.env.HOME ?? process.env.USERPROFILE
+      });
+      const result = runProviderLogin(runtimeConfig, {
+        env: process.env,
+        homeDir: process.env.HOME ?? process.env.USERPROFILE,
+        providerName: options.provider
+      });
+
+      writeMessage(
+        io,
+        outputFormat === "json"
+          ? renderProviderLoginJson(result)
+          : renderProviderLoginText(result)
+      );
+    });
 
   const skillsCommand = program
     .command("skills")

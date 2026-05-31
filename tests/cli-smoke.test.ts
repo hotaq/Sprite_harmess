@@ -213,6 +213,93 @@ describe("sprite cli smoke tests", () => {
     expect(result.stdout.trim()).toBe(packageJson.version);
   });
 
+  it("returns safe text guidance when provider login is unsupported", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      writeJson(join(projectDir, ".sprite", "config.json"), {
+        provider: {
+          name: "openai-compatible",
+          model: "deepseek-chat",
+          baseUrl: "https://api.deepseek.example/v1?token=SECRET_TOKEN_81",
+          apiKey: "SECRET_API_KEY_81"
+        }
+      });
+
+      const result = spawnSync(
+        "node",
+        [cliPath, "provider", "login", "--provider", "openai-compatible"],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "SECRET_ENV_KEY_81" },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Provider login: unsupported");
+      expect(result.stdout).toContain("provider: openai-compatible");
+      expect(result.stdout).toContain("auth mode: api-key");
+      expect(result.stdout).toContain("next action:");
+      expect(result.stdout).not.toContain("SECRET_API_KEY_81");
+      expect(result.stdout).not.toContain("SECRET_ENV_KEY_81");
+      expect(result.stdout).not.toContain("SECRET_TOKEN_81");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns pure JSON when provider login is unsupported with json output", () => {
+    const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
+
+    try {
+      writeJson(join(projectDir, ".sprite", "config.json"), {
+        provider: {
+          name: "openai-compatible",
+          model: "deepseek-chat",
+          apiKey: "SECRET_API_KEY_81"
+        }
+      });
+
+      const result = spawnSync(
+        "node",
+        [
+          cliPath,
+          "provider",
+          "login",
+          "--provider",
+          "openai-compatible",
+          "--output",
+          "json"
+        ],
+        {
+          cwd: projectDir,
+          env: { ...process.env, HOME: homeDir, OPENAI_API_KEY: "SECRET_ENV_KEY_81" },
+          encoding: "utf8"
+        }
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const output = parseJsonOutput(result.stdout);
+      expect(output).toMatchObject({
+        ok: false,
+        providerName: "openai-compatible",
+        authMode: "api-key",
+        status: "unsupported",
+        code: "LOGIN_UNSUPPORTED",
+        recoverable: true
+      });
+      expect(result.stdout).not.toContain("SECRET_API_KEY_81");
+      expect(result.stdout).not.toContain("SECRET_ENV_KEY_81");
+      expect(result.stdout).not.toContain(homeDir);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("lists project, global, and unavailable manual skills as safe text", () => {
     const { homeDir, projectDir, rootDir } = createTempCliWorkspace();
 

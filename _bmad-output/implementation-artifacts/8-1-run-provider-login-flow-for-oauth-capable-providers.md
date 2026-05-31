@@ -1,6 +1,6 @@
 # Story 8.1: Run Provider Login Flow for OAuth-Capable Providers
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -24,45 +24,45 @@ so that Sprite Harness can support providers beyond API-key usage without changi
 
 ## Tasks / Subtasks
 
-- [ ] Confirm Story 8.1 scope and implementation surfaces. (AC: 1-9)
-  - [ ] Read this story, Epic 8 requirements, PRD provider/auth requirements, architecture provider/config sections, Epic 7 retrospective action items, and existing provider/auth implementation.
-  - [ ] Inspect `packages/providers/src/provider-capabilities.ts`, `packages/providers/src/provider-registry.ts`, `packages/providers/src/auth/api-key-auth.ts`, `packages/providers/src/auth/auth-store.ts`, `packages/providers/src/openai-compatible-provider.ts`, `packages/cli/src/index.ts`, provider resolution tests, and CLI smoke tests.
-  - [ ] Run required GitNexus impact checks before editing provider/auth/CLI symbols; report HIGH/CRITICAL blast radius before code changes.
-  - [ ] Keep scope to provider login flow only; do not implement logout, credential permission hardening, refresh, full auth-mode inspection, effective config inspection, or real network OAuth provider integrations unless already available behind testable provider modules.
+- [x] Confirm Story 8.1 scope and implementation surfaces. (AC: 1-9)
+  - [x] Read this story, Epic 8 requirements, PRD provider/auth requirements, architecture provider/config sections, Epic 7 retrospective action items, and existing provider/auth implementation.
+  - [x] Inspect `packages/providers/src/provider-capabilities.ts`, `packages/providers/src/provider-registry.ts`, `packages/providers/src/auth/api-key-auth.ts`, `packages/providers/src/auth/auth-store.ts`, `packages/providers/src/openai-compatible-provider.ts`, `packages/cli/src/index.ts`, provider resolution tests, and CLI smoke tests.
+  - [x] Run required GitNexus impact checks before editing provider/auth/CLI symbols; report HIGH/CRITICAL blast radius before code changes.
+  - [x] Keep scope to provider login flow only; do not implement logout, credential permission hardening, refresh, full auth-mode inspection, effective config inspection, or real network OAuth provider integrations unless already available behind testable provider modules.
 
-- [ ] Define provider auth/login contracts. (AC: 1-7)
-  - [ ] Add a provider-auth interface for interactive login capability detection and login execution.
-  - [ ] Represent supported, unsupported, and failed login outcomes with structured safe result types.
-  - [ ] Include non-secret fields only: provider name, auth mode, status, source, recoverability, warnings, and next action.
-  - [ ] Define stable safe error codes such as `LOGIN_UNSUPPORTED`, `LOGIN_FAILED`, and `INVALID_PROVIDER` where needed.
-  - [ ] Ensure unsupported providers can suggest API-key/environment/auth-file configuration without echoing secret values or private paths.
+- [x] Define provider auth/login contracts. (AC: 1-7)
+  - [x] Add a provider-auth interface for interactive login capability detection and login execution.
+  - [x] Represent supported, unsupported, and failed login outcomes with structured safe result types.
+  - [x] Include non-secret fields only: provider name, auth mode, status, source, recoverability, warnings, and next action.
+  - [x] Define stable safe error codes such as `LOGIN_UNSUPPORTED`, `LOGIN_FAILED`, and `INVALID_PROVIDER` where needed.
+  - [x] Ensure unsupported providers can suggest API-key/environment/auth-file configuration without echoing secret values or private paths.
 
-- [ ] Implement provider-side login handling. (AC: 1-6)
-  - [ ] Keep OAuth/subscription-specific behavior behind provider auth modules or provider adapter/registry interfaces.
-  - [ ] Preserve OpenAI-compatible API-key provider behavior and return unsupported-login guidance for interactive login requests.
-  - [ ] Add a deterministic test/stub provider path if needed to validate supported-login delegation without network/browser dependencies.
-  - [ ] Avoid adding new dependencies unless explicitly approved.
+- [x] Implement provider-side login handling. (AC: 1-6)
+  - [x] Keep OAuth/subscription-specific behavior behind provider auth modules or provider adapter/registry interfaces.
+  - [x] Preserve OpenAI-compatible API-key provider behavior and return unsupported-login guidance for interactive login requests.
+  - [x] Add a deterministic test/stub provider path if needed to validate supported-login delegation without network/browser dependencies.
+  - [x] Avoid adding new dependencies unless explicitly approved.
 
-- [ ] Expose login through CLI. (AC: 1-4, 6-8)
-  - [ ] Add a user-facing provider login command or equivalent CLI surface consistent with existing command style.
-  - [ ] Support safe text output and JSON output if this CLI area already uses output-format patterns.
-  - [ ] Ensure unsupported-login output is actionable and non-fatal where appropriate.
-  - [ ] Ensure stdout/stderr behavior stays deterministic and does not leak diagnostics into machine-readable output.
+- [x] Expose login through CLI. (AC: 1-4, 6-8)
+  - [x] Add a user-facing provider login command or equivalent CLI surface consistent with existing command style.
+  - [x] Support safe text output and JSON output if this CLI area already uses output-format patterns.
+  - [x] Ensure unsupported-login output is actionable and non-fatal where appropriate.
+  - [x] Ensure stdout/stderr behavior stays deterministic and does not leak diagnostics into machine-readable output.
 
-- [ ] Add tests. (AC: 1-9)
-  - [ ] Provider/auth unit tests for supported-login delegation and unsupported-login result shape.
-  - [ ] API-key provider compatibility tests proving existing resolution precedence remains unchanged.
-  - [ ] CLI tests for unsupported login and, if stubbed, supported login without browser/network side effects.
-  - [ ] Redaction tests for secret-like token/API-key/header/path values in results, warnings, errors, text output, and JSON output.
-  - [ ] Backward-compatibility tests for existing provider resolution and relevant CLI smoke behavior.
+- [x] Add tests. (AC: 1-9)
+  - [x] Provider/auth unit tests for supported-login delegation and unsupported-login result shape.
+  - [x] API-key provider compatibility tests proving existing resolution precedence remains unchanged.
+  - [x] CLI tests for unsupported login and, if stubbed, supported login without browser/network side effects.
+  - [x] Redaction tests for secret-like token/API-key/header/path values in results, warnings, errors, text output, and JSON output.
+  - [x] Backward-compatibility tests for existing provider resolution and relevant CLI smoke behavior.
 
-- [ ] Validate and update story status during implementation. (AC: 8-9)
-  - [ ] Before code edits, run targeted GitNexus impact checks and record blast radius in the Dev Agent Record.
-  - [ ] Run targeted validation for provider/auth and CLI tests touched by this story.
-  - [ ] Run full validation: `npm run typecheck`, `npm run lint`, and `npm test`.
-  - [ ] Run Story-scoped `git diff --check` for touched files; document any unrelated pre-existing workspace issues separately.
-  - [ ] Run GitNexus analyze/status fallback before commit if `gitnexus_detect_changes()` is unavailable.
-  - [ ] Move story to `review` only after implementation and tests pass.
+- [x] Validate and update story status during implementation. (AC: 8-9)
+  - [x] Before code edits, run targeted GitNexus impact checks and record blast radius in the Dev Agent Record.
+  - [x] Run targeted validation for provider/auth and CLI tests touched by this story.
+  - [x] Run full validation: `npm run typecheck`, `npm run lint`, and `npm test`.
+  - [x] Run Story-scoped `git diff --check` for touched files; document any unrelated pre-existing workspace issues separately.
+  - [x] Run GitNexus analyze/status fallback before commit if `gitnexus_detect_changes()` is unavailable.
+  - [x] Move story to `review` only after implementation and tests pass.
 
 ## Dev Notes
 
@@ -154,20 +154,40 @@ Never include raw tokens, API keys, auth headers, callback secrets, or absolute 
 
 ### Agent Model Used
 
-(To be filled by dev agent)
+GPT-5.5 via Hermes Agent CLI.
 
 ### Debug Log References
 
-(To be filled by dev agent)
+- GitNexus pre-edit impact checks after `npx gitnexus analyze`:
+  - `initializeProviderAdapter`: CRITICAL, 19 impacted, 10 processes affected. Scope reduced by avoiding provider-initialization changes for login behavior.
+  - `createOpenAiCompatibleProviderAdapter`: CRITICAL, 4 impacted, 8 processes affected. Existing API-key adapter behavior preserved.
+  - `ProviderAdapter`: LOW, 2 impacted.
+  - `createProgram`: LOW, 2 impacted.
+- RED targeted validation: `npm test -- --run tests/provider-resolution.test.ts tests/cli-smoke.test.ts` failed with missing `runProviderLogin` export/function and missing `provider login` CLI command, proving the 8.1 tests exercised absent behavior.
+- GREEN targeted validation: `npm test -- --run tests/provider-resolution.test.ts tests/cli-smoke.test.ts` passed 44/44 tests.
+- Full validation: `npm run typecheck && npm run lint && npm test` passed; full suite 28 files / 458 tests.
 
 ### Completion Notes List
 
-(To be filled by dev agent)
+- Added provider-auth login contract in `packages/providers/src/auth/provider-login.ts` with safe result fields, supported OAuth/subscription module delegation, API-key unsupported-login handling, and structured codes `LOGIN_UNSUPPORTED`, `LOGIN_FAILED`, and `INVALID_PROVIDER`.
+- Added `sprite provider login` CLI command with safe text output and pure JSON output via `--output json`.
+- Preserved existing OpenAI-compatible/API-key resolution and did not add OAuth logic to `AgentRuntime` or the task loop.
+- Added deterministic provider and CLI tests for unsupported API-key login, supported OAuth stub delegation, stdout/stderr purity, and secret/private-path redaction.
+- Added internal workspace dependencies from CLI to config/providers so the CLI command can resolve runtime provider config and call the provider-auth seam directly.
 
 ### File List
 
-(To be filled by dev agent)
+- `packages/providers/src/auth/provider-login.ts`
+- `packages/providers/src/index.ts`
+- `packages/cli/src/index.ts`
+- `packages/cli/package.json`
+- `package-lock.json`
+- `tests/provider-resolution.test.ts`
+- `tests/cli-smoke.test.ts`
+- `_bmad-output/implementation-artifacts/8-1-run-provider-login-flow-for-oauth-capable-providers.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
 
 ## Change Log
 
 - 2026-05-31: Created Story 8.1 implementation artifact following Epic 8 transition from completed Epic 7.
+- 2026-05-31: Implemented provider login seam and CLI command; moved story to review after targeted and full validation passed.

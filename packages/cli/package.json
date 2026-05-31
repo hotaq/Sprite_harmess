@@ -11,7 +11,9 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@sprite/config": "0.1.0",
     "@sprite/core": "0.1.0",
+    "@sprite/providers": "0.1.0",
     "@sprite/rpc": "0.1.0",
     "@sprite/shared": "0.1.0",
     "@sprite/tui": "0.1.0",

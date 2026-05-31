@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveSpriteRuntimeConfig } from "@sprite/config";
-import { initializeProviderAdapter } from "@sprite/providers";
+import { initializeProviderAdapter, runProviderLogin } from "@sprite/providers";
 
 const tempRoots: string[] = [];
 
@@ -201,5 +201,87 @@ describe("initializeProviderAdapter", () => {
     expect(state?.capabilities.supportsStreaming).toBe(true);
     expect(state?.capabilities.supportsToolCalls).toBe(true);
     expect(state?.capabilities.modelIdentity).toBe("gpt-5.4");
+  });
+});
+
+describe("runProviderLogin", () => {
+  it("returns safe unsupported-login guidance for API-key-only providers", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "openai-compatible",
+        model: "deepseek-chat",
+        baseUrl: "https://api.deepseek.example/v1?token=SECRET_TOKEN_81",
+        apiKey: "SECRET_API_KEY_81"
+      }
+    });
+
+    const runtimeConfig = resolveSpriteRuntimeConfig({ cwd: projectDir, homeDir });
+    const result = runProviderLogin(runtimeConfig, {
+      env: { OPENAI_API_KEY: "SECRET_ENV_KEY_81" },
+      homeDir
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      ok: false,
+      providerName: "openai-compatible",
+      authMode: "api-key",
+      status: "unsupported",
+      code: "LOGIN_UNSUPPORTED",
+      recoverable: true,
+      source: "environment"
+    });
+    expect(result.nextAction).toContain("API key");
+    expect(result.warnings).toEqual([]);
+    expect(serialized).not.toContain("SECRET_API_KEY_81");
+    expect(serialized).not.toContain("SECRET_ENV_KEY_81");
+    expect(serialized).not.toContain("SECRET_TOKEN_81");
+    expect(serialized).not.toContain(homeDir);
+  });
+
+  it("delegates supported OAuth login through a provider auth module", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+
+    writeJson(join(projectDir, ".sprite/config.json"), {
+      provider: {
+        name: "test-oauth",
+        model: "oauth-model"
+      }
+    });
+
+    const runtimeConfig = resolveSpriteRuntimeConfig({ cwd: projectDir, homeDir });
+    const result = runProviderLogin(runtimeConfig, {
+      authModules: {
+        "test-oauth": {
+          authMode: "oauth-authorization-code",
+          login() {
+            return {
+              ok: true,
+              providerName: "test-oauth",
+              authMode: "oauth-authorization-code",
+              status: "started",
+              source: "interactive-login",
+              recoverable: true,
+              nextAction: "Open the provider authorization URL.",
+              warnings: ["callback secret SECRET_CALLBACK_81 was redacted"]
+            };
+          }
+        }
+      },
+      homeDir
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      ok: true,
+      providerName: "test-oauth",
+      authMode: "oauth-authorization-code",
+      status: "started",
+      source: "interactive-login",
+      recoverable: true
+    });
+    expect(serialized).not.toContain("SECRET_CALLBACK_81");
   });
 });
