@@ -241,6 +241,30 @@ describe("runProviderLogin", () => {
     expect(serialized).not.toContain(homeDir);
   });
 
+  it("redacts secret-looking provider names and provider-name warnings", () => {
+    const { homeDir, projectDir } = createTempWorkspace();
+    const runtimeConfig = resolveSpriteRuntimeConfig({ cwd: projectDir, homeDir });
+    const secretProviderName = `${homeDir}/sk-reviewsecret123456`;
+
+    const result = runProviderLogin(runtimeConfig, {
+      providerName: secretProviderName,
+      homeDir
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      ok: false,
+      authMode: "unsupported",
+      status: "failed",
+      code: "INVALID_PROVIDER",
+      recoverable: true
+    });
+    expect(serialized).not.toContain(homeDir);
+    expect(serialized).not.toContain("sk-reviewsecret123456");
+    expect(result.providerName).toBe("[REDACTED]/[REDACTED]");
+    expect(result.warnings.join("\n")).toContain("[REDACTED]");
+  });
+
   it("delegates supported OAuth login through a provider auth module", () => {
     const { homeDir, projectDir } = createTempWorkspace();
 

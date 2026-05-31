@@ -1,6 +1,6 @@
 # Story 8.1: Run Provider Login Flow for OAuth-Capable Providers
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -166,6 +166,8 @@ GPT-5.5 via Hermes Agent CLI.
 - RED targeted validation: `npm test -- --run tests/provider-resolution.test.ts tests/cli-smoke.test.ts` failed with missing `runProviderLogin` export/function and missing `provider login` CLI command, proving the 8.1 tests exercised absent behavior.
 - GREEN targeted validation: `npm test -- --run tests/provider-resolution.test.ts tests/cli-smoke.test.ts` passed 44/44 tests.
 - Full validation: `npm run typecheck && npm run lint && npm test` passed; full suite 28 files / 458 tests.
+- Review follow-up: code review found provider-name redaction did not cover secret-looking names/private paths in `providerName` and provider-name-derived warnings. Added shared redaction and a regression test.
+- Review validation: `npm test -- --run tests/provider-resolution.test.ts tests/cli-smoke.test.ts` passed 45/45 tests; `npm run typecheck && npm run lint && npm test` passed full suite 28 files / 459 tests.
 
 ### Completion Notes List
 
@@ -173,11 +175,13 @@ GPT-5.5 via Hermes Agent CLI.
 - Added `sprite provider login` CLI command with safe text output and pure JSON output via `--output json`.
 - Preserved existing OpenAI-compatible/API-key resolution and did not add OAuth logic to `AgentRuntime` or the task loop.
 - Added deterministic provider and CLI tests for unsupported API-key login, supported OAuth stub delegation, stdout/stderr purity, and secret/private-path redaction.
+- Review tightened redaction so `providerName`, warning text, and next-action text use shared secret-like redaction plus private-fragment redaction.
 - Added internal workspace dependencies from CLI to config/providers so the CLI command can resolve runtime provider config and call the provider-auth seam directly.
 
 ### File List
 
 - `packages/providers/src/auth/provider-login.ts`
+- `packages/providers/package.json`
 - `packages/providers/src/index.ts`
 - `packages/cli/src/index.ts`
 - `packages/cli/package.json`
@@ -191,3 +195,4 @@ GPT-5.5 via Hermes Agent CLI.
 
 - 2026-05-31: Created Story 8.1 implementation artifact following Epic 8 transition from completed Epic 7.
 - 2026-05-31: Implemented provider login seam and CLI command; moved story to review after targeted and full validation passed.
+- 2026-05-31: Completed review follow-up for provider-name redaction; moved Story 8.1 to done.

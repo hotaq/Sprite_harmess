@@ -1,4 +1,5 @@
 import type { ResolvedSpriteRuntimeConfig } from "@sprite/config";
+import { redactSecretLikeValues } from "@sprite/shared";
 import { resolveApiKeyAuth, type ResolveApiKeyAuthOptions } from "./api-key-auth.js";
 import type { ProviderAuthSource } from "../provider-capabilities.js";
 
@@ -59,7 +60,7 @@ function redactText(value: string, privateFragments: string[]): string {
     }
   }
 
-  return redacted
+  return redactSecretLikeValues(redacted)
     .replace(/SECRET_[A-Z0-9_]+/g, "[REDACTED]")
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
     .replace(/(access_token|refresh_token|token|api[_-]?key|code|secret)=([^\s&]+)/gi, "$1=[REDACTED]");
@@ -71,6 +72,7 @@ function sanitizeProviderLoginResult(
 ): ProviderLoginResult {
   return {
     ...result,
+    providerName: redactText(result.providerName, privateFragments),
     nextAction: redactText(result.nextAction, privateFragments),
     warnings: result.warnings.map((warning) => redactText(warning, privateFragments))
   };
